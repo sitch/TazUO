@@ -107,6 +107,9 @@ namespace ClassicUO.Game.GameObjects
         private ushort _animationRepeateMode = 1;
         private ushort _animationRepeatModeCount = 1;
 
+        internal uint _equipmentGeneration;
+        internal StitchinCache _stitchinCache;
+
         public Mobile(World world, uint serial) : base(world, serial)
         {
             LastAnimationChangeTime = Time.Ticks;

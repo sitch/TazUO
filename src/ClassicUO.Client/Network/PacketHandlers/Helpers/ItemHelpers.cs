@@ -71,6 +71,9 @@ internal static class ItemHelpers
 
         container.PushToBack(item);
 
+        if (container is Mobile equipMob3)
+            equipMob3._equipmentGeneration++;
+
         // Fire event after item is fully configured
         if (itemWasCreated)
             EventSink.InvokeOnItemCreated(item);

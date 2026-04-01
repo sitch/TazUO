@@ -40,6 +40,9 @@ internal static class EquipItem
 
         entity?.PushToBack(item);
 
+        if (entity is Mobile equipMob1)
+            equipMob1._equipmentGeneration++;
+
         if (item.Layer == Layer.Mount && entity is Mobile mob)
             mob.Mount = item;
 

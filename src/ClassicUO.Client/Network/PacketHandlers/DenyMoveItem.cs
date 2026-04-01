@@ -85,6 +85,9 @@ internal static class DenyMoveItem
                                 container.PushToBack(item);
                                 item.Container = container.Serial;
 
+                                if (container is Mobile denyMob)
+                                    denyMob._equipmentGeneration++;
+
                                 UIManager.GetGump<PaperDollGump>(item.Container)?.RequestUpdateContents();
                                 UIManager.GetGump<ModernPaperdoll>(item.Container)?.RequestUpdateContents();
                             }

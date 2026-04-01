@@ -104,6 +104,9 @@ internal static class UpdateObject
 
             obj.PushToBack(item);
 
+            if (obj is Mobile equipMob2)
+                equipMob2._equipmentGeneration++;
+
             itemSerial = p.ReadUInt32BE();
         }
 

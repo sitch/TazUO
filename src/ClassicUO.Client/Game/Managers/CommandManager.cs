@@ -8,6 +8,7 @@ using ClassicUO.Input;
 using ClassicUO.Resources;
 using ClassicUO.Utility.Logging;
 using System.Threading.Tasks;
+using ClassicUO.Assets;
 using ClassicUO.Game.Data;
 using ClassicUO.Game.UI.Gumps;
 using ClassicUO.Configuration;
@@ -281,6 +282,11 @@ namespace ClassicUO.Game.Managers
             Register("organize", (s) => OrganizerAgent.Instance?.OrganizerCommand(s));
             Register("organizer", (s) => OrganizerAgent.Instance?.OrganizerCommand(s));
             Register("organizerlist", (s) => OrganizerAgent.Instance?.ListOrganizers());
+            Register("stitchin", (s) =>
+            {
+                Stitchin.Enabled = !Stitchin.Enabled;
+                GameActions.Print($"Stitchin testing {(Stitchin.Enabled ? "enabled" : "disabled")}", Stitchin.Enabled ? Constants.HUE_SUCCESS : Constants.HUE_WARN);
+            });
         }
 
 
