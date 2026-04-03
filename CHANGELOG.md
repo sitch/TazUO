@@ -106,6 +106,7 @@ All notable changes to TazUO will be recorded here.
 * Added a set last target macro - ([bittiez](https://github.com/bittiez))
 * Added a toggle auto walk macro - ([bittiez](https://github.com/bittiez))
 * Added optional quest arrow to tmap and sos bottles - ([bittiez](https://github.com/bittiez))
-* Disabled automatic viewport resizing - ([bittiez](https://github.com/bittiez))
+* Disabled automatic viewport resizing - ([bittiez](https://github.com/bittiez))\
+* Improved map loading performance thanks to @mandlar's research
 
 ---
