@@ -250,7 +250,16 @@ namespace ClassicUO.Game.Map
             int mx = x % 8;
             int my = y % 8;
 
-            return blockIndex.MapFile.ReadAt<MapBlock>((long)blockIndex.MapAddress).Cells[(my << 3) + mx].Z;
+            if (!blockIndex.MapFile.ReadAt((long)blockIndex.MapAddress, out MapBlock block))
+            {
+                lock (MapFileIOLock)
+                {
+                    blockIndex.MapFile.Seek((long)blockIndex.MapAddress, SeekOrigin.Begin);
+                    return blockIndex.MapFile.Read<MapBlock>().Cells[(my << 3) + mx].Z;
+                }
+            }
+
+            return block.Cells[(my << 3) + mx].Z;
         }
 
         public void GetMapZ(int x, int y, out sbyte groundZ, out sbyte staticZ)

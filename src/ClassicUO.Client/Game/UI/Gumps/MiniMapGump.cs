@@ -16,6 +16,7 @@ using ClassicUO.Utility;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using System.Runtime.CompilerServices;
+using ClassicUO.Utility.Logging;
 
 namespace ClassicUO.Game.UI.Gumps
 {
@@ -283,7 +284,13 @@ namespace ClassicUO.Game.UI.Gumps
 
                     staticsZ.Fill(d);
 
-                    MapCellsArray cells = indexMap.MapFile.ReadAt<MapBlock>((long)indexMap.MapAddress).Cells;
+                    if (!indexMap.MapFile.ReadAt((long)indexMap.MapAddress, out MapBlock mblock))
+                    {
+                        Log.Error("Failed to read map for mini map gump");
+                        return;
+                    }
+
+                    MapCellsArray cells = mblock.Cells;
 
                     if (indexMap.StaticCount > 0)
                     {

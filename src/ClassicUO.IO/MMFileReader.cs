@@ -48,10 +48,28 @@ namespace ClassicUO.IO
         public override BinaryReader Reader => _file;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public override unsafe T ReadAt<T>(long offset) => Unsafe.ReadUnaligned<T>(_ptr + offset);
+        public override unsafe bool ReadAt<T>(long offset, out T obj)
+        {
+            int size = Unsafe.SizeOf<T>();
+
+            if ((ulong)offset > (ulong)Length || (ulong)size > (ulong)(Length - offset))
+            {
+                obj = default;
+                return false;
+            }
+
+            obj = Unsafe.ReadUnaligned<T>(_ptr + offset);
+            return true;
+        }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public override unsafe void ReadAt(long offset, Span<byte> buffer) => new ReadOnlySpan<byte>(_ptr + offset, buffer.Length).CopyTo(buffer);
+        public override unsafe bool ReadAt(long offset, Span<byte> buffer)
+        {
+            if ((ulong)offset > (ulong)Length || (ulong)buffer.Length > (ulong)(Length - offset)) return false;
+
+            new ReadOnlySpan<byte>(_ptr + offset, buffer.Length).CopyTo(buffer);
+            return true;
+        }
 
         public override void Dispose()
         {
