@@ -2140,7 +2140,16 @@ public class BaseOptionsGump : Gump
         private Combobox _comboBox;
         private readonly string[] options;
 
-        public ComboBoxWithLabel(World world, string label, int labelWidth, int comboWidth, string[] options, int selectedIndex, Action<int, string> onOptionSelected = null)
+        public ComboBoxWithLabel(
+            World world,
+            string label,
+            int labelWidth,
+            int comboWidth,
+            string[] options,
+            int selectedIndex,
+            Action<int, string> onOptionSelected = null,
+            bool autoSortComboboxItems = true
+        )
         {
             AcceptMouseInput = true;
             CanMove = true;
@@ -2152,7 +2161,7 @@ public class BaseOptionsGump : Gump
 
             Add
             (
-                _comboBox = new Combobox(world, comboWidth, options, selectedIndex, onOptionSelected: onOptionSelected)
+                _comboBox = new Combobox(world, comboWidth, options, selectedIndex, onOptionSelected: onOptionSelected, sortItems:autoSortComboboxItems)
                 {
                     X = _label.MeasuredSize.X + _label.X + 5
                 }
@@ -2224,7 +2233,15 @@ public class BaseOptionsGump : Gump
 
             private World world;
 
-            public Combobox(World world, int width, string[] items, int selected = -1, int maxHeight = 400, Action<int, string> onOptionSelected = null)
+            public Combobox(
+                World world,
+                int width,
+                string[] items,
+                int selected = -1,
+                int maxHeight = 400,
+                Action<int, string> onOptionSelected = null,
+                bool sortItems = true
+            )
             {
                 this.world = world;
                 Width = width;
@@ -2234,13 +2251,13 @@ public class BaseOptionsGump : Gump
                 OnOptionSelected = onOptionSelected;
                 AcceptMouseInput = true;
 
-                // Create sorted items with original index mapping
+                // When sorting is on, create a sorted items array with original index mapping
                 _originalIndices = Enumerable.Range(0, items.Length).ToArray();
                 _sortedItems = new string[items.Length];
                 Array.Copy(items, _sortedItems, items.Length);
 
-                // Sort both arrays together
-                Array.Sort(_sortedItems, _originalIndices);
+                if (sortItems)
+                    Array.Sort(_sortedItems, _originalIndices); // Sort both arrays together
 
                 // Find the display index for the selected original index
                 int displayIndex = selected > -1 ? Array.IndexOf(_originalIndices, selected) : -1;
