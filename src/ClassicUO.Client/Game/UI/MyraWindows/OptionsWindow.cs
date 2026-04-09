@@ -56,6 +56,7 @@ public class OptionsWindow : MyraControl
         SetupTerrainStatics();
         SetupSound();
         SetupVideo();
+        SetupInfoBarOptions();
     }
 
     private void Build()
@@ -654,6 +655,12 @@ public class OptionsWindow : MyraControl
         opt.Add(CreateCheckboxOption(lang.GetVideo.RockTreeShadows, profile.ShadowsStatics, b => profile.ShadowsStatics = b));
         opt.Add(CreateSliderOption(lang.GetVideo.TerrainShadowLevel, Constants.MIN_TERRAIN_SHADOWS_LEVEL, Constants.MAX_TERRAIN_SHADOWS_LEVEL,
             profile.TerrainShadowsLevel, f => profile.TerrainShadowsLevel = (int)f));
+    }
+
+    private void SetupInfoBarOptions()
+    {
+        if (!_options.ContainsKey("Info Bar")) _options.Add("Info Bar", new List<OptionItem>());
+        _options["Info Bar"].Add(new OptionItem("Info Bar", InfoBarOptionsContent.Build));
     }
 
     private class OptionItem(string searchText, Func<Widget> createWidget, string? tags = null)
