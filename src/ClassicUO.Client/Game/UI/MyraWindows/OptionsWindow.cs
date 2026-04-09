@@ -48,55 +48,9 @@ public class OptionsWindow : MyraControl
     {
         SetupGeneralOptions();
         SetupMobileOptions();
+        SetupInterfaceOptions();
+        SetupMiscOptions();
     }
-
-    private static OptionItem CreateCheckboxOption(string label, bool enabled, Action<bool> onChange,
-        string? tooltip = null) =>
-        new(label, () => MyraCheckButton.CreateWithCallback(enabled, onChange, label, tooltip));
-
-    private static OptionItem CreateSliderOption(string label, float min, float max, float value, Action<float> onChange) =>
-        new(label, () => MyraHSlider.SliderWithLabel(label, out _, onChange, min, max, value));
-
-    private static OptionItem CreateComboBox(string label, int value, string[] options, Action<int> onChange)
-    {
-        var comboView = new ComboView
-        {
-            MinWidth = 200,
-            VerticalAlignment = VerticalAlignment.Center,
-            HorizontalAlignment = HorizontalAlignment.Center
-        };
-
-        for (int i = 0; i < options.Length; i++)
-        {
-            string option = options[i];
-            comboView.ListView.Widgets.Add(new Label { Text = option, Tag = i });
-        }
-
-        comboView.ListView.SelectedIndex = value;
-
-        comboView.ListView.SelectedIndexChanged += (_, _) =>
-        {
-            if (comboView.ListView.SelectedIndex != null)
-                onChange(comboView.ListView.SelectedIndex.Value);
-        };
-
-        return new OptionItem(label, () => new MyraLabel(label, MyraLabel.TextStyle.P).PlaceBefore(comboView));
-    }
-
-    private static OptionItem CreateHuePicker(string label, ushort hue, Action<ushort> onChange) =>
-        new(label, () =>
-        {
-            var item = new MyraArtTexture(0x0FAB) { Tooltip = $"Current hue: {hue}" };
-            item.TouchUp += (_, _) =>
-            {
-                UIManager.GetGump<ModernColorPicker>()?.Dispose();
-                UIManager.Add(new ModernColorPicker(World.Instance, onChange));
-            };
-
-            return item;
-        });
-
-    private static OptionItem CreateSpacer() => new(string.Empty, () => new MyraSpacer(1, 3));
 
     private void Build()
     {
@@ -176,7 +130,6 @@ public class OptionsWindow : MyraControl
             };
         }
 
-
         tabButton.ApplyButtonStyle(_tabButtonStyle);
 
         return tabButton;
@@ -194,6 +147,66 @@ public class OptionsWindow : MyraControl
 
         _lastCategory = category;
     }
+
+    private static OptionItem CreateCheckboxOption(string label, bool enabled, Action<bool> onChange,
+        string? tooltip = null) =>
+        new(label, () => MyraCheckButton.CreateWithCallback(enabled, onChange, label, tooltip));
+
+    private static OptionItem CreateSliderOption(string label, float min, float max, float value,
+        Action<float> onChange) =>
+        new(label, () => MyraHSlider.SliderWithLabel(label, out _, onChange, min, max, value));
+
+    private static OptionItem CreateComboBox(string label, int value, string[] options, Action<int> onChange,
+        string? tooltip = null)
+    {
+        var comboView = new ComboView
+        {
+            MinWidth = 200,
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Center
+        };
+
+        if (tooltip != null) comboView.Tooltip = tooltip;
+
+        for (int i = 0; i < options.Length; i++)
+        {
+            string option = options[i];
+            comboView.ListView.Widgets.Add(new Label { Text = option, Tag = i });
+        }
+
+        comboView.ListView.SelectedIndex = value;
+
+        comboView.ListView.SelectedIndexChanged += (_, _) =>
+        {
+            if (comboView.ListView.SelectedIndex != null)
+                onChange(comboView.ListView.SelectedIndex.Value);
+        };
+
+        return new OptionItem(label, () => new MyraLabel(label, MyraLabel.TextStyle.P).PlaceBefore(comboView));
+    }
+
+    private static OptionItem CreateHuePicker(string label, ushort hue, Action<ushort> onChange) =>
+        new(label, () =>
+        {
+            var item = new MyraArtTexture(0x0FAB) { Tooltip = $"Current hue: {hue}" };
+            item.TouchUp += (_, _) =>
+            {
+                UIManager.GetGump<ModernColorPicker>()?.Dispose();
+                UIManager.Add(new ModernColorPicker(World.Instance, onChange));
+            };
+
+            return item;
+        });
+
+    private static OptionItem CreateInputField(string label, string text, Action<string> onChange,
+        string? tooltip = null) => new(label, () =>
+    {
+        HorizontalStackPanel wid = MyraInputBox.WithLabel(label, out MyraInputBox inputBox, text: text, tooltip: tooltip);
+        inputBox.TextChangedByUser += (_, _) => onChange(inputBox.Text);
+        return wid;
+    });
+
+    private static OptionItem CreateSpacer() => new(string.Empty, () => new MyraSpacer(1, 3));
 
     private void SetupGeneralOptions()
     {
@@ -308,6 +321,132 @@ public class OptionsWindow : MyraControl
         mobiles.Add(CreateCheckboxOption(lang.GetGeneral.AuraForParty, profile.PartyAura, b => profile.PartyAura = b));
         mobiles.Add(
             CreateHuePicker(lang.GetGeneral.AuraPartyColor, profile.PartyAuraHue, h => profile.PartyAuraHue = h));
+    }
+
+    private void SetupInterfaceOptions()
+    {
+        Profile profile = ProfileManager.CurrentProfile;
+        ModernOptionsGumpLanguage lang = Language.Instance.GetModernOptionsGumpLanguage;
+
+        if (!_options.ContainsKey("Interface")) _options.Add("Interface", new List<OptionItem>());
+        List<OptionItem> opt = _options["Interface"];
+
+        opt.Add(CreateCheckboxOption(lang.GetGeneral.DisableTopMenu, profile.TopbarGumpIsDisabled,
+            b => profile.TopbarGumpIsDisabled = b,
+            "The top menu is pretty vital in TazUO, we recommend leaving this unchecked."));
+
+        opt.Add(CreateSpacer());
+
+        opt.Add(CreateCheckboxOption(lang.GetGeneral.AltForAnchorsGumps, profile.HoldDownKeyAltToCloseAnchored,
+            b => profile.HoldDownKeyAltToCloseAnchored = b));
+        opt.Add(CreateCheckboxOption(lang.GetGeneral.AltToMoveGumps, profile.HoldAltToMoveGumps,
+            b => profile.HoldAltToMoveGumps = b));
+        opt.Add(CreateCheckboxOption(lang.GetGeneral.CloseEntireAnchorWithRClick,
+            profile.CloseAllAnchoredGumpsInGroupWithRightClick,
+            b => profile.CloseAllAnchoredGumpsInGroupWithRightClick = b));
+
+        opt.Add(CreateSpacer());
+
+        opt.Add(CreateCheckboxOption(lang.GetGeneral.OriginalSkillsGump, profile.StandardSkillsGump,
+            b => profile.StandardSkillsGump = b));
+        opt.Add(CreateCheckboxOption(lang.GetGeneral.OldStatusGump, profile.UseOldStatusGump,
+            b => profile.UseOldStatusGump = b));
+        opt.Add(CreateCheckboxOption(lang.GetGeneral.PartyInviteGump, profile.PartyInviteGump,
+            b => profile.PartyInviteGump = b));
+
+        opt.Add(CreateSpacer());
+
+        opt.Add(CreateCheckboxOption(lang.GetGeneral.ModernHealthBars, profile.CustomBarsToggled,
+            b => profile.CustomBarsToggled = b));
+        opt.Add(CreateCheckboxOption(lang.GetGeneral.ModernHPBlackBG, profile.CBBlackBGToggled,
+            b => profile.CBBlackBGToggled = b));
+        opt.Add(CreateCheckboxOption(lang.GetGeneral.SaveHPBars, profile.SaveHealthbars,
+            b => profile.SaveHealthbars = b));
+        opt.Add(CreateComboBox(lang.GetGeneral.CloseHPGumpsWhen, profile.CloseHealthBarType, [
+            lang.GetGeneral.CloseHPOptDisable, lang.GetGeneral.CloseHPOptOOR,
+            lang.GetGeneral.CloseHPOptDead, lang.GetGeneral.CloseHPOptBoth
+        ], b => profile.CloseHealthBarType = b));
+
+        opt.Add(CreateSpacer());
+
+        opt.Add(CreateComboBox(lang.GetGeneral.GridLoot, profile.GridLootType, [
+            lang.GetGeneral.GridLootOptDisable, lang.GetGeneral.GridLootOptOnly,
+            lang.GetGeneral.GridLootOptBoth
+        ], i => profile.GridLootType = i, "This is not the same as grid containers."));
+
+        opt.Add(CreateSpacer());
+
+        opt.Add(CreateCheckboxOption(lang.GetGeneral.ShiftContext, profile.HoldShiftForContext,
+            b => profile.HoldShiftForContext = b));
+        opt.Add(CreateCheckboxOption(lang.GetGeneral.ShiftSplit, profile.HoldShiftToSplitStack,
+            b => profile.HoldShiftToSplitStack = b));
+    }
+
+    private void SetupMiscOptions()
+    {
+        Profile profile = ProfileManager.CurrentProfile;
+        ModernOptionsGumpLanguage lang = Language.Instance.GetModernOptionsGumpLanguage;
+
+        if (!_options.ContainsKey("Misc")) _options.Add("Misc", new List<OptionItem>());
+        List<OptionItem> opt = _options["Misc"];
+
+        opt.Add(CreateCheckboxOption(lang.GetGeneral.EnableCOT, profile.UseCircleOfTransparency,
+            b => profile.UseCircleOfTransparency = b).SetTags("cot, circle of transparency"));
+        opt.Add(CreateSliderOption(lang.GetGeneral.COTDistance, Constants.MIN_CIRCLE_OF_TRANSPARENCY_RADIUS,
+            Constants.MAX_CIRCLE_OF_TRANSPARENCY_RADIUS, profile.CircleOfTransparencyRadius,
+            f => profile.CircleOfTransparencyRadius = (int)f).SetTags("cot, circle of transparency"));
+        opt.Add(CreateComboBox(lang.GetGeneral.COTType, profile.CircleOfTransparencyType, [
+            lang.GetGeneral.COTTypeOptFull, lang.GetGeneral.COTTypeOptGrad,
+            lang.GetGeneral.COTTypeOptModern
+        ], i => profile.CircleOfTransparencyType = i).SetTags("cot, circle of transparency"));
+
+        opt.Add(CreateSpacer());
+
+        opt.Add(CreateCheckboxOption(lang.GetGeneral.HideScreenshotMessage, profile.HideScreenshotStoredInMessage,
+            b => profile.HideScreenshotStoredInMessage = b));
+        opt.Add(CreateCheckboxOption(lang.GetGeneral.ObjFade, profile.UseObjectsFading,
+            b => profile.UseObjectsFading = b));
+        opt.Add(CreateCheckboxOption(lang.GetGeneral.TextFade, profile.TextFading, b => profile.TextFading = b));
+        opt.Add(CreateCheckboxOption(lang.GetGeneral.CursorRange, profile.ShowTargetRangeIndicator,
+            b => profile.ShowTargetRangeIndicator = b));
+
+        opt.Add(CreateSpacer());
+
+        opt.Add(CreateCheckboxOption(lang.GetGeneral.DragSelectHP, profile.EnableDragSelect,
+            b => profile.EnableDragSelect = b));
+        opt.Add(CreateComboBox(lang.GetGeneral.DragKeyMod, profile.DragSelectModifierKey, [
+            lang.GetGeneral.SharedNone, lang.GetGeneral.SharedCtrl, lang.GetGeneral.SharedShift,
+            lang.GetGeneral.SharedAlt
+        ], i => profile.DragSelectModifierKey = i));
+        opt.Add(CreateComboBox(lang.GetGeneral.DragPlayersOnly, profile.DragSelect_PlayersModifier, [
+            lang.GetGeneral.SharedNone, lang.GetGeneral.SharedCtrl, lang.GetGeneral.SharedShift,
+            lang.GetGeneral.SharedAlt
+        ], i => profile.DragSelect_PlayersModifier = i));
+        opt.Add(CreateComboBox(lang.GetGeneral.DragMobsOnly, profile.DragSelect_MonstersModifier, [
+            lang.GetGeneral.SharedNone, lang.GetGeneral.SharedCtrl, lang.GetGeneral.SharedShift,
+            lang.GetGeneral.SharedAlt
+        ], i => profile.DragSelect_MonstersModifier = i));
+        opt.Add(CreateComboBox(lang.GetGeneral.DragNameplatesOnly, profile.DragSelect_NameplateModifier, [
+            lang.GetGeneral.SharedNone, lang.GetGeneral.SharedCtrl, lang.GetGeneral.SharedShift,
+            lang.GetGeneral.SharedAlt
+        ], i => profile.DragSelect_NameplateModifier = i));
+        opt.Add(CreateInputField(lang.GetGeneral.DragX, profile.DragSelectStartX.ToString(), s =>
+        {
+            if (int.TryParse(s, out int result)) profile.DragSelectStartX = result;
+        }));
+        opt.Add(CreateInputField(lang.GetGeneral.DragY, profile.DragSelectStartY.ToString(), s =>
+        {
+            if (int.TryParse(s, out int result)) profile.DragSelectStartY = result;
+        }));
+
+        opt.Add(CreateSpacer());
+
+        opt.Add(CreateCheckboxOption(lang.GetGeneral.ShowStatsChangedMsg, profile.ShowStatsChangedMessage,
+            b => profile.ShowStatsChangedMessage = b));
+        opt.Add(CreateCheckboxOption(lang.GetGeneral.ShowSkillsChangedMsg, profile.ShowSkillsChangedMessage,
+            b => profile.ShowSkillsChangedMessage = b));
+        opt.Add(CreateSliderOption(lang.GetGeneral.ChangeVolume, 0, 100, profile.ShowSkillsChangedDeltaValue,
+            f => profile.ShowSkillsChangedDeltaValue = (int)f));
     }
 
     private class OptionItem(string searchText, Func<Widget> createWidget, string? tags = null)
