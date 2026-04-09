@@ -3,6 +3,8 @@
 All notable changes to Legacy TazUO will be documented in this file.
 
 ---
+## [4.5.22]
+- More fixes for EA publish
 
 ## [4.5.21]
 - Fixed an issue with recent animation loading causing a crash after latest EA publish

@@ -164,8 +164,7 @@ namespace ClassicUO.Assets
                             }
 
                             //uint number = uint.Parse(parts[2], NumberStyles.HexNumber);
-
-                            if (!uint.TryParse(parts[2], out uint number))
+                            if (!uint.TryParse(parts[2], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out uint number))
                             {
                                 Log.Error($"Failed to parse expected number. {parts[2]} - {id}");
                                 continue;
