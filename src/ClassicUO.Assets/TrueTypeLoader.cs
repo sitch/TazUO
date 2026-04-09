@@ -82,6 +82,10 @@ public class TrueTypeLoader
     public const string EMBEDDED_FONT = EmbeddedFontNames.ROBOTO;
 
     private readonly Dictionary<string, FontSystem> _fonts = new();
+    /// <summary>
+    /// Contains the names of all available system fonts.
+    /// This can be used to render a font list without loading the fonts into memory
+    /// </summary>
     private HashSet<string> _availableSystemFontFamilyNames = [];
 
     private TrueTypeLoader()
@@ -105,7 +109,7 @@ public class TrueTypeLoader
     }
 
     /// <summary>
-    /// Loads user-provided fonts present in the 'Fonts' directory
+    ///     Loads user-provided fonts present in the 'Fonts' directory
     /// </summary>
     private void LoadUserFonts()
     {
@@ -124,7 +128,7 @@ public class TrueTypeLoader
     }
 
     /// <summary>
-    /// Populates an in-memory cache of available font family names
+    ///     Populates an in-memory cache of available font family names
     /// </summary>
     private void PopulateAvailableSystemFontFamilyNames() => _availableSystemFontFamilyNames =
         [..SystemFontProvider.GetSystemFonts().Select(f => f.FamilyName)];
@@ -154,6 +158,7 @@ public class TrueTypeLoader
 
         try
         {
+            // The result of .Get can't actually be null but doesn't hurt to be defensive.
             cachedData = CacheManager.Instance.Get(cacheDefinition) ?? new FontCacheData();
             cachedData.DoNotLoadFamilies ??= [];
 
@@ -201,9 +206,18 @@ public class TrueTypeLoader
         }
 
         stopwatch.Stop();
-        Log.Debug($"System fonts cache build concluded. Processed total of {totalLoaded} fonts over {familyCount} families in {stopwatch.ElapsedMilliseconds}ms");
+        Log.Debug(
+            $"System fonts cache build concluded. Processed total of {totalLoaded} fonts over {familyCount} families in {stopwatch.ElapsedMilliseconds}ms");
     }
 
+    /// <summary>
+    ///     Creates a FontSystem object for a given FontsByFamily object
+    /// </summary>
+    /// <param name="family">The family to create a <see cref="FontSystem" /> of</param>
+    /// <returns>
+    ///     A tuple containing the number of fonts loaded and the created <see cref="FontSystem" />
+    ///     object, or (0, null) if the family is empty or could not be loaded
+    /// </returns>
     private (int LoadedCount, FontSystem FontSys) CreateFontSystemForFamily(FontsByFamily family)
     {
         if (family.FontFaces.Length <= 0)
@@ -228,6 +242,14 @@ public class TrueTypeLoader
         return (numLoadedInSystem, numLoadedInSystem > 0 ? fontSystem : null);
     }
 
+    /// <summary>
+    ///     Loads a font family and returns a FontSystem object if successful
+    /// </summary>
+    /// <param name="family">The family to load</param>
+    /// <returns>
+    ///     A <see cref="FontSystem" /> object created for the family or <c>null</c> of the family is empty or could not
+    ///     be loaded
+    /// </returns>
     private FontSystem LoadAndGetFontByFamily(FontsByFamily family)
     {
         (int loadedInFamily, FontSystem fontSystem) = CreateFontSystemForFamily(family);
@@ -243,7 +265,9 @@ public class TrueTypeLoader
         return loadedInFamily > 0 ? fontSystem : null;
     }
 
-
+    /// <summary>
+    ///     Loads the fonts embedded into the TUO binary
+    /// </summary>
     private void LoadEmbeddedFonts()
     {
         var settings = new FontSystemSettings();
@@ -320,7 +344,7 @@ public class TrueTypeLoader
 
 internal class FontCacheData
 {
-    public DateTime? LastUpdated { get; set; } = null;
+    public DateTime? LastUpdated { get; set; }
     public List<string> DoNotLoadFamilies { get; set; } = [];
 
     [JsonIgnore]
