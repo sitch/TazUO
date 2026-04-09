@@ -22,6 +22,9 @@ All notable changes to TazUO will be recorded here.
 * Updated TazUO User and Channel areas to not stretch the entire screen when full - ([bittiez](https://github.com/bittiez))
 * Split stack gump now accepts spacebar in addition to enter to accept the amount - ([bittiez](https://github.com/bittiez))
 
+### Fixes
+* Fix for latest UO Publish causing a crash in animation loading - ([bittiez](https://github.com/bittiez))
+
 ## V5.1.0
 
 ### Assistant

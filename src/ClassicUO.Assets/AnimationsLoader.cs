@@ -165,14 +165,20 @@ namespace ClassicUO.Assets
 
                             if (commentIdx > 0)
                             {
-                                parts[2] = parts[2].Substring(0, commentIdx - 1);
+                                parts[2] = parts[2].Substring(0, commentIdx - 1).Trim();
                             }
                             else if (commentIdx == 0)
                             {
                                 continue;
                             }
 
-                            uint number = uint.Parse(parts[2], NumberStyles.HexNumber);
+                            //uint number = uint.Parse(parts[2], NumberStyles.HexNumber);
+
+                            if (!uint.TryParse(parts[2], out uint number))
+                            {
+                                Log.Error("Failed to parse expected number.");
+                                continue;
+                            }
 
                             for (int i = 0; i < 5; i++)
                             {
