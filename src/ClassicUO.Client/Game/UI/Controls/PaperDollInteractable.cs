@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: BSD-2-Clause
 
+using System;
 using System.Collections.Generic;
 using ClassicUO.Assets;
 using ClassicUO.Configuration;
@@ -10,14 +11,21 @@ using ClassicUO.Game.UI.Gumps;
 using ClassicUO.Input;
 using ClassicUO.Utility;
 using ClassicUO.Utility.Logging;
+using Microsoft.Scripting.Utils;
 using Microsoft.Xna.Framework;
 
 namespace ClassicUO.Game.UI.Controls
 {
     public class PaperDollInteractable : Control
     {
+        /// <summary>
+        /// Note: This array may get mutated by <see cref="GetOrderedLayers"/> to better fit niche edge
+        /// cases like Eventine's customer paperdoll backgrounds.
+        ///
+        /// The mutation saves time on re-orders but be careful not to strictly rely on the order of this member
+        /// </summary>
         private static readonly Layer[] _layerOrder =
-        {
+        [
             Layer.Cloak,
             Layer.Shirt,
             Layer.Pants,
@@ -41,10 +49,16 @@ namespace ClassicUO.Game.UI.Controls
             Layer.OneHanded,
             Layer.TwoHanded,
             Layer.Talisman
-        };
+        ];
 
-        private static readonly Layer[] _layerOrder_quiver_fix =
-        {
+        /// <summary>
+        /// Note: This array may get mutated by <see cref="GetOrderedLayers"/> to better fit niche edge
+        /// cases like Eventine's customer paperdoll backgrounds.
+        ///
+        /// The mutation saves time on re-orders but be careful not to strictly rely on the order of this member
+        /// </summary>
+        private static readonly Layer[] _layerOrderQuiverFix =
+        [
             Layer.Shirt,
             Layer.Pants,
             Layer.Shoes,
@@ -68,10 +82,16 @@ namespace ClassicUO.Game.UI.Controls
             Layer.OneHanded,
             Layer.TwoHanded,
             Layer.Talisman
-        };
+        ];
 
-        private static readonly Layer[] _layerOrder_parrot_fix =
-        {
+        /// <summary>
+        /// Note: This array may get mutated by <see cref="GetOrderedLayers"/> to better fit niche edge
+        /// cases like Eventine's customer paperdoll backgrounds.
+        ///
+        /// The mutation saves time on re-orders but be careful not to strictly rely on the order of this member
+        /// </summary>
+        private static readonly Layer[] _layerOrderParrotFix =
+        [
             Layer.Shirt,
             Layer.Pants,
             Layer.Shoes,
@@ -95,11 +115,11 @@ namespace ClassicUO.Game.UI.Controls
             Layer.TwoHanded,
             Layer.Talisman,
             Layer.Robe
-        };
+        ];
 
         private readonly PaperDollGump _paperDollGump;
 
-        private bool _updateUI;
+        private bool _updateUi;
 
         public PaperDollInteractable(int x, int y, uint serial, PaperDollGump paperDollGump, double scale = 1f)
         {
@@ -108,7 +128,7 @@ namespace ClassicUO.Game.UI.Controls
             _paperDollGump = paperDollGump;
             AcceptMouseInput = false;
             LocalSerial = serial;
-            _updateUI = true;
+            _updateUi = true;
 
             // Only set Scale/InternalScale for non-ScalableGump parents
             // ScalableGump.Add() will handle scaling automatically
@@ -121,11 +141,11 @@ namespace ClassicUO.Game.UI.Controls
         {
             base.Update();
 
-            if (_updateUI)
+            if (_updateUi)
             {
                 UpdateUI();
 
-                _updateUI = false;
+                _updateUi = false;
             }
         }
 
@@ -133,7 +153,7 @@ namespace ClassicUO.Game.UI.Controls
         {
             // Only trigger update when ENABLING fake item, not when disabling
             // Disabling should be followed by an explicit RequestUpdate() call
-            _updateUI = !HasFakeItem && value;
+            _updateUi = !HasFakeItem && value;
             HasFakeItem = value;
         }
 
@@ -212,15 +232,12 @@ namespace ClassicUO.Game.UI.Controls
             }
 
             // equipment
-            Item equipItem = mobile.FindItemByLayer(Layer.Cloak);
             Item arms = mobile.FindItemByLayer(Layer.Arms);
-            Item robe = mobile.FindItemByLayer(Layer.Robe);
-
-            bool switch_arms_with_torso = false;
+            bool switchArmsWithTorso = false;
 
             if (arms != null)
             {
-                switch_arms_with_torso = arms.Graphic == 0x1410 || arms.Graphic == 0x1417;
+                switchArmsWithTorso = arms.Graphic is 0x1410 or 0x1417;
             }
             else if (
                 HasFakeItem
@@ -229,48 +246,20 @@ namespace ClassicUO.Game.UI.Controls
                 && (byte)Layer.Arms == Client.Game.UO.GameCursor.ItemHold.ItemData.Layer
             )
             {
-                switch_arms_with_torso =
+                switchArmsWithTorso =
                     Client.Game.UO.GameCursor.ItemHold.Graphic == 0x1410
                     || Client.Game.UO.GameCursor.ItemHold.Graphic == 0x1417;
             }
 
-            Layer[] layers;
+            // Gets the paperdoll layers in the correct order.
+            Layer[] layers = GetOrderedLayers(mobile);
 
-            if (equipItem != null)
-            {
-                if (robe != null && (robe.Graphic == 0xA2CB || robe.Graphic == 0xA2CA)) // parrot
-                {
-                    layers = _layerOrder_parrot_fix;
-                }
-                else
-                {
-                    layers = equipItem.ItemData.IsContainer ? _layerOrder_quiver_fix : _layerOrder;
-
-                    if(Settings.GlobalSettings.CustomServer == Settings.CustomServers.Eventine)
-                        layers = equipItem.ItemData.IsContainer ? _layerOrder_quiver_fix : equipItem.Graphic == 0xA413 ? _layerOrder_quiver_fix : _layerOrder;
-                }
-            }
-            else if (
-                HasFakeItem
-                && Client.Game.UO.GameCursor.ItemHold.Enabled
-                && !Client.Game.UO.GameCursor.ItemHold.IsFixedPosition
-                && (byte)Layer.Cloak == Client.Game.UO.GameCursor.ItemHold.ItemData.Layer
-            )
-            {
-                layers = Client.Game.UO.GameCursor.ItemHold.ItemData.IsContainer
-                    ? _layerOrder_quiver_fix
-                    : _layerOrder;
-            }
-            else
-            {
-                layers = _layerOrder;
-            }
-
+            Item equipItem;
             for (int i = 0; i < layers.Length; i++)
             {
                 Layer layer = layers[i];
 
-                if (switch_arms_with_torso)
+                if (switchArmsWithTorso)
                 {
                     if (layer == Layer.Arms)
                     {
@@ -423,7 +412,77 @@ namespace ClassicUO.Game.UI.Controls
             }
         }
 
-        public void RequestUpdate() => _updateUI = true;
+        /// <summary>
+        /// Gets the paperdoll layers in the correct order.
+        /// Note that this method <b>mutates the static layer order</b> in order to avoid re-computation
+        /// </summary>
+        /// <param name="mob">The mobile who's paperdoll is being rendered</param>
+        /// <returns>An ordered array of layers. Note that this is <b>reference</b> to the static member so <b>do not modify it!</b></returns>
+        private Layer[] GetOrderedLayers(Mobile mob)
+        {
+            Layer[] layers = GetLayers(mob);
+            OrderLayersInPlace(layers);
+            return layers;
+        }
+
+        /// <summary>
+        /// Gets the paperdoll layers in the standard order
+        /// </summary>
+        /// <param name="mob">The mobile who's paperdoll is being rendered</param>
+        /// <returns>A <b>reference</b> to the relevant static layers order member</returns>
+        private Layer[] GetLayers(Mobile mob)
+        {
+            Item cloak = mob.FindItemByLayer(Layer.Cloak);
+            Item robe = mob.FindItemByLayer(Layer.Robe);
+
+            if (cloak != null)
+            {
+                if (robe != null && robe.Graphic is 0xA2CA or 0xA2CB) // parrot
+                    return _layerOrderParrotFix;
+
+                if (cloak.ItemData.IsContainer ||
+                    (Settings.GlobalSettings.CustomServer == Settings.CustomServers.Eventine &&
+                     cloak.Graphic == 0xA413)
+                   )
+                    return _layerOrderQuiverFix;
+
+                return _layerOrder;
+            }
+
+            if (
+                HasFakeItem
+                && Client.Game.UO.GameCursor.ItemHold.Enabled
+                && !Client.Game.UO.GameCursor.ItemHold.IsFixedPosition
+                && (byte)Layer.Cloak == Client.Game.UO.GameCursor.ItemHold.ItemData.Layer
+            )
+                return Client.Game.UO.GameCursor.ItemHold.ItemData.IsContainer
+                    ? _layerOrderQuiverFix
+                    : _layerOrder;
+
+            return _layerOrder;
+        }
+
+        /// <summary>
+        /// Re-orders the given layers array <b>in place</b>.
+        /// This allows for customizations for servers like Eventine where layers may deviate from the standard order.
+        /// </summary>
+        /// <param name="layers">The layers array to sort <b>in place</b></param>
+        private static void OrderLayersInPlace(Layer[] layers)
+        {
+            // When dealing with Eventine, the legs layer is always the first one.
+            // Other server-specific ordering quirks can be added here later as necessary.
+            if (Settings.GlobalSettings.CustomServer != Settings.CustomServers.Eventine || layers == null || layers.Length < 2)
+                return;
+
+            int legsLayerIdx = layers.FindIndex(l => l == Layer.Legs);
+            if (legsLayerIdx <= 0)
+                return;
+
+            Array.Copy(layers, 0, layers, 1, legsLayerIdx);
+            layers[0] = Layer.Legs;
+        }
+
+        public void RequestUpdate() => _updateUi = true;
 
         protected static ushort GetAnimID(ushort mobileGraphic, ushort itemGraphic, ushort animID, bool isfemale)
         {
