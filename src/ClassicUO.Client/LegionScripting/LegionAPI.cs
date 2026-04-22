@@ -25,6 +25,7 @@ using Control = ClassicUO.Game.UI.Controls.Control;
 using Label = ClassicUO.Game.UI.Controls.Label;
 using Lock = ClassicUO.Game.Data.Lock;
 using CUOKeyboard = ClassicUO.Input.Keyboard;
+using Timer = System.Timers.Timer;
 
 namespace ClassicUO.LegionScripting
 {
@@ -39,6 +40,9 @@ namespace ClassicUO.LegionScripting
         private readonly Queue<Action> _scheduledCallbacks = new();
         private static readonly ConcurrentDictionary<string, object> _sharedVars = new();
         private readonly ConcurrentDictionary<string, object> _hotkeyCallbacks = new();
+
+        private uint _timedCallbackCurrentId;
+        private readonly ConcurrentDictionary<uint, TimedCallback> _timedCallbacks = new();
         private readonly ConcurrentDictionary<string, bool> _pressedKeys = new();
         private readonly ConcurrentDictionary<string, string> _keyToHotkeyMap = new();
 
@@ -228,6 +232,15 @@ namespace ClassicUO.LegionScripting
 
             _hotkeyCallbacks.Clear();
             _pressedKeys.Clear();
+
+            // Dispose of any timed callbacks
+            foreach (TimedCallback callback in _timedCallbacks.Values)
+            {
+                callback.Timer?.Stop();
+                callback.Timer?.Dispose();
+            }
+            _timedCallbacks.Clear();
+
             CancellationToken.Dispose();
         }
 
@@ -407,6 +420,68 @@ namespace ClassicUO.LegionScripting
             }
             EnsureKeyboardHook();
             _hotkeyCallbacks[normalized] = callback;
+        }
+
+        /// <summary>
+        /// Schedules a callback to be invoked after a specified delay.
+        ///
+        /// Note that as with keyboard hotkeys, you must call `ProcessCallbacks` for the callback to actually be run.
+        /// </summary>
+        /// <param name="delayMs">
+        /// The delay, in milliseconds, after which to invoke the callback.
+        /// <br/>
+        /// The minimum delay is 5ms.
+        /// </param>
+        /// <param name="callback">The callback to invoke</param>
+        /// <param name="timesToRepeat">
+        /// The number of times the callback the callback should be repeated after the initial invocation.
+        /// Repeated invocations respect the requested delay.
+        /// A negative number means "forever", 0 means "do not repeat" (i.e., invoke once) and positive numbers mean "repeat N times".
+        /// A repeat of '9', for example, will result in 10 total invocations (1 initial + 9 repeats).
+        /// </param>
+        /// <returns>
+        /// An unsigned integer serving as the ID for the callback timer.
+        /// <br/>
+        /// Can be used to unregister the callback
+        /// </returns>
+        public uint ScheduleTimedCallback(uint delayMs, Action callback, int timesToRepeat = -1)
+        {
+            uint clampedDelay = Math.Max(5, delayMs);
+
+            uint id = Interlocked.Increment(ref _timedCallbackCurrentId);
+            var timer = new Timer(clampedDelay) { AutoReset = false };
+            var callbackData = new TimedCallback(timer, timesToRepeat);
+            timer.Elapsed += (_, _) =>
+            {
+                if (_disposed || !_timedCallbacks.ContainsKey(id))
+                    return;
+
+                ScheduleCallbackActions([WrapScriptCallback(callback)]);
+
+                callbackData.TimesInvoked++;
+                if (callbackData.TimesToRepeat < 0 || callbackData.TimesInvoked <= (ulong)callbackData.TimesToRepeat)
+                    timer.Start();
+                else
+                    RemoveTimedCallback(id);
+            };
+
+            _timedCallbacks[id] = callbackData;
+            timer.Start();
+
+            return id;
+        }
+
+        /// <summary>
+        /// Removes a previously scheduled timed callback
+        /// </summary>
+        /// <param name="id">The callback's ID, as returned by `ScheduleTimedCallback`</param>
+        public void RemoveTimedCallback(uint id)
+        {
+            if (!_timedCallbacks.TryRemove(id, out TimedCallback callback))
+                return;
+
+            callback.Timer?.Stop();
+            callback.Timer?.Dispose();
         }
 
         /// <summary>

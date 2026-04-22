@@ -21,7 +21,7 @@ You can now type `-updateapi` in game to download the latest API.py file.
 
 [Additional notes](../notes/)  
 
-*This was generated on `4/9/26`.*
+*This was generated on `4/22/26`.*
 
 ## Properties
 ### `Events`
@@ -218,8 +218,41 @@ You can now type `-updateapi` in game to download the latest API.py file.
 | Name | Type | Optional | Description |
 | --- | --- | --- | --- |
 | `key` | `string` | ❌ No | Key combination to listen for, e.g. "CTRL+SHIFT+F1". |
-| `callback` | `object` | ✅ Yes | Python function to invoke when the hotkey is pressed.  
-         If <c>null</c> , the hotkey will be unregistered. |
+| `callback` | `object` | ✅ Yes | Python function to invoke when the hotkey is pressed.<br>         If `null` , the hotkey will be unregistered. |
+
+**Return Type:** `void` *(Does not return anything)*
+
+---
+
+### ScheduleTimedCallback
+`(delayMs, callback, timesToRepeat)`
+ Schedules a callback to be invoked after a specified delay.
+
+ Note that as with keyboard hotkeys, you must call `ProcessCallbacks` for the callback to actually be run.
+
+
+**Parameters:**
+
+| Name | Type | Optional | Description |
+| --- | --- | --- | --- |
+| `delayMs` | `uint` | ❌ No | The delay, in milliseconds, after which to invoke the callback.<br>         <br/>  The minimum delay is 5ms. |
+| `callback` | `Action` | ❌ No | The callback to invoke |
+| `timesToRepeat` | `int` | ✅ Yes | The number of times the callback the callback should be repeated after the initial invocation.<br>         Repeated invocations respect the requested delay.<br>         A negative number means "forever", 0 means "do not repeat" (i.e., invoke once) and positive numbers mean "repeat N times".<br>         A repeat of '9', for example, will result in 10 total invocations (1 initial + 9 repeats). |
+
+**Return Type:** `uint`
+
+---
+
+### RemoveTimedCallback
+`(id)`
+ Removes a previously scheduled timed callback
+
+
+**Parameters:**
+
+| Name | Type | Optional | Description |
+| --- | --- | --- | --- |
+| `id` | `uint` | ❌ No | The callback's ID, as returned by `ScheduleTimedCallback` |
 
 **Return Type:** `void` *(Does not return anything)*
 
@@ -682,8 +715,7 @@ You can now type `-updateapi` in game to download the latest API.py file.
 | Name | Type | Optional | Description |
 | --- | --- | --- | --- |
 | `serial` | `uint` | ✅ Yes | The serial of the item to pick up. |
-| `amt` | `int` | ✅ Yes | The amount of the item to pick up.  
-         If 0, the full stack will be picked up (if stackable). |
+| `amt` | `int` | ✅ Yes | The amount of the item to pick up.<br>         If 0, the full stack will be picked up (if stackable). |
 
 **Return Type:** `void` *(Does not return anything)*
 
@@ -699,14 +731,10 @@ You can now type `-updateapi` in game to download the latest API.py file.
 | Name | Type | Optional | Description |
 | --- | --- | --- | --- |
 | `serial` | `uint` | ✅ Yes | The unique serial identifier of the item to drop. |
-| `x` | `int` | ✅ Yes | The X coordinate of the ground drop location, or the X position inside a container if a container is specified.  
-         If not specified, defaults to the player's current X position. |
-| `y` | `int` | ✅ Yes | The Y coordinate of the ground drop location, or the X position inside a container if a container is specified.  
-         If not specified, defaults to the player's current Y position. |
-| `z` | `int` | ✅ Yes | The Z coordinate (elevation) of the ground drop location. Unused if dropping into container.  
-         If not specified, defaults to the Z value of the static or map land at (x, y) if x and y are specified. |
-| `container` | `uint` | ✅ Yes | The serial of the container to drop the item into.  
-         If unspecified, the item will be dropped on the ground. |
+| `x` | `int` | ✅ Yes | The X coordinate of the ground drop location, or the X position inside a container if a container is specified.<br>         If not specified, defaults to the player's current X position. |
+| `y` | `int` | ✅ Yes | The Y coordinate of the ground drop location, or the X position inside a container if a container is specified.<br>         If not specified, defaults to the player's current Y position. |
+| `z` | `int` | ✅ Yes | The Z coordinate (elevation) of the ground drop location. Unused if dropping into container.<br>         If not specified, defaults to the Z value of the static or map land at (x, y) if x and y are specified. |
+| `container` | `uint` | ✅ Yes | The serial of the container to drop the item into.<br>         If unspecified, the item will be dropped on the ground. |
 
 **Return Type:** `void` *(Does not return anything)*
 
@@ -1753,7 +1781,7 @@ You can now type `-updateapi` in game to download the latest API.py file.
 
 ### RequestAnyTarget
 `(timeout)`
- Prompts the player to target any object in the game world, including an <c>Item</c> , <c>Mobile</c> , <c>Land</c> tile, <c>Static</c> , or <c>Multi</c> .
+ Prompts the player to target any object in the game world, including an `Item` , `Mobile` , `Land` tile, `Static` , or `Multi` .
  Waits for the player to select a target within a given timeout period.
 
 
@@ -1761,8 +1789,7 @@ You can now type `-updateapi` in game to download the latest API.py file.
 
 | Name | Type | Optional | Description |
 | --- | --- | --- | --- |
-| `timeout` | `double` | ✅ Yes | The maximum time, in seconds, to wait for a valid target selection.  
-         If the timeout expires without a selection, the method returns <c>null</c> . |
+| `timeout` | `double` | ✅ Yes | The maximum time, in seconds, to wait for a valid target selection.<br>         If the timeout expires without a selection, the method returns `null` . |
 
 **Return Type:** `ApiGameObject`
 
