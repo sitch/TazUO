@@ -73,6 +73,14 @@ namespace ClassicUO.Game.GameObjects
         public readonly HashSet<uint> AutoOpenedCorpses = new HashSet<uint>();
         public readonly HashSet<uint> ManualOpenedCorpses = new HashSet<uint>();
 
+        // Offset vector indexed by (Direction & Direction.Mask). Matches the
+        // Pathfinder _offsetX/Y tables.
+        private static readonly int[] _doorScanOffsetX = { 0, 1, 1, 1, 0, -1, -1, -1 };
+        private static readonly int[] _doorScanOffsetY = { -1, -1, 0, 1, 1, 1, 0, -1 };
+        // Per-door click debounce — see TryOpenDoors.
+        private const uint DOOR_REOPEN_COOLDOWN_MS = 1000;
+        private readonly Dictionary<uint, uint> _recentDoorClickTicks = new();
+
         public short ColdResistance;
         public short DamageIncrease;
         public short DamageMax;
@@ -424,31 +432,52 @@ namespace ClassicUO.Game.GameObjects
         // bumps into a door while already facing it (no position/direction change → the
         // OnPositionChanged/OnDirectionChanged hooks below don't fire).
         //
-        // Checks all 8 adjacent tiles rather than only the one in player's facing
-        // direction — opens any adjacent door regardless of which way the player is
-        // looking. The double-click goes through GameActions.DoubleClick (packet 0x06)
-        // because the In Mani Ylem shard rejects the dedicated 0x12/0x58 Open Door
-        // packet and rubberbands the player. See IN-MANI-YLEM-SERVER-PROFILE.md
-        // "Door interaction".
-        public void TryOpenDoors()
+        // Acts only on doors in the player's forward half-plane (the 3 tiles in facing
+        // direction, by dx*fdx + dy*fdy > 0). Doors sideways or behind are ignored — so
+        // a hard turn at a corner near an open door can't re-trigger a double-click on
+        // the just-passed door. A per-serial cooldown is a second defense, because the
+        // IsImpassable open/closed signal is not always trustworthy here (the shard's
+        // TileData and/or the client's local graphic state can lag the actual door
+        // state).
+        //
+        // `includeOpen` lets the DenyWalk path bypass the IsImpassable early-out so we
+        // can also close an open door that's blocking the direction we just tried to
+        // walk (some doors on this shard swing into the corridor when open).
+        //
+        // The double-click goes through GameActions.DoubleClick (packet 0x06) because
+        // the In Mani Ylem shard rejects the dedicated 0x12/0x58 Open Door packet and
+        // rubberbands the player. See IN-MANI-YLEM-SERVER-PROFILE.md "Door interaction".
+        public void TryOpenDoors(bool includeOpen = false)
         {
             if (World.Player.IsDead || !ProfileManager.CurrentProfile.AutoOpenDoors) return;
 
             int px = X, py = Y, pz = Z;
+            int dirIdx = (int)(Direction & Direction.Mask);
+            int fdx = _doorScanOffsetX[dirIdx];
+            int fdy = _doorScanOffsetY[dirIdx];
+            uint now = Time.Ticks;
 
             foreach (Item s in World.Items.Values)
             {
                 if (!s.ItemData.IsDoor) continue;
-                // Skip already-open doors: open-door graphics drop the Impassable flag
-                // while closed-door graphics keep it. Avoids the double-click toggling
-                // an open door shut as the player walks past.
-                if (!s.ItemData.IsImpassable) continue;
+                // Cheap early-out: skip clearly-passable open doors when caller didn't
+                // ask to include them. Not reliable on this shard (see header), so
+                // the half-plane filter below is the real defense.
+                if (!includeOpen && !s.ItemData.IsImpassable) continue;
                 if (s.Z + 15 < pz || s.Z - 15 > pz) continue;
                 int dx = s.X - px;
                 int dy = s.Y - py;
                 if (dx < -1 || dx > 1 || dy < -1 || dy > 1) continue;
                 if (dx == 0 && dy == 0) continue; // skip player's own tile
+                // Forward half-plane: door must be in front of (or fore-side of) the
+                // player relative to facing. dot product > 0 ⇒ 3 of 8 surrounding tiles
+                // qualify for cardinal/diagonal facing alike.
+                if (dx * fdx + dy * fdy <= 0) continue;
+                if (_recentDoorClickTicks.TryGetValue(s.Serial, out uint last) &&
+                    now - last < DOOR_REOPEN_COOLDOWN_MS)
+                    continue;
                 GameActions.DoubleClick(World, s.Serial);
+                _recentDoorClickTicks[s.Serial] = now;
                 break;
             }
         }

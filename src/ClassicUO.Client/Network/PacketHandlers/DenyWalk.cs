@@ -23,8 +23,10 @@ internal static class DenyWalk
 
         // If the server denied the walk because a door was blocking, try to open it.
         // OnPositionChanged/OnDirectionChanged would not have fired in this case (the
-        // player neither moved nor turned), so the bump itself is the only signal we get.
-        world.Player.TryOpenDoors();
+        // player neither moved nor turned), so the bump itself is the only signal we
+        // get. includeOpen: true so we also close an open-but-blocking door (some
+        // doors on this shard swing into the corridor when opened).
+        world.Player.TryOpenDoors(includeOpen: true);
 
         world.Weather.Reset();
     }
