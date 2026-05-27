@@ -420,17 +420,36 @@ namespace ClassicUO.Game.GameObjects
             TryOpenDoors();
         }
 
-        private void TryOpenDoors()
+        // Public so the DenyWalk packet handler can also trigger this when the player
+        // bumps into a door while already facing it (no position/direction change → the
+        // OnPositionChanged/OnDirectionChanged hooks below don't fire).
+        //
+        // Checks all 8 adjacent tiles rather than only the one in player's facing
+        // direction — opens any adjacent door regardless of which way the player is
+        // looking. The double-click goes through GameActions.DoubleClick (packet 0x06)
+        // because the In Mani Ylem shard rejects the dedicated 0x12/0x58 Open Door
+        // packet and rubberbands the player. See IN-MANI-YLEM-SERVER-PROFILE.md
+        // "Door interaction".
+        public void TryOpenDoors()
         {
-            if (!World.Player.IsDead && ProfileManager.CurrentProfile.AutoOpenDoors)
-            {
-                int x = X, y = Y, z = Z;
-                Pathfinder.GetNewXY((byte)Direction, ref x, ref y);
+            if (World.Player.IsDead || !ProfileManager.CurrentProfile.AutoOpenDoors) return;
 
-                if (World.Items.Values.Any(s => s.ItemData.IsDoor && s.X == x && s.Y == y && s.Z - 15 <= z && s.Z + 15 >= z))
-                {
-                    GameActions.OpenDoor();
-                }
+            int px = X, py = Y, pz = Z;
+
+            foreach (Item s in World.Items.Values)
+            {
+                if (!s.ItemData.IsDoor) continue;
+                // Skip already-open doors: open-door graphics drop the Impassable flag
+                // while closed-door graphics keep it. Avoids the double-click toggling
+                // an open door shut as the player walks past.
+                if (!s.ItemData.IsImpassable) continue;
+                if (s.Z + 15 < pz || s.Z - 15 > pz) continue;
+                int dx = s.X - px;
+                int dy = s.Y - py;
+                if (dx < -1 || dx > 1 || dy < -1 || dy > 1) continue;
+                if (dx == 0 && dy == 0) continue; // skip player's own tile
+                GameActions.DoubleClick(World, s.Serial);
+                break;
             }
         }
 

@@ -19,6 +19,18 @@ namespace ClassicUO.Game.GameObjects
     public partial class Item
     {
         private static EquipConvData? _equipConvData;
+        // Electric teal — outline for lockpickable ground containers that haven't
+        // been picked yet (or have content visible — "(1 items, …)").
+        private static readonly Color _unpickedChestGlowColor = new Color(0x00, 0xFF, 0xC4);
+        // Faded teal — outline for chests we've previously picked and looted (in
+        // chestmaster_chests.csv AND tooltip shows "(0 items, 0 stones)"). Darker
+        // and slightly desaturated relative to the bright unpicked color, so the
+        // family connection is obvious but it doesn't compete visually.
+        private static readonly Color _lootedChestGlowColor = new Color(0x2D, 0x75, 0x60);
+        // Electric magenta — outline for chests recorded in chestmaster_puzzle_chests.csv,
+        // which the script populates when it sees "lock cannot be picked by normal means".
+        // Distinct hue so puzzle locks stand out from regular pickable chests at a glance.
+        private static readonly Color _puzzleChestGlowColor = new Color(0xFF, 0x00, 0xCC);
 
         public override bool Draw(UltimaBatcher2D batcher, int posX, int posY, float depth)
         {
@@ -149,6 +161,60 @@ namespace ClassicUO.Game.GameObjects
             }
 
             hueVec = ShaderHueTranslator.GetHueVector(hue, partial, alpha);
+
+            // Glow ground containers that are plausibly lockpickable. Four states:
+            //   * Magenta: position is in chestmaster_puzzle_chests.csv — picks won't
+            //     work, but it's still a real lockable container worth marking.
+            //     Overrides the bright/muted teal so puzzle locks stand out at a glance.
+            //   * Bright teal: pickable name, count is null (empty tooltip) or > 0
+            //     — unpicked, or currently has items.
+            //   * Muted teal: pickable name, count == 0, AND position is in the
+            //     picked CSV (chestmaster_chests.csv) — we've looted this one before;
+            //     keep it visible but de-emphasized.
+            //   * No glow: non-pickable name (ballot box, furniture, books, …),
+            //     or count == 0 without a CSV record (bank deco, furniture, …).
+            Color? glowColor = null;
+            if (ProfileManager.CurrentProfile != null
+                && ProfileManager.CurrentProfile.HighlightUnpickedChests
+                && OnGround
+                && ItemData.IsContainer
+                && !PickedChestRegistry.NonChestGraphics.Contains(Graphic)
+                && World.OPL.Contains(Serial))
+            {
+                World.OPL.TryGetNameAndData(Serial, out string oplName, out string oplData);
+                string oplText = (oplName ?? string.Empty) + "\n" + (oplData ?? string.Empty);
+
+                if (!PickedChestRegistry.IsKnownNonChestName(oplText))
+                {
+                    if (PickedChestRegistry.IsPuzzle(X, Y, World.MapIndex))
+                    {
+                        glowColor = _puzzleChestGlowColor;
+                    }
+                    else
+                    {
+                        int? count = PickedChestRegistry.TooltipItemCount(oplText);
+                        if (count != 0)
+                        {
+                            glowColor = _unpickedChestGlowColor;
+                        }
+                        else if (PickedChestRegistry.IsPicked(X, Y, World.MapIndex))
+                        {
+                            glowColor = _lootedChestGlowColor;
+                        }
+                    }
+                }
+            }
+
+            if (glowColor.HasValue)
+            {
+                OutlineColor = glowColor.Value;
+            }
+            else if (OutlineColor == _unpickedChestGlowColor
+                  || OutlineColor == _lootedChestGlowColor
+                  || OutlineColor == _puzzleChestGlowColor)
+            {
+                OutlineColor = null;
+            }
 
             if (!IsMulti && !IsCoin && Amount > 1 && ItemData.IsStackable)
             {

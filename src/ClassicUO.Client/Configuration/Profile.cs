@@ -215,6 +215,7 @@ namespace ClassicUO.Configuration
         public bool AutoOpenDoors { get; set; } = true;
         public bool SmoothDoors { get; set; } = true;
         public bool AutoOpenCorpses { get; set; } = true;
+        public bool HighlightUnpickedChests { get; set; } = true;
         public int AutoOpenCorpseRange { get; set; } = 2;
         public int CorpseOpenOptions { get; set; } = 3;
         public bool SkipEmptyCorpse { get; set; }
@@ -659,6 +660,7 @@ namespace ClassicUO.Configuration
         public bool UseWASDInsteadArrowKeys { get; set; }
         public int NearbyLootGumpHeight { get; set; } = 550;
         public bool ForceTooltipsOnOldClients { get; set; } = true;
+        public bool MergeSingleClickIntoTooltip { get; set; } = false;
         public bool NearbyLootOpensHumanCorpses { get; set; }
         public ushort TurnDelay { get; set; } = 100;
         public bool SellAgentEnabled { get; set; }

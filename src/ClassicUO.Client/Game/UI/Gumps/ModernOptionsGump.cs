@@ -175,6 +175,12 @@ namespace ClassicUO.Game.UI.Gumps
             content.BlankLine();
 
             content.AddToRight
+            (new CheckboxWithLabel("Highlight unpicked chests", isChecked: profile.HighlightUnpickedChests, valueChanged: (b) => { profile.HighlightUnpickedChests = b; }),
+                true, page);
+
+            content.BlankLine();
+
+            content.AddToRight
             (new CheckboxWithLabel(lang.GetGeneral.AutoOpenCorpse, isChecked: profile.AutoOpenCorpses, valueChanged: (b) => { profile.AutoOpenCorpses = b; }),
                 true, page);
 
@@ -4083,6 +4089,14 @@ namespace ClassicUO.Game.UI.Gumps
                 true, page);
 
             c.SetTooltip("This feature relies on simulating single clicking items and is not a perfect solution.");
+
+            content.BlankLine();
+
+            content.AddToRight
+            (c = new CheckboxWithLabel("Merge single-click labels into tooltip", 0, profile.MergeSingleClickIntoTooltip, b => { profile.MergeSingleClickIntoTooltip = b; }),
+                true, page);
+
+            c.SetTooltip("For shards that send rich item properties only via the single-click label channel (not via the OPL tooltip packet). When on, hovering an item silently issues a single-click and merges the response into the tooltip. Works on modern clients that already have native tooltips.");
 
             content.BlankLine();
 

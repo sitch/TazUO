@@ -21,6 +21,11 @@ internal static class DenyWalk
         world.Player.Walker.DenyWalk(seq, x, y, z);
         world.Player.Direction = direction;
 
+        // If the server denied the walk because a door was blocking, try to open it.
+        // OnPositionChanged/OnDirectionChanged would not have fired in this case (the
+        // player neither moved nor turned), so the bump itself is the only signal we get.
+        world.Player.TryOpenDoors();
+
         world.Weather.Reset();
     }
 }

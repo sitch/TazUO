@@ -485,14 +485,30 @@ namespace ClassicUO.Game.UI.Controls
 
     internal void CleanUpDisposedChildren()
     {
-        bool childRemoved = false;
-        for (int i = Children.Count - 1; i >= 0; i--)
+        // Snapshot the children before iterating so we're immune to a race where
+        // accessing IsDisposed / removing a child triggers a callback that further
+        // mutates the Children list mid-loop. Without the snapshot, the index
+        // computed from the original Count can become invalid and RemoveAt throws
+        // ArgumentOutOfRangeException at boot when login-screen gumps churn fast.
+        ClassicUO.Game.UI.IGui[] snapshot;
+        try
         {
-            if (i < Children.Count && Children[i]?.IsDisposed == true)
-            {
-                Children.RemoveAt(i);
+            snapshot = Children.ToArray();
+        }
+        catch (ArgumentException)
+        {
+            // List mutated mid-copy — try again next frame; nothing to clean now.
+            return;
+        }
+
+        bool childRemoved = false;
+        for (int i = snapshot.Length - 1; i >= 0; i--)
+        {
+            ClassicUO.Game.UI.IGui child = snapshot[i];
+            if (child == null || !child.IsDisposed) continue;
+            // Remove by reference instead of index — survives any mid-loop shifts.
+            if (Children.Remove(child))
                 childRemoved = true;
-            }
         }
 
         if (childRemoved)
