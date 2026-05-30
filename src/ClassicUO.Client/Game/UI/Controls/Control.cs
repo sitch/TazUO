@@ -967,7 +967,11 @@ namespace ClassicUO.Game.UI.Controls
 
         if (Children != null)
         {
-            foreach (Control c in Children)
+            // Snapshot before iterating: matches CleanUpDisposedChildren/Update so a
+            // mid-loop mutation (a child reparenting on dispose, or a stray off-thread
+            // toucher) can't throw EnumFailedVersion here. The thread fix in
+            // LoginScene.OnLoginStepChanged is the real cure; this is belt-and-braces.
+            foreach (Control c in Children.ToArray())
             {
                 c?.Dispose();
             }

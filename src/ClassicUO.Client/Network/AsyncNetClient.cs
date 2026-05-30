@@ -61,10 +61,6 @@ namespace ClassicUO.Network
 
                 // Start background receive task
                 _receiveTask = Task.Run(() => ReceiveLoopAsync(_cancellationTokenSource.Token), _cancellationTokenSource.Token);
-
-                OnConnected?.Invoke(this, EventArgs.Empty);
-
-                return true;
             }
             catch (SocketException socketEx)
             {
@@ -80,6 +76,24 @@ namespace ClassicUO.Network
 
                 return false;
             }
+
+            // The socket is genuinely connected and the receive loop is running.
+            // Fire OnConnected OUTSIDE the connect try/catch: its handlers run the
+            // login handshake + UI, and a fault there must never be relabeled as a
+            // SocketError or tear down a healthy connection — that exact mislabel
+            // turned a UI-thread exception into a phantom "Connection lost: Socket
+            // Error". Guard it separately so a handler fault is logged as what it is
+            // and the live connection survives.
+            try
+            {
+                OnConnected?.Invoke(this, EventArgs.Empty);
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"Exception in OnConnected handler (socket is up — not a connection failure): {ex}");
+            }
+
+            return true;
         }
 
         public async Task SendAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken = default)

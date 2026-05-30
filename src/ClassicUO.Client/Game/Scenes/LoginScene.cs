@@ -214,17 +214,27 @@ namespace ClassicUO.Game.Scenes
                     break;
             }
 
-            if (_lastLoginStep != newStep)
+            // Login-step changes arrive on the network thread (the fire-and-forget
+            // connect/packet continuations), but UIManager and Control.Children are
+            // not thread-safe. Marshal the gump swap onto the main thread so
+            // Dispose()/Draw() can't race the network thread mid-enumeration — that
+            // race surfaced as a spurious "Connection lost: Socket Error" with an
+            // EnumFailedVersion thrown from Control.Dispose(). InvokeOnMainThread runs
+            // inline when already on the main thread, so the no-op case is free.
+            MainThreadQueue.InvokeOnMainThread(() =>
             {
-                Client.Game.UO.GameCursor.IsLoading = false;
+                if (_lastLoginStep != newStep)
+                {
+                    Client.Game.UO.GameCursor.IsLoading = false;
 
-                // this trick avoid the flickering
-                Gump g = _currentGump;
-                UIManager.Add(_currentGump = GetGumpForStep());
-                g?.Dispose();
+                    // this trick avoid the flickering
+                    Gump g = _currentGump;
+                    UIManager.Add(_currentGump = GetGumpForStep());
+                    g?.Dispose();
 
-                _lastLoginStep = newStep;
-            }
+                    _lastLoginStep = newStep;
+                }
+            });
         }
 
         public override void Update()
