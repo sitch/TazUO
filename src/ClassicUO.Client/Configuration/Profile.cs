@@ -661,7 +661,10 @@ namespace ClassicUO.Configuration
         public int NearbyLootGumpHeight { get; set; } = 550;
         public bool ForceTooltipsOnOldClients { get; set; } = true;
         public bool MergeSingleClickIntoTooltip { get; set; } = false;
-        public bool UseShardSpellTimings { get; set; } = false;
+        // Default on: LoadAndApply no-ops when the shard profile JSON is absent, so
+        // this is inert anywhere but In Mani Ylem, and new characters here get the
+        // calibrated cast/recovery values without a per-character toggle.
+        public bool UseShardSpellTimings { get; set; } = true;
         public bool NearbyLootOpensHumanCorpses { get; set; }
         public ushort TurnDelay { get; set; } = 100;
         public bool SellAgentEnabled { get; set; }
