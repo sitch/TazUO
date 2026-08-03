@@ -31,6 +31,15 @@ namespace ClassicUO.Game.GameObjects
         // which the script populates when it sees "lock cannot be picked by normal means".
         // Distinct hue so puzzle locks stand out from regular pickable chests at a glance.
         private static readonly Color _puzzleChestGlowColor = new Color(0xFF, 0x00, 0xCC);
+        // Per-Item cache of the last *definitive* chest-glow decision and whether we
+        // have one yet. Prevents per-frame flicker when the tooltip is transiently
+        // incomplete: the shard sends unsolicited MegaCliloc rebroadcasts ~every 1–2 s
+        // and single-click bursts rebuild LabelData, both of which can momentarily
+        // leave oplText without the "(N items, M stones)" line — which would otherwise
+        // re-classify the chest as "count unknown → unpicked → bright teal" for a
+        // frame, then back to the resolved color. See project_shard_quirks memory.
+        private Color? _chestGlowCache;
+        private bool _chestGlowResolved;
 
         public override bool Draw(UltimaBatcher2D batcher, int posX, int posY, float depth)
         {
@@ -174,34 +183,67 @@ namespace ClassicUO.Game.GameObjects
             //   * No glow: non-pickable name (ballot box, furniture, books, …),
             //     or count == 0 without a CSV record (bank deco, furniture, …).
             Color? glowColor = null;
-            if (ProfileManager.CurrentProfile != null
+            bool highlightEnabled = ProfileManager.CurrentProfile != null
                 && ProfileManager.CurrentProfile.HighlightUnpickedChests
                 && OnGround
                 && ItemData.IsContainer
-                && !PickedChestRegistry.NonChestGraphics.Contains(Graphic)
-                && World.OPL.Contains(Serial))
-            {
-                World.OPL.TryGetNameAndData(Serial, out string oplName, out string oplData);
-                string oplText = (oplName ?? string.Empty) + "\n" + (oplData ?? string.Empty);
+                && !PickedChestRegistry.NonChestGraphics.Contains(Graphic);
 
-                if (!PickedChestRegistry.IsKnownNonChestName(oplText))
+            if (highlightEnabled)
+            {
+                if (World.OPL.Contains(Serial))
                 {
-                    if (PickedChestRegistry.IsPuzzle(X, Y, World.MapIndex))
+                    World.OPL.TryGetNameAndData(Serial, out string oplName, out string oplData);
+                    string oplText = (oplName ?? string.Empty) + "\n" + (oplData ?? string.Empty);
+
+                    if (PickedChestRegistry.IsKnownNonChestName(oplText))
                     {
+                        // Definitive: name says it's not a chest. Pin to "no glow".
+                        _chestGlowCache = null;
+                        _chestGlowResolved = true;
+                    }
+                    else if (PickedChestRegistry.IsPuzzle(X, Y, World.MapIndex))
+                    {
+                        // IsPuzzle is coord-based and stable across tooltip flicker.
                         glowColor = _puzzleChestGlowColor;
+                        _chestGlowCache = glowColor;
+                        _chestGlowResolved = true;
                     }
                     else
                     {
                         int? count = PickedChestRegistry.TooltipItemCount(oplText);
-                        if (count != 0)
+                        if (count.HasValue)
                         {
+                            // Definitive count — update the cache.
+                            if (count.Value != 0)
+                                glowColor = _unpickedChestGlowColor;
+                            else if (PickedChestRegistry.IsPicked(X, Y, World.MapIndex))
+                                glowColor = _lootedChestGlowColor;
+                            _chestGlowCache = glowColor;
+                            _chestGlowResolved = true;
+                        }
+                        else if (_chestGlowResolved)
+                        {
+                            // Tooltip transiently lacks the count line (mid-rebroadcast
+                            // or single-click burst). We already have a definitive
+                            // decision from a previous frame — reuse it instead of
+                            // backsliding to "assume unpicked → bright teal".
+                            glowColor = _chestGlowCache;
+                        }
+                        else
+                        {
+                            // First sighting and tooltip is incomplete — preserve the
+                            // existing "assume unpicked" behavior. Won't be cached, so
+                            // the next frame with a real count overrides it.
                             glowColor = _unpickedChestGlowColor;
                         }
-                        else if (PickedChestRegistry.IsPicked(X, Y, World.MapIndex))
-                        {
-                            glowColor = _lootedChestGlowColor;
-                        }
                     }
+                }
+                else if (_chestGlowResolved)
+                {
+                    // OPL momentarily not Contains(Serial) — reuse the last decision
+                    // rather than dropping the outline for a frame.
+                    glowColor = _chestGlowCache;
                 }
             }
 

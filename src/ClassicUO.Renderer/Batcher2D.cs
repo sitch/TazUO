@@ -1138,6 +1138,25 @@ namespace ClassicUO.Renderer
                 scale.Y *= texture.Height;
             }
 
+            // Expand the dest quad and source UV by OUTLINE_PAD pixels on each side so the
+            // outline shader has room to draw at edges where the source sprite fills its
+            // UV rect with no transparent margin (otherwise the outline gets clipped on
+            // those edges — visible on larger containers / multi-tile statics).
+            // The atlas isn't padded, so the expanded sample area may fall on an adjacent
+            // sprite; the shader discards on opaque samples, so the worst case is "no
+            // improvement", not a visual artifact.
+            const float OUTLINE_PAD = 1f;
+            float padU = OUTLINE_PAD / (float)texture.Width;
+            float padV = OUTLINE_PAD / (float)texture.Height;
+            sourceX -= padU;
+            sourceY -= padV;
+            sourceW += 2f * padU;
+            sourceH += 2f * padV;
+            position.X -= OUTLINE_PAD;
+            position.Y -= OUTLINE_PAD;
+            scale.X += 2f * OUTLINE_PAD;
+            scale.Y += 2f * OUTLINE_PAD;
+
             AddSprite
             (
                 texture,
@@ -1196,6 +1215,21 @@ namespace ClassicUO.Renderer
                 destW *= texture.Width;
                 destH *= texture.Height;
             }
+
+            // See sibling DrawOutlined overload for the OUTLINE_PAD rationale —
+            // expanding both dest and source UV by 1px gives the shader room to
+            // draw the outline at sprite edges that touch the source-rect bounds.
+            const float OUTLINE_PAD = 1f;
+            float padU = OUTLINE_PAD / (float)texture.Width;
+            float padV = OUTLINE_PAD / (float)texture.Height;
+            sourceX -= padU;
+            sourceY -= padV;
+            sourceW += 2f * padU;
+            sourceH += 2f * padV;
+            position.X -= OUTLINE_PAD;
+            position.Y -= OUTLINE_PAD;
+            destW += 2f * OUTLINE_PAD;
+            destH += 2f * OUTLINE_PAD;
 
             AddSprite
             (

@@ -82,6 +82,7 @@ namespace ClassicUO.Game.Managers
             // catches most of these too, but the name filter is a robust fallback for
             // items whose tooltip might lack the "(0 items, 0 stones)" line.
             "chest of drawers",
+            "dresser",
             "armoire",
             "wardrobe",
             "ballot box",
