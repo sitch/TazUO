@@ -91,7 +91,13 @@ internal static class DisplayClilocString
             //entity.Graphic = graphic;
             text_type = TextType.OBJECT;
 
-            if (string.IsNullOrEmpty(entity.Name))
+            // Only adopt the 30-byte speaker field as the entity's display Name if
+            // it isn't already set AND it doesn't look like a property line. On this
+            // shard the single-click reply burst occasionally lands a property-text
+            // packet (e.g. "(15 items, 51 stones)") first, and the original "first
+            // empty wins" guard would then lock the entity's Name on that string for
+            // the rest of the session.
+            if (string.IsNullOrEmpty(entity.Name) && !ForcedTooltipManager.LooksLikePropertyText(name))
                 entity.Name = name;
         }
 

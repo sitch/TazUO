@@ -96,6 +96,13 @@ namespace ClassicUO.Game.Managers
                 }
                 // No prior OPL entry — use the label text as the Name. Matches the original
                 // ForcedTooltipManager behavior for pre-OPL shards.
+                //
+                // Guard: on this shard a single single-click triggers a *burst* of label
+                // packets, and the first to arrive isn't always the real name. If it
+                // looks like property text (e.g. "(15 items, 51 stones)", "[Exceptional]"),
+                // don't promote it to OPL.Name — wait for a real name (either a later
+                // label or the subsequent 0xD6 MegaCliloc rebroadcast).
+                if (LooksLikePropertyText(text)) return true;
                 world.OPL.Add(parent.Serial, Time.Ticks + UPDATE_DELAY, text, string.Empty, 0);
             }
             return true;
@@ -108,6 +115,24 @@ namespace ClassicUO.Game.Managers
         {
             return !string.IsNullOrEmpty(text)
                 && text.StartsWith("You ", System.StringComparison.OrdinalIgnoreCase);
+        }
+
+        // True for strings that are clearly property/tooltip text rather than an item's
+        // actual name. Used to keep these out of the entity Name / OPL.Name slots,
+        // which would otherwise cause the gump title / overhead label / hover tooltip
+        // to render the property line as if it were the name (e.g. a container titled
+        // "(15 items, 51 stones)" instead of "wooden chest"). Patterns observed on
+        // this shard:
+        //   - "(N items, M stones)" — container content summary.
+        //   - "[Exceptional/Massive]", "[Unidentified]", "[Lizardman Slaughter]" —
+        //     bracket-delimited quality / property summaries.
+        //   - "You ..." — player-directed action feedback.
+        internal static bool LooksLikePropertyText(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return false;
+            char c0 = text[0];
+            if (c0 == '(' || c0 == '[') return true;
+            return LooksLikePlayerDirected(text);
         }
     }
 }

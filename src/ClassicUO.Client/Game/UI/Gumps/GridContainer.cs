@@ -986,9 +986,25 @@ namespace ClassicUO.Game.UI.Gumps
 
         private void UpdateContainerNameLabel()
         {
-            string rawName = GridContainerEntry?.CustomName.NotNullNotEmpty() == true
-                ? GridContainerEntry.CustomName
-                : !string.IsNullOrEmpty(Container.Name) ? Container.Name : "a container";
+            string rawName;
+            if (GridContainerEntry?.CustomName.NotNullNotEmpty() == true)
+            {
+                rawName = GridContainerEntry.CustomName;
+            }
+            else if (!string.IsNullOrEmpty(Container.Name))
+            {
+                rawName = Container.Name;
+            }
+            else
+            {
+                // Fall back to the OPL name when the entity Name was never populated
+                // (e.g. all the 30-byte ASCII fields on this shard's single-click
+                // replies were property text and got filtered out). The OPL Name is
+                // populated by the 0xD6 MegaCliloc handler and is the authoritative
+                // tooltip-name source.
+                World.OPL.TryGetNameAndData(Container.Serial, out string oplName, out _);
+                rawName = !string.IsNullOrEmpty(oplName) ? oplName : "a container";
+            }
 
             string countSuffix = SlotManager != null ? $" ({SlotManager.ContainerContents.Count})" : "";
 
