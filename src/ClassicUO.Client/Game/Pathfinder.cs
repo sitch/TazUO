@@ -1018,6 +1018,76 @@ namespace ClassicUO.Game
             return status;
         }
 
+        /// <summary>
+        /// Commit a pre-computed sequence of tiles as the auto-walk path.
+        /// The first element MUST be the player's current position;
+        /// consecutive elements must be 1-tile cardinal/diagonal steps.
+        ///
+        /// Used by LongDistancePathfinder to hand off a fully-generated
+        /// path to the regular ProcessAutoWalk step engine, replacing
+        /// the chunk-by-chunk walking that produces visible stutter and
+        /// backtracks. The auto-walker's own throttling
+        /// (MAX_STEP_COUNT + Walker.LastStepRequestTime) paces the
+        /// long path smoothly with no inter-chunk pauses.
+        ///
+        /// Returns true if the path was accepted and auto-walk started.
+        /// Caller is responsible for the path validity — we don't
+        /// re-verify each step's walkability here, the original A* did
+        /// that.
+        /// </summary>
+        public bool WalkTiles(IList<(int X, int Y, int Z)> tiles, bool run = true)
+        {
+            if (_world.Player == null || _world.Player.IsParalyzed)
+                return false;
+            if (tiles == null || tiles.Count < 2)
+                return false;
+
+            CleanupPathfinding();
+
+            // First node is the start; subsequent nodes get a Direction
+            // computed from the delta to the previous tile.
+            PathNode prev = null;
+            for (int i = 0; i < tiles.Count; i++)
+            {
+                (int tx, int ty, int tz) = tiles[i];
+                PathNode node = PathNode.Get();
+                node.X = tx;
+                node.Y = ty;
+                node.Z = tz;
+                if (i > 0)
+                {
+                    (int px, int py, _) = tiles[i - 1];
+                    node.Direction = DeltaToDirection(tx - px, ty - py);
+                }
+                node.Parent = prev;
+                _path.Add(node);
+                prev = node;
+            }
+
+            _pointIndex = 1;
+            _run = run;
+            AutoWalking = true;
+            ProcessAutoWalk();
+            return true;
+        }
+
+        // UO Direction enum: North=0, Right=1, East=2, Down=3,
+        // South=4, Left=5, West=6, Up=7. Map a single-tile (dx, dy)
+        // step to that. Anything else (no movement, >1 step) maps to
+        // North as a safe default; callers should pass clean steps.
+        private static int DeltaToDirection(int dx, int dy)
+        {
+            if (dx == 0 && dy < 0) return 0; // N
+            if (dx > 0 && dy < 0) return 1;  // NE / Right
+            if (dx > 0 && dy == 0) return 2; // E
+            if (dx > 0 && dy > 0) return 3;  // SE / Down
+            if (dx == 0 && dy > 0) return 4; // S
+            if (dx < 0 && dy > 0) return 5;  // SW / Left
+            if (dx < 0 && dy == 0) return 6; // W
+            if (dx < 0 && dy < 0) return 7;  // NW / Up
+            return 0;
+        }
+
         public void ProcessAutoWalk()
         {
             if (AutoWalking && _world.InGame && _world.Player.Walker.StepsCount < Constants.MAX_STEP_COUNT && _world.Player.Walker.LastStepRequestTime <= Time.Ticks)

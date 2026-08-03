@@ -79,7 +79,20 @@ namespace ClassicUO.Game.GameObjects
         private static readonly int[] _doorScanOffsetY = { -1, -1, 0, 1, 1, 1, 0, -1 };
         // Per-door click debounce — see TryOpenDoors.
         private const uint DOOR_REOPEN_COOLDOWN_MS = 1000;
+        // Inter-click rate cap across all door serials. Matches the shard's
+        // measured 0.3 s use-object cooldown so a running burst can't
+        // out-pace the server's rate-limit.
+        private const uint DOOR_GLOBAL_COOLDOWN_MS = 300;
+        // Trim _recentDoorClickTicks when it grows beyond this many entries.
+        private const int DOOR_CLICK_CACHE_TRIM_THRESHOLD = 32;
         private readonly Dictionary<uint, uint> _recentDoorClickTicks = new();
+        private uint _lastDoorClickTicks;
+        // While set, OnDirectionChanged does not call TryOpenDoors. DenyWalk
+        // uses this to assign Direction without re-entering the door scan,
+        // since it calls TryOpenDoors explicitly one line later. Toggle only
+        // via BeginSuppressDoorScan / EndSuppressDoorScan so the flag is
+        // cleared in a finally even if the setter throws.
+        private bool _suppressDoorScanOnDirectionChange;
 
         public short ColdResistance;
         public short DamageIncrease;
@@ -425,8 +438,12 @@ namespace ClassicUO.Game.GameObjects
         protected override void OnDirectionChanged()
         {
             base.OnDirectionChanged();
+            if (_suppressDoorScanOnDirectionChange) return;
             TryOpenDoors();
         }
+
+        internal void BeginSuppressDoorScan() => _suppressDoorScanOnDirectionChange = true;
+        internal void EndSuppressDoorScan() => _suppressDoorScanOnDirectionChange = false;
 
         // Public so the DenyWalk packet handler can also trigger this when the player
         // bumps into a door while already facing it (no position/direction change → the
@@ -438,25 +455,43 @@ namespace ClassicUO.Game.GameObjects
         // the just-passed door. A per-serial cooldown is a second defense, because the
         // IsImpassable open/closed signal is not always trustworthy here (the shard's
         // TileData and/or the client's local graphic state can lag the actual door
-        // state).
+        // state). A global cooldown bounds total click traffic to the shard's measured
+        // 0.3 s use-object rate-limit.
         //
         // `includeOpen` lets the DenyWalk path bypass the IsImpassable early-out so we
         // can also close an open door that's blocking the direction we just tried to
-        // walk (some doors on this shard swing into the corridor when open).
+        // walk (some doors on this shard swing into the corridor when open). Used as
+        // a *fallback only* by DenyWalk — if the default `false` scan finds any
+        // candidate in the half-plane, we don't fall back, since closing an open door
+        // when the actual blocker was a mob/weight/lag is exactly the slam-shut bug.
+        //
+        // Returns true iff this scan handled the situation in some way:
+        //   - clicked a door, OR
+        //   - saw a closed candidate in the half-plane that's only rate-limited, OR
+        //   - we're globally rate-limited (no use-object can fire right now).
+        // Returns false only when no candidate matched in this mode — the caller may
+        // then try a different mode. The movement hooks ignore the return value.
         //
         // The double-click goes through GameActions.DoubleClick (packet 0x06) because
         // the In Mani Ylem shard rejects the dedicated 0x12/0x58 Open Door packet and
         // rubberbands the player. See IN-MANI-YLEM-SERVER-PROFILE.md "Door interaction".
-        public void TryOpenDoors(bool includeOpen = false)
+        public bool TryOpenDoors(bool includeOpen = false)
         {
-            if (World.Player.IsDead || !ProfileManager.CurrentProfile.AutoOpenDoors) return;
+            if (World.Player.IsDead || !ProfileManager.CurrentProfile.AutoOpenDoors) return false;
+
+            uint now = Time.Ticks;
+            // Global gate, checked ONCE before the loop. Must not be per-item or the
+            // first successful click would arm the gate and cause subsequent items in
+            // the same call to early-out non-deterministically (dict iteration order).
+            if (_lastDoorClickTicks != 0 && now - _lastDoorClickTicks < DOOR_GLOBAL_COOLDOWN_MS)
+                return true;
 
             int px = X, py = Y, pz = Z;
             int dirIdx = (int)(Direction & Direction.Mask);
             int fdx = _doorScanOffsetX[dirIdx];
             int fdy = _doorScanOffsetY[dirIdx];
-            uint now = Time.Ticks;
 
+            bool sawCandidate = false;
             foreach (Item s in World.Items.Values)
             {
                 if (!s.ItemData.IsDoor) continue;
@@ -473,13 +508,30 @@ namespace ClassicUO.Game.GameObjects
                 // player relative to facing. dot product > 0 ⇒ 3 of 8 surrounding tiles
                 // qualify for cardinal/diagonal facing alike.
                 if (dx * fdx + dy * fdy <= 0) continue;
+                sawCandidate = true;
                 if (_recentDoorClickTicks.TryGetValue(s.Serial, out uint last) &&
                     now - last < DOOR_REOPEN_COOLDOWN_MS)
                     continue;
                 GameActions.DoubleClick(World, s.Serial);
                 _recentDoorClickTicks[s.Serial] = now;
-                break;
+                _lastDoorClickTicks = now;
+                TrimDoorClickCache(now);
+                return true;
             }
+            return sawCandidate;
+        }
+
+        private void TrimDoorClickCache(uint now)
+        {
+            if (_recentDoorClickTicks.Count < DOOR_CLICK_CACHE_TRIM_THRESHOLD) return;
+            List<uint> stale = null;
+            foreach (var kv in _recentDoorClickTicks)
+            {
+                if (now - kv.Value >= DOOR_REOPEN_COOLDOWN_MS)
+                    (stale ??= new List<uint>()).Add(kv.Key);
+            }
+            if (stale == null) return;
+            foreach (uint serial in stale) _recentDoorClickTicks.Remove(serial);
         }
 
         public override void Destroy()

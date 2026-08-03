@@ -147,6 +147,8 @@ namespace ClassicUO.Game
             try
             {
                 await Task.Run(() => GenerateFullTilePath(startX, startY, targetX, targetY, cancellationToken), cancellationToken);
+                if (!cancellationToken.IsCancellationRequested)
+                    CommitGeneratedPathToAutoWalker();
             }
             catch (OperationCanceledException)
             {
@@ -161,6 +163,82 @@ namespace ClassicUO.Game
             finally
             {
                 _pathGenerationComplete = true;
+            }
+        }
+
+        // Single-shot hand-off: drain _fullTilePath into a flat list and
+        // commit it to the regular Pathfinder's auto-walker, then clear
+        // LD state without touching AutoWalking. Replaces the chunk-by-
+        // chunk walking in ProcessTileChunks — that loop's stutter and
+        // retries are the source of the "really strange looking"
+        // movement on long paths.
+        //
+        // The entire commit runs on the main thread via MainThreadQueue.
+        // This is REQUIRED — not just convenient — because the short-
+        // distance shortcut in GenerateFullTilePath (distance <=
+        // CLOSE_DISTANCE_THRESHOLD) populates _fullTilePath from a
+        // MainThreadQueue.EnqueueAction continuation; if we drained from
+        // the worker thread that awaited Task.Run, we'd run BEFORE that
+        // continuation fired and see an empty queue. Posting our own
+        // EnqueueAction puts us strictly AFTER it in the FIFO.
+        private static void CommitGeneratedPathToAutoWalker()
+        {
+            MainThreadQueue.EnqueueAction(() =>
+            {
+                World world = World.Instance;
+                if (world?.Player == null)
+                {
+                    ClearLDStateInternal();
+                    return;
+                }
+
+                // Snapshot tiles. Start tile is player's current position;
+                // appended tiles are what A* generated (or what the short-
+                // distance shortcut populated via the regular pathfinder).
+                var tiles = new List<(int X, int Y, int Z)>();
+                tiles.Add((world.Player.X, world.Player.Y, world.Player.Z));
+                while (_fullTilePath.TryDequeue(out Point p))
+                {
+                    sbyte z = world.Map?.GetTileZ(p.X, p.Y) ?? 0;
+                    tiles.Add((p.X, p.Y, z));
+                }
+
+                if (tiles.Count < 2)
+                {
+                    Log.Warn("[LongDistancePathfinder] Empty path after generation — nothing to walk");
+                    ClearLDStateInternal();
+                    return;
+                }
+
+                Log.Info($"[LongDistancePathfinder] Committing {tiles.Count - 1}-tile path to auto-walker");
+                bool started = world.Player.Pathfinder.WalkTiles(tiles, run: true);
+                if (!started)
+                    Log.Warn("[LongDistancePathfinder] WalkTiles rejected the path");
+                ClearLDStateInternal();
+            });
+        }
+
+        // Clear LD's own state without touching AutoWalking. We just
+        // started AutoWalking via WalkTiles; we want it to keep going.
+        // StopPathfindingInternal would signal the caller to stop
+        // AutoWalking, which is the opposite of what we want here.
+        private static void ClearLDStateInternal()
+        {
+            lock (_stateLock)
+            {
+                CancellationTokenSource old = Interlocked.Exchange(ref _pathfindingCancellation, null);
+                if (old != null)
+                {
+                    old.Cancel();
+                    _disposalQueue.Enqueue(old);
+                }
+                StopChunkWalking();
+                _pathfindingInProgress = false;
+                _pathGenerationComplete = false;
+                _walkingStarted = false;
+                _currentChunkSize = INITIAL_CHUNK_SIZE;
+                while (_fullTilePath.TryDequeue(out _)) { }
+                _failedTiles.Clear();
             }
         }
 
@@ -378,21 +456,17 @@ namespace ClassicUO.Game
                 Log.Debug($"[LongDistancePathfinder] Starting to process tiles with {tileCount} tiles available");
             }
 
-            // Continue processing tile chunks if we've started
-            if (walkingStarted)
-            {
-                // First, process any active chunk walking
-                if (_isWalkingChunk)
-                {
-                    ProcessChunkWalking();
-                }
-                // If not walking a chunk and pathfinder isn't busy, process next chunk
-                else if (!pathfinder.AutoWalking)
-                {
-                    Log.Debug("[LongDistancePathfinder] Processing next tile chunk");
-                    ProcessTileChunks();
-                }
-            }
+            // Chunk-walker is disabled. CommitGeneratedPathToAutoWalker
+            // hands the full generated path to the regular Pathfinder
+            // _path / ProcessAutoWalk once A* finishes (single-shot
+            // commit). ProcessTileChunks used to run from here every
+            // frame and would race the short-distance shortcut's async
+            // _fullTilePath populate: if it fired BEFORE the populate
+            // action, it saw an empty queue + _pathGenerationComplete
+            // and called StopPathfinding, wiping the queue our commit
+            // was about to drain. _isWalkingChunk is never set in
+            // single-shot mode either, so ProcessChunkWalking is
+            // unreachable too.
         }
 
         /// <summary>

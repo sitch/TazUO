@@ -19,14 +19,24 @@ internal static class DenyWalk
         sbyte z = p.ReadInt8();
 
         world.Player.Walker.DenyWalk(seq, x, y, z);
-        world.Player.Direction = direction;
 
-        // If the server denied the walk because a door was blocking, try to open it.
-        // OnPositionChanged/OnDirectionChanged would not have fired in this case (the
-        // player neither moved nor turned), so the bump itself is the only signal we
-        // get. includeOpen: true so we also close an open-but-blocking door (some
-        // doors on this shard swing into the corridor when opened).
-        world.Player.TryOpenDoors(includeOpen: true);
+        // Assign the new facing without re-entering the door scan — we call
+        // TryOpenDoors explicitly below with the right semantics. Without the
+        // suppression bracket, the Direction setter fires OnDirectionChanged
+        // (when the facing actually changes) which would do a redundant first
+        // scan with includeOpen=false, and the explicit call below could then
+        // toggle a different door across the two scans.
+        world.Player.BeginSuppressDoorScan();
+        try { world.Player.Direction = direction; }
+        finally { world.Player.EndSuppressDoorScan(); }
+
+        // Two-phase: try to OPEN a closed blocker first. Only if the half-plane
+        // contains no closed candidate at all do we fall back to includeOpen=true
+        // to handle the rare swing-into-corridor case. This avoids slamming an
+        // open door shut on the player when the actual blocker was a mob, a
+        // weight overload, or lag.
+        if (!world.Player.TryOpenDoors())
+            world.Player.TryOpenDoors(includeOpen: true);
 
         world.Weather.Reset();
     }

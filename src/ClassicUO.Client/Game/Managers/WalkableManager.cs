@@ -437,6 +437,17 @@ namespace ClassicUO.Game.Managers
                         break;
 
                     case Static stat:
+                        // SmoothDoors: don't bake doors into the walkability
+                        // cache. Mirrors Pathfinder.cs:254. Without this, on
+                        // shards (In Mani Ylem) where door tile data has
+                        // IsImpassable=true for BOTH closed and open states,
+                        // the cache splits the map into disconnected regions
+                        // per door and LongDistancePathfinder reports
+                        // "Cannot reach exact target" for any cross-room
+                        // destination. Auto-open + smooth_doors in the live
+                        // pathfinder handle the actual traversal.
+                        if (stat.ItemData.IsDoor && ProfileManager.CurrentProfile?.SmoothDoors == true)
+                            break;
                         if (stat.ItemData.IsImpassable) return false;
                         if (stat.ItemData.IsWall) return false;
                         break;
@@ -447,6 +458,12 @@ namespace ClassicUO.Game.Managers
 
                         // Certain graphics are always passable
                         bool dropFlags = itemGraphic >= 0x3946 && itemGraphic <= 0x3964 || itemGraphic == 0x0082;
+
+                        // SmoothDoors: see Static case above. Doors come into
+                        // the world as Items (state-bearing), so this is the
+                        // hot path.
+                        if (!dropFlags && itemData.IsDoor && ProfileManager.CurrentProfile?.SmoothDoors == true)
+                            dropFlags = true;
 
                         if (!dropFlags)
                         {
