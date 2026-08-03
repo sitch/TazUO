@@ -66,7 +66,11 @@ public static class GenDoc
 
         sb.AppendLf("[Additional notes](../notes/)  ");
         sb.AppendLf();
-        sb.AppendLf($"*This was generated on `{DateTime.Now.Date.ToString("M/d/yy")}`.*");
+        // Deliberately no generation date. GenerateDocs runs on every build, so a
+        // date stamp rewrote this file the first time anyone built on a new day —
+        // dirtying the working tree and putting a spurious hunk in every diff of
+        // the source that produced it. Without it the output is a pure function of
+        // the source, so a rebuild is a no-op unless the API actually changed.
         sb.AppendLf();
     }
 
