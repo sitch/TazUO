@@ -315,6 +315,7 @@ namespace ClassicUO.Game.Managers
                 if (!string.IsNullOrEmpty(entry.PowerWords)) spellRangePowerWordCache.Add(entry.PowerWords, entry);
             }
             LoadOverrides();
+            ShardSpellTimings.LoadAndApply(spellRangeCache);
         }
 
         private void CreateAndLoadDataFile()

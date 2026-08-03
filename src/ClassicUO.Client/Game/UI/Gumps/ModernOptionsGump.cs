@@ -3825,6 +3825,11 @@ namespace ClassicUO.Game.UI.Gumps
             (new CheckboxWithLabel(lang.GetTazUO.EnableSpellIndicatorSystem, 0, profile.EnableSpellIndicators, (b) => { profile.EnableSpellIndicators = b; }),
                 true, page);
 
+            content.AddToRight
+            (c = new CheckboxWithLabel("Use In Mani Ylem shard timings", 0, profile.UseShardSpellTimings, b => { profile.UseShardSpellTimings = b; }),
+                true, page);
+            c.SetTooltip("Overrides spell CastTime/RecoveryTime with empirical values from Data/Client/in_mani_ylem_server_profile.json. Takes effect on next character load.");
+
             content.Indent();
 
             content.AddToRight
