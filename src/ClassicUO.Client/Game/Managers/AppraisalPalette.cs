@@ -125,6 +125,11 @@ namespace ClassicUO.Game.Managers
         private static readonly Color DefaultDurabilityPip = new Color(0x96, 0xA5, 0xB4);
         private static readonly Color DefaultGenericWand = new Color(0x9C, 0x7B, 0xE0);
 
+        // Neutral edge for the universal container outline. Only the HUE is taken from
+        // here — opacity is computed per container from how full it is, so this wants to
+        // be something quiet that reads at low alpha against both grass and stone.
+        private static readonly Color DefaultContainerOutline = new Color(0x8E, 0xA6, 0xC0);
+
         // ── Live values ──────────────────────────────────────────────────────────────
         private static Color[] _tiers = (Color[])DefaultTiers.Clone();
         private static Dictionary<string, Color> _slayers = new(DefaultSlayers);
@@ -132,6 +137,7 @@ namespace ClassicUO.Game.Managers
         private static Color _unidentified = DefaultUnidentified;
         private static Color _durabilityPip = DefaultDurabilityPip;
         private static Color _genericWand = DefaultGenericWand;
+        private static Color _containerOutline = DefaultContainerOutline;
 
         public static Color Tier(int tier)
         {
@@ -144,6 +150,7 @@ namespace ClassicUO.Game.Managers
         public static Color Unidentified { get { MaybeReload(); return _unidentified; } }
         public static Color DurabilityPip { get { MaybeReload(); return _durabilityPip; } }
         public static Color GenericWand { get { MaybeReload(); return _genericWand; } }
+        public static Color ContainerOutline { get { MaybeReload(); return _containerOutline; } }
 
         public static Color Slayer(string family)
         {
@@ -216,6 +223,7 @@ namespace ClassicUO.Game.Managers
             _unidentified = ReadColor(root, "unidentified", DefaultUnidentified);
             _durabilityPip = ReadColor(root, "durabilityPip", DefaultDurabilityPip);
             _genericWand = ReadColor(root, "genericWand", DefaultGenericWand);
+            _containerOutline = ReadColor(root, "containerOutline", DefaultContainerOutline);
 
             _slayers = ReadMap(root, "slayers", DefaultSlayers, StringComparer.Ordinal);
             _wands = ReadMap(root, "wands", DefaultWands, StringComparer.OrdinalIgnoreCase);
@@ -276,6 +284,7 @@ namespace ClassicUO.Game.Managers
                 sb.AppendFormat("  \"unidentified\": \"{0}\",\n", Hex(DefaultUnidentified));
                 sb.AppendFormat("  \"durabilityPip\": \"{0}\",\n", Hex(DefaultDurabilityPip));
                 sb.AppendFormat("  \"genericWand\": \"{0}\",\n", Hex(DefaultGenericWand));
+                sb.AppendFormat("  \"containerOutline\": \"{0}\",\n", Hex(DefaultContainerOutline));
                 sb.AppendLine();
                 AppendMap(sb, "slayers", DefaultSlayers, true);
                 AppendMap(sb, "wands", DefaultWands, false);

@@ -206,7 +206,11 @@ namespace ClassicUO.Game.GameObjects
                 {
                     Color oc = outlineColor.Value;
                     var outlineNormal = new Vector3(oc.R / 255f, oc.G / 255f, oc.B / 255f);
-                    Vector3 outlineHue = ShaderHueTranslator.GetOutlineHueVector(hue.Z);
+                    // The outline colour's ALPHA channel scales opacity, on top of the
+                    // object's own alpha. Callers wanting a flat outline pass an opaque
+                    // colour (A=255) and behave exactly as before; the container fullness
+                    // outline varies A to encode how full the container is.
+                    Vector3 outlineHue = ShaderHueTranslator.GetOutlineHueVector(hue.Z * (oc.A / 255f));
 
                     batcher.DrawOutlined(
                         artInfo.Texture,
@@ -374,7 +378,11 @@ namespace ClassicUO.Game.GameObjects
                 {
                     Color oc = outlineColor.Value;
                     var outlineNormal = new Vector3(oc.R / 255f, oc.G / 255f, oc.B / 255f);
-                    Vector3 outlineHue = ShaderHueTranslator.GetOutlineHueVector(hue.Z);
+                    // The outline colour's ALPHA channel scales opacity, on top of the
+                    // object's own alpha. Callers wanting a flat outline pass an opaque
+                    // colour (A=255) and behave exactly as before; the container fullness
+                    // outline varies A to encode how full the container is.
+                    Vector3 outlineHue = ShaderHueTranslator.GetOutlineHueVector(hue.Z * (oc.A / 255f));
 
                     batcher.DrawOutlined(
                         artInfo.Texture,

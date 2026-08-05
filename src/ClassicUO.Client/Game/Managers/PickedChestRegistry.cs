@@ -120,7 +120,7 @@ namespace ClassicUO.Game.Managers
         // verbatim from blaster_chestmaster.py:_CONTENTS_LINE_RE. If present in the
         // tooltip, the container is no longer "needs picking".
         private static readonly Regex _contentsLineRe = new Regex(
-            @"\(\s*(\d+)\s*items?\s*,\s*\d+\s*stones?\s*\)",
+            @"\(\s*(\d+)\s*items?\s*,\s*(\d+)\s*stones?\s*\)",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         public static bool HasItemCount(string oplText)
@@ -141,6 +141,33 @@ namespace ClassicUO.Game.Managers
             if (!m.Success) return null;
             if (int.TryParse(m.Groups[1].Value, out int count)) return count;
             return null;
+        }
+
+        // Weight in stones from the same "(N items, M stones)" line. Drives the universal
+        // container outline's opacity. Observed range on this shard is 0 to ~16000, so
+        // callers must not assume a classic 400-stone cap.
+        public static int? TooltipWeight(string oplText)
+        {
+            if (string.IsNullOrEmpty(oplText)) return null;
+            Match m = _contentsLineRe.Match(oplText);
+            if (!m.Success) return null;
+            if (int.TryParse(m.Groups[2].Value, out int w)) return w;
+            return null;
+        }
+
+        // The shard sends cliloc 501643 "locked down" / 501644 "locked down & secure" on
+        // the single-click label channel for anything secured in a house. With the label
+        // merger on it lands in OPL — often as the item's Name, since it arrives before
+        // any MegaCliloc and doesn't look like property text.
+        //
+        // This is the discriminator between player storage and a lootable container: a
+        // locked-down chest is house furniture and must never be marked as a lockpicking
+        // target, however full it is.
+        public static bool IsLockedDown(string oplText)
+        {
+            if (string.IsNullOrEmpty(oplText)) return false;
+            return oplText.IndexOf("locked down", StringComparison.OrdinalIgnoreCase) >= 0
+                || oplText.IndexOf("secure", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private static string PickedCsvPath =>

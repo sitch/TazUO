@@ -44,6 +44,33 @@ namespace ClassicUO.Game.GameObjects
         // clear our own outline and never one set by another feature.
         private bool _outlineOwned;
 
+        /// <summary>
+        /// The universal container outline: every container that can report its contents
+        /// gets a faint neutral edge whose OPACITY tracks how full it is. Alpha rather
+        /// than hue because the world surface has only one channel — a sprite outline can
+        /// express colour and opacity and nothing else, so geometry-based encodings that
+        /// work in a grid slot are unavailable here.
+        ///
+        /// Scaled by sqrt so the low end stays legible: weights observed on this shard run
+        /// from 0 to ~16000 stones, and a linear ramp would leave anything under a few
+        /// hundred invisible. Capacity is never sent (the shard uses cliloc 1050044, which
+        /// carries no maximum), so REF_STONES is a reference point rather than a real cap
+        /// and heavier containers simply saturate.
+        /// </summary>
+        private static Color ContainerFullnessOutline(string oplText)
+        {
+            const float REF_STONES = 900f;
+            const float MIN_A = 0.14f;
+            const float MAX_A = 0.62f;
+
+            int weight = PickedChestRegistry.TooltipWeight(oplText) ?? 0;
+            float t = weight <= 0 ? 0f : (float)Math.Sqrt(Math.Min(1f, weight / REF_STONES));
+            var a = (byte)(255 * (MIN_A + (MAX_A - MIN_A) * t));
+
+            Color c = AppraisalPalette.ContainerOutline;
+            return new Color(c.R, c.G, c.B, a);
+        }
+
         public override bool Draw(UltimaBatcher2D batcher, int posX, int posY, float depth)
         {
             if (IsDestroyed)
@@ -215,29 +242,44 @@ namespace ClassicUO.Game.GameObjects
                     else
                     {
                         int? count = PickedChestRegistry.TooltipItemCount(oplText);
-                        if (count.HasValue)
+                        bool lockedDown = PickedChestRegistry.IsLockedDown(oplText);
+
+                        // A locked-down container is house furniture and can never be a
+                        // lockpicking target. A container that reports its contents at all
+                        // is, by definition, one whose lock isn't stopping us — you cannot
+                        // see inside a locked chest. So the ONLY state that earns the
+                        // pickable-lock teal is "no contents line, and not locked down".
+                        //
+                        // The old rule glowed on count > 0 ("has items") and on a missing
+                        // count at first sighting ("assume unpicked"). Between them every
+                        // chest, crate and shelf in the player's own house lit up bright
+                        // teal — the exact false positive this replaces.
+                        if (lockedDown || count.HasValue)
                         {
-                            // Definitive count — update the cache.
-                            if (count.Value != 0)
-                                glowColor = _unpickedChestGlowColor;
-                            else if (PickedChestRegistry.IsPicked(X, Y, World.MapIndex))
-                                glowColor = _lootedChestGlowColor;
+                            if (!lockedDown && count.Value == 0
+                                && PickedChestRegistry.IsPicked(X, Y, World.MapIndex))
+                            {
+                                glowColor = _lootedChestGlowColor;   // we emptied this one
+                            }
+                            else
+                            {
+                                glowColor = ContainerFullnessOutline(oplText);
+                            }
                             _chestGlowCache = glowColor;
                             _chestGlowResolved = true;
                         }
                         else if (_chestGlowResolved)
                         {
-                            // Tooltip transiently lacks the count line (mid-rebroadcast
-                            // or single-click burst). We already have a definitive
-                            // decision from a previous frame — reuse it instead of
-                            // backsliding to "assume unpicked → bright teal".
+                            // Tooltip transiently lacks the count line (mid-rebroadcast or
+                            // single-click burst). Reuse the last definitive decision
+                            // rather than backsliding to "assume unpicked".
                             glowColor = _chestGlowCache;
                         }
                         else
                         {
-                            // First sighting and tooltip is incomplete — preserve the
-                            // existing "assume unpicked" behavior. Won't be cached, so
-                            // the next frame with a real count overrides it.
+                            // Genuinely no contents line yet: either still locked, or the
+                            // OPL hasn't filled in. Deliberately not cached, so the next
+                            // frame with real data wins.
                             glowColor = _unpickedChestGlowColor;
                         }
                     }
