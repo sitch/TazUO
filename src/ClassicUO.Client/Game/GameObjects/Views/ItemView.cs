@@ -40,6 +40,9 @@ namespace ClassicUO.Game.GameObjects
         // frame, then back to the resolved color. See project_shard_quirks memory.
         private Color? _chestGlowCache;
         private bool _chestGlowResolved;
+        // True while OutlineColor holds a value this Draw() assigned, so we only ever
+        // clear our own outline and never one set by another feature.
+        private bool _outlineOwned;
 
         public override bool Draw(UltimaBatcher2D batcher, int posX, int posY, float depth)
         {
@@ -247,15 +250,29 @@ namespace ClassicUO.Game.GameObjects
                 }
             }
 
+            // Ground loot: appraise dropped weapons/armor/wands so a Vanquishing blade in
+            // a pile of junk is visible without hovering every item. Chest glow wins when
+            // both apply — a container's pickable state is the more actionable signal, and
+            // containers never appraise as weapons anyway.
+            if (!glowColor.HasValue && OnGround && !ItemData.IsContainer)
+            {
+                glowColor = ItemAppraisal.OutlineFor(World, Serial);
+            }
+
+            // Clear only what this method set. The old version compared OutlineColor
+            // against the three chest colors by value, which silently stopped working
+            // the moment a fourth source (appraisal) could set it — a stale outline
+            // would then persist forever. Tracking ownership scales to any number of
+            // sources and doesn't care what color they chose.
             if (glowColor.HasValue)
             {
                 OutlineColor = glowColor.Value;
+                _outlineOwned = true;
             }
-            else if (OutlineColor == _unpickedChestGlowColor
-                  || OutlineColor == _lootedChestGlowColor
-                  || OutlineColor == _puzzleChestGlowColor)
+            else if (_outlineOwned)
             {
                 OutlineColor = null;
+                _outlineOwned = false;
             }
 
             if (!IsMulti && !IsCoin && Amount > 1 && ItemData.IsStackable)

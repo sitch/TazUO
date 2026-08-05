@@ -251,6 +251,29 @@ namespace ClassicUO.Game.Managers
             return false;
         }
 
+        // Case-insensitive substring probe across every text source we hold for an item:
+        // the server's Name and Data, plus the single-click LabelData side-cache.
+        //
+        // Deliberately NOT routed through TryGetNameAndData: that runs
+        // FilterRedundantLabelLines, which splits and rebuilds the label text on every
+        // call. Callers here are per-frame render paths (one per visible container slot),
+        // so this walks the raw fields instead — three IndexOf scans, zero allocation.
+        // Checking LabelData pre-filter is also strictly correct: the filter only drops
+        // lines already present in Name/Data, and both of those are searched anyway.
+        public bool ContainsText(uint serial, string needle)
+        {
+            if (string.IsNullOrEmpty(needle))
+                return false;
+
+            if (!_itemsProperties.TryGetValue(serial, out ItemProperty p))
+                return false;
+
+            return Has(p.Name) || Has(p.Data) || Has(p.LabelData);
+
+            bool Has(string haystack) => !string.IsNullOrEmpty(haystack)
+                && haystack.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
         public int GetNameCliloc(uint serial)
         {
             if (_itemsProperties.TryGetValue(serial, out ItemProperty p))

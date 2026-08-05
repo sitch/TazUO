@@ -10,6 +10,7 @@ using ClassicUO.Input;
 using ClassicUO.Assets;
 using ClassicUO.Renderer;
 using Microsoft.Xna.Framework;
+using Microsoft.Xna.Framework.Graphics;
 using ClassicUO.Game.Scenes;
 
 namespace ClassicUO.Game.UI.Controls
@@ -148,6 +149,36 @@ namespace ClassicUO.Game.UI.Controls
                     rect.Y += 5;
 
                     batcher.Draw(spriteInfo.Texture, rect, spriteInfo.UV, hueVector);
+                }
+
+                Color? appraised = ItemAppraisal.OutlineFor(_gump.World, LocalSerial);
+
+                if (appraised.HasValue)
+                {
+                    Color oc = appraised.Value;
+
+                    // Scale is expressed per-axis rather than as Vector2.One because the
+                    // container gump may have resized us: ContainerGump multiplies
+                    // Width/Height by its own scale when ScaleItemsInsideContainers is on,
+                    // while the source UV stays at native art size. DrawOutlined multiplies
+                    // scale by the source rect, so this reproduces the dest rect above.
+                    var scale = new Vector2(
+                        Width / (float)spriteInfo.UV.Width,
+                        Height / (float)spriteInfo.UV.Height
+                    );
+
+                    batcher.DrawOutlined(
+                        spriteInfo.Texture,
+                        new Vector2(x, y),
+                        spriteInfo.UV,
+                        ShaderHueTranslator.GetOutlineHueVector(),
+                        new Vector3(oc.R / 255f, oc.G / 255f, oc.B / 255f),
+                        0f,
+                        Vector2.Zero,
+                        scale,
+                        SpriteEffects.None,
+                        0f
+                    );
                 }
             }
 

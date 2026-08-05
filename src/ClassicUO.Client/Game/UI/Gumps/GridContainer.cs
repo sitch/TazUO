@@ -1586,6 +1586,12 @@ namespace ClassicUO.Game.UI.Gumps
             }
 
             /// <summary>
+            /// Shared inset for every element drawn inside the slot (inset border, pips,
+            /// edge bars) so they all clear the outer and inset border rings.
+            /// </summary>
+            private int EdgeInset => 6 + _profile.GridHighlightSize * 2 + 2;
+
+            /// <summary>
             /// Draws a highlighted border around the grid item
             /// </summary>
             private void DrawHighlightBorder(UltimaBatcher2D batcher, int x, int y, Texture2D borderTexture, Vector3 borderHueVec)
@@ -1607,6 +1613,103 @@ namespace ClassicUO.Game.UI.Gumps
 
                 // Bottom border
                 batcher.Draw(borderTexture, new Rectangle(bx, by + innerHeight - bsize, innerWidth, bsize), borderHueVec);
+            }
+
+            /// <summary>
+            /// Second border, inset one step inside the main one — marks Exceptional
+            /// quality without spending the color channel, which tier already owns.
+            /// </summary>
+            private void DrawInsetBorder(UltimaBatcher2D batcher, int x, int y, Texture2D tex, Vector3 hue)
+            {
+                int bsize = _profile.GridHighlightSize;
+                int gap = bsize + 1;
+                int bx = x + 6 + gap;
+                int by = y + 6 + gap;
+                int iw = Width - 12 - gap * 2;
+                int ih = Height - 12 - gap * 2;
+
+                if (iw <= bsize * 2 || ih <= bsize * 2) return;
+
+                batcher.Draw(tex, new Rectangle(bx, by, iw, bsize), hue);
+                batcher.Draw(tex, new Rectangle(bx, by + bsize, bsize, ih - bsize * 2), hue);
+                batcher.Draw(tex, new Rectangle(bx + iw - bsize, by + bsize, bsize, ih - bsize * 2), hue);
+                batcher.Draw(tex, new Rectangle(bx, by + ih - bsize, iw, bsize), hue);
+            }
+
+            /// <summary>
+            /// 1-5 pips along one edge of the slot. A count reads directly as an ordinal —
+            /// five pips is unmistakably the top tier, where a fifth shade of a color
+            /// would not be.
+            ///
+            /// Edges are assigned per axis, not per item type, so placement means the same
+            /// thing everywhere: accuracy on the bottom, durability on the top. A weapon
+            /// can show both at once; armor has no accuracy so its bottom edge stays clear.
+            ///
+            /// Both rows sit inboard of the outline border AND the inset Exceptional
+            /// border, so none of the three ever overlap at any GridHighlightSize.
+            /// </summary>
+            private void DrawPips(UltimaBatcher2D batcher, int x, int y, int count, bool topEdge, Texture2D tex, Vector3 hue)
+            {
+                const int PIP = 3;
+                const int GAP = 2;
+
+                int inset = EdgeInset + 1;          // clears both border rings
+
+                int total = count * PIP + (count - 1) * GAP;
+                int px = x + (Width - total) / 2;
+                int py = topEdge ? y + inset : y + Height - inset - PIP;
+
+                for (int i = 0; i < count; i++)
+                    batcher.Draw(tex, new Rectangle(px + i * (PIP + GAP), py, PIP, PIP), hue);
+            }
+
+            /// <summary>
+            /// Slayer bar down the RIGHT edge. Color carries the family (six, a learnable
+            /// number); bar length carries super-vs-lesser, since a super slayer covers a
+            /// whole creature family and is worth far more than one of its members.
+            ///
+            /// The right edge rather than a corner square, for two reasons. It needs to be
+            /// loud: measured over the real inventory, 75% of slayer weapons carry a magic
+            /// tier of 2 or less, so the tier border paints them grey or green and a 4px
+            /// corner dot was the only thing distinguishing a Silver slayer from junk.
+            /// And a corner mark collides with a full row of five durability pips, which
+            /// are centred on the top edge — the right edge is the only one still free.
+            ///
+            /// Each edge now means exactly one thing: top = durability, bottom = accuracy,
+            /// right = slayer, outer border = tier, inset border = Exceptional.
+            /// </summary>
+            // shortBar is the INVERSE of super: a super slayer covers a whole creature
+            // family and gets the long bar.
+            private void DrawSlayerMark(UltimaBatcher2D batcher, int x, int y, Color color, bool super, Vector3 hue)
+                => DrawEdgeBar(batcher, x, y, color, false, !super, hue);
+
+            /// <summary>
+            /// Vertical bar down the left or right edge. Right = slayer family, left =
+            /// wand charge type. Full length unless <paramref name="shortBar"/> marks it
+            /// as a lesser slayer.
+            ///
+            /// Edges rather than corners because a full row of five pips is centred on
+            /// the top and bottom edges, leaving the sides as the only free real estate —
+            /// and because a bar has to be loud: measured over the real inventory, 75% of
+            /// slayer weapons carry a magic tier of 2 or less, so the tier border paints
+            /// them dim and a small corner dot was all that distinguished them.
+            /// </summary>
+            private void DrawEdgeBar(UltimaBatcher2D batcher, int x, int y, Color color,
+                bool leftEdge, bool shortBar, Vector3 hue)
+            {
+                const int TH = 3;
+
+                int inset = EdgeInset;
+                int span = Height - inset * 2;
+                if (span <= 4) return;
+
+                int len = shortBar ? span * 3 / 10 : span * 3 / 5;
+                if (len < 4) len = 4;
+
+                int bx = leftEdge ? x + inset : x + Width - inset - TH;
+
+                Texture2D tex = SolidColorTextureCache.GetTexture(color);
+                batcher.Draw(tex, new Rectangle(bx, y + (Height - len) / 2, TH, len), hue);
             }
 
             public override bool Draw(UltimaBatcher2D batcher, int x, int y)
@@ -1686,12 +1789,71 @@ namespace ClassicUO.Game.UI.Gumps
 
                 if (!_hasItem) return true;
 
+                var borderHueVec = new Vector3(1, 0, 1);
+                ItemAppraisal.Result appraisal = ItemAppraisal.Appraise(_world, _item.Serial);
+
                 if (_item.MatchesHighlightData)
                 {
                     Texture2D borderTexture = SolidColorTextureCache.GetTexture(_item.HighlightColor);
-                    var borderHueVec = new Vector3(1, 0, 1);
 
                     DrawHighlightBorder(batcher, x, y, borderTexture, borderHueVec);
+                }
+                else
+                {
+                    // Appraisal border: tier color for weapons/armor, type color for wands,
+                    // neutral white for unidentified. Second in the chain on purpose — a
+                    // rule the user configured by hand is a more specific statement about
+                    // this item, and two borders in one slot would just overdraw.
+                    if (appraisal.Outline.HasValue)
+                    {
+                        Texture2D borderTexture = SolidColorTextureCache.GetTexture(appraisal.Outline.Value);
+
+                        DrawHighlightBorder(batcher, x, y, borderTexture, borderHueVec);
+
+                        // Exceptional gets a second, inset border rather than a color of its
+                        // own — quality is orthogonal to tier, so it needs its own channel.
+                        // Free here; the world surface would need a shader thickness uniform.
+                        if (appraisal.Exceptional)
+                            DrawInsetBorder(batcher, x, y, borderTexture, borderHueVec);
+
+                        // Accuracy pips along the bottom edge. Coloured by the ACCURACY
+                        // tier, not the item's border tier — so the dots carry the axis
+                        // entirely on their own: five gold pips is unmistakably Supremely
+                        // Accurate regardless of what the damage border says. That is what
+                        // lets the border mean damage and nothing else.
+                        if (appraisal.AccuracyTier > 0)
+                        {
+                            Texture2D accTexture = SolidColorTextureCache.GetTexture(
+                                AppraisalPalette.Tier(appraisal.AccuracyTier));
+                            DrawPips(batcher, x, y, appraisal.AccuracyTier, false, accTexture, borderHueVec);
+                        }
+                    }
+                }
+
+                // Durability pips along the top edge, in steel. Drawn for EVERY item that
+                // reports a durability tier — magic or not, rule-matched or not — so plain
+                // crafted gear shows its wear rating too. Deliberately outside both branches
+                // above: durability is independent of why (or whether) the slot has a border,
+                // and the steel pips sit inboard of any of them without overlapping.
+                if (appraisal.DurabilityTier > 0)
+                {
+                    Texture2D pipTexture = SolidColorTextureCache.GetTexture(AppraisalPalette.DurabilityPip);
+                    DrawPips(batcher, x, y, appraisal.DurabilityTier, true, pipTexture, borderHueVec);
+                }
+
+                // Wand type on the LEFT bar — its own element, so wand colors no longer
+                // compete with the tier ramp for the border and both palettes are free.
+                Color? wandColor = appraisal.WandColor;
+                if (wandColor.HasValue)
+                    DrawEdgeBar(batcher, x, y, wandColor.Value, true, false, borderHueVec);
+
+                // Slayer mark, also independent of the border — a slayer is a categorical
+                // property, not a tier, so it gets its own corner rather than competing
+                // for the color channel.
+                if (appraisal.Slayer != SlayerFamily.None)
+                {
+                    DrawSlayerMark(batcher, x, y,
+                        ItemAppraisal.FamilyColor(appraisal.Slayer), appraisal.SuperSlayer, borderHueVec);
                 }
 
                 if (MouseIsOver)

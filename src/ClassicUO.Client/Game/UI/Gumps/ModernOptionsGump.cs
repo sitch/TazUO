@@ -178,6 +178,10 @@ namespace ClassicUO.Game.UI.Gumps
             (new CheckboxWithLabel("Highlight unpicked chests", isChecked: profile.HighlightUnpickedChests, valueChanged: (b) => { profile.HighlightUnpickedChests = b; }),
                 true, page);
 
+            content.AddToRight
+            (new CheckboxWithLabel("Highlight weapons/armor/wands by quality", isChecked: profile.HighlightAppraisedItems, valueChanged: (b) => { profile.HighlightAppraisedItems = b; }),
+                true, page);
+
             content.BlankLine();
 
             content.AddToRight

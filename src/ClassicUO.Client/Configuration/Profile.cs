@@ -216,6 +216,7 @@ namespace ClassicUO.Configuration
         public bool SmoothDoors { get; set; } = true;
         public bool AutoOpenCorpses { get; set; } = true;
         public bool HighlightUnpickedChests { get; set; } = true;
+        public bool HighlightAppraisedItems { get; set; } = true;
         public int AutoOpenCorpseRange { get; set; } = 2;
         public int CorpseOpenOptions { get; set; } = 3;
         public bool SkipEmptyCorpse { get; set; }
