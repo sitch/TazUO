@@ -1115,7 +1115,11 @@ namespace ClassicUO.Renderer
             Vector2 origin,
             Vector2 scale,
             SpriteEffects effects,
-            float layerDepth
+            float layerDepth,
+            // Optional second stop for a vertical gradient along the outline: the top
+            // edge renders outlineColor, the bottom outlineColorEnd, interpolated
+            // between. Null means a flat single-color outline, as before.
+            Vector3? outlineColorEnd = null
         )
         {
             float sourceX, sourceY, sourceW, sourceH;
@@ -1175,7 +1179,8 @@ namespace ClassicUO.Renderer
                 (float)Math.Cos(rotation),
                 layerDepth,
                 (byte)(effects & (SpriteEffects)0x03),
-                outlineColor
+                outlineColor,
+                outlineColorEnd
             );
         }
 
@@ -1292,7 +1297,8 @@ namespace ClassicUO.Renderer
             float rotationCos,
             float depth,
             byte effects,
-            Vector3? normal
+            Vector3? normal,
+            Vector3? normalEnd = null
         )
         {
             // Skip if texture is null or disposed
@@ -1312,7 +1318,7 @@ namespace ClassicUO.Renderer
                 originX, originY,
                 rotationSin, rotationCos,
                 depth, effects,
-                normal
+                normal, normalEnd
             );
 
             _textureInfo[_numSprites] = texture;
@@ -1368,7 +1374,8 @@ namespace ClassicUO.Renderer
             float rotationCos,
             float depth,
             byte effects,
-            Vector3? normal = null
+            Vector3? normal = null,
+            Vector3? normalEnd = null
         )
         {
             float cornerX = -originX * destinationW;
@@ -1418,12 +1425,20 @@ namespace ClassicUO.Renderer
             sprite.Hue2 = color;
             sprite.Hue3 = color;
 
+            // Corner order is 0=TL, 1=TR, 2=BL, 3=BR (see _cornerOffsetX/_cornerOffsetY).
+            // Normal is a per-vertex attribute that the rasterizer interpolates, and the
+            // shader's OUTLINE branch reads it per-fragment as the outline color — so
+            // giving the bottom pair a different value yields a vertical gradient along
+            // the outline for the cost of two extra writes and no shader change.
+            // normalEnd == null keeps the flat single-color behavior every other caller
+            // expects.
             Vector3 n = normal ?? new Vector3(0, 0, 1);
+            Vector3 nEnd = normalEnd ?? n;
 
             sprite.Normal0 = n;
             sprite.Normal1 = n;
-            sprite.Normal2 = n;
-            sprite.Normal3 = n;
+            sprite.Normal2 = nEnd;
+            sprite.Normal3 = nEnd;
         }
 
 

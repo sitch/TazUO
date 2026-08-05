@@ -269,6 +269,10 @@ namespace ClassicUO.Game.Managers
 
             Register("animbrowser", (s) => { UIManager.Add(new AnimBrowser(_world)); });
 
+            // Temporary — outline legibility comparison board. Delete alongside OutlineLabGump
+            // once the visual language is settled.
+            Register("outlinelab", (s) => { UIManager.Add(new UI.Gumps.OutlineLabGump(_world)); });
+
             Register("syncfps", (_) =>
             {
                 Settings.GlobalSettings.FPS = GameController.SupportedRefreshRate;
