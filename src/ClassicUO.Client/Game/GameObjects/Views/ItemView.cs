@@ -77,11 +77,10 @@ namespace ClassicUO.Game.GameObjects
         /// empty tint as the level drops, so a nearly-empty container shows colour only
         /// along its base — reading like a level in a vessel.
         /// </summary>
-        private static (Color Top, Color Bottom) ContainerCapacityOutline(string oplText)
+        private static (Color? Top, Color? Bottom) ContainerCapacityOutline(string oplText)
         {
             const float MAX_STONES = 100000f;   // effective ceiling for home storage
             const int   FULL_ITEMS = 125;       // classic container item limit
-            const float EMPTY_A = 0.10f;        // present, but clearly muted
 
             int count = PickedChestRegistry.TooltipItemCount(oplText) ?? 0;
             int weight = PickedChestRegistry.TooltipWeight(oplText) ?? 0;
@@ -90,18 +89,11 @@ namespace ClassicUO.Game.GameObjects
 
             if (count <= 0)
             {
-                // Empty: muted rather than merely faint. The neutral tint is darkened
-                // toward the background as well as dropped in opacity, so an empty
-                // container reads as "nothing here" instead of as a dim version of a
-                // full one — opacity alone left it ambiguous against a lightly-loaded
-                // container at the bottom of the ramp.
-                const float DIM = 0.55f;
-                var muted = new Color(
-                    (byte)(empty.R * DIM),
-                    (byte)(empty.G * DIM),
-                    (byte)(empty.B * DIM),
-                    (byte)(255 * EMPTY_A));
-                return (muted, muted);
+                // Empty containers draw NOTHING. A faint edge on every empty crate,
+                // barrel and drawer in a house is a lot of ink for "there is nothing
+                // here" — the outline exists to report contents, and an empty container
+                // has none to report. Its absence is the signal.
+                return (null, null);
             }
 
             // Weight -> hue along the capacity ramp.
@@ -329,7 +321,7 @@ namespace ClassicUO.Game.GameObjects
                             }
                             else
                             {
-                                (Color t, Color b) = ContainerCapacityOutline(oplText);
+                                (Color? t, Color? b) = ContainerCapacityOutline(oplText);
                                 glowColor = t;
                                 glowColorEnd = b;
                             }
@@ -355,7 +347,7 @@ namespace ClassicUO.Game.GameObjects
                             }
                             else
                             {
-                                (Color t2, Color b2) = ContainerCapacityOutline(oplText);
+                                (Color? t2, Color? b2) = ContainerCapacityOutline(oplText);
                                 glowColor = t2;
                                 glowColorEnd = b2;
                             }

@@ -115,9 +115,19 @@ internal sealed class PacketParser
 
                 if (stream.Length < packetlength)
                 {
-                    Log.Warn(
-                        $"Need more data ID: {packetID:X2} | off: {offset} | len: {packetlength} | stream.pos: {stream.Length}"
-                    );
+                    // NOT an error, and not even unusual: a packet split across TCP reads
+                    // is normal reassembly, and the loop simply resumes when the rest
+                    // arrives. Logging it at Warn made every fragmented packet a log line —
+                    // several per second here, since MergeSingleClickIntoTooltip provokes a
+                    // steady stream of 0xC1 label packets, which are exactly the ones that
+                    // fragment. Kept behind Debug so it stays available when actually
+                    // diagnosing the network layer.
+                    if (CUOEnviroment.Debug)
+                    {
+                        Log.Debug(
+                            $"Need more data ID: {packetID:X2} | off: {offset} | len: {packetlength} | stream.pos: {stream.Length}"
+                        );
+                    }
 
                     // need more data
                     break;
