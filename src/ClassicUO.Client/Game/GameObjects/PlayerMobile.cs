@@ -342,6 +342,10 @@ namespace ClassicUO.Game.GameObjects
                 UIManager.ForEach<ImprovedBuffGump>(g => g.RemoveBuff(graphic));
         }
 
+        // Weapon graphics already reported as having no ability mapping, so the notice
+        // is emitted once rather than on every re-equip.
+        private static readonly HashSet<ushort> _abilityGapLogged = new HashSet<ushort>();
+
         public void UpdateAbilities()
         {
             AbilityData.DefaultItemAbilities.Set(Abilities);
@@ -366,7 +370,16 @@ namespace ClassicUO.Game.GameObjects
                 }
                 else
                 {
-                    Log.Warn($"Could not update abilities ${weapon.OriginalGraphic} \"${weapon.Name}\" has no GraphicToAbilitiesMap[OriginalGraphic] data");
+                    // Not a warning: plenty of things tiledata flags as weapons have no
+                    // special moves at all — a fishing pole (0x0DC0) is the common case
+                    // here, and re-equipping one in a fishing loop fired this every few
+                    // seconds. On a pre-AOS shard weapon abilities barely apply anyway.
+                    // Logged once per graphic at Trace so a genuine gap is still findable.
+                    if (_abilityGapLogged.Add(weapon.OriginalGraphic))
+                    {
+                        Log.Trace($"No ability data for weapon graphic 0x{weapon.OriginalGraphic:X4}" +
+                                  (string.IsNullOrEmpty(weapon.Name) ? "" : $" \"{weapon.Name}\""));
+                    }
                 }
             }
 
