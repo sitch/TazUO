@@ -168,7 +168,7 @@ namespace ClassicUO.Game.Managers
                 : Math.Max(DamageTier, 1);
 
             public bool HasAnything =>
-                Kind != AppraisalKind.None || Unidentified
+                Kind != AppraisalKind.None || Unidentified || Exceptional
                 || DurabilityTier > 0 || Slayer != SlayerFamily.None || Rare;
 
             /// <summary>Left-bar color for a wand, from the live palette.</summary>
@@ -328,6 +328,15 @@ namespace ClassicUO.Game.Managers
             // identifies it as a rare.
             if (r.Rare && !r.Outline.HasValue)
                 r.Outline = AppraisalPalette.RareOutline;
+
+            // Exceptional with no magic tier at all — an exceptionally crafted tambourine,
+            // say. Exceptional is drawn as a SECOND inset border, which only renders when
+            // there is an outer border to sit inside, so such an item previously showed
+            // nothing whatsoever. Give it the tier-1 colour: semantically right, since it
+            // is a common item that happens to be well made, and it reuses the existing
+            // doubled-border vocabulary rather than inventing another colour.
+            if (r.Exceptional && !r.Outline.HasValue)
+                r.Outline = AppraisalPalette.Tier(1);
 
             return r;
         }
