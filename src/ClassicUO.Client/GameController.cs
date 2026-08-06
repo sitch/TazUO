@@ -54,12 +54,17 @@ namespace ClassicUO
         private static Vector3 bgHueShader = new(0, 0, 0.3f);
         private bool drawScene;
 
-#if DEBUG
+        // Registered in RELEASE too, not just DEBUG. FNA only routes through
+        // FNALoggerEXT once something subscribes; with no subscriber it falls back to
+        // its own logger, which writes straight to stdout untimestamped and unfiltered.
+        // That made FnaLogWarn's "Scissor rect and viewport" filter dead code in every
+        // shipped build — the message it exists to suppress was bypassing it entirely,
+        // spamming the console and the log file. Routing FNA through the client logger
+        // also gives its output the same timestamps and levels as everything else.
         static GameController()
         {
             RegisterFnaLoggerListeners();
         }
-#endif
 
         public GameController(IPluginHost pluginHost)
         {
