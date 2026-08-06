@@ -273,6 +273,38 @@ namespace ClassicUO.Game.Managers
             // once the visual language is settled.
             Register("outlinelab", (s) => { UIManager.Add(new UI.Gumps.OutlineLabGump(_world)); });
 
+            // Temporary diagnostic: dump appraisal state for every item whose graphic is
+            // in the rares list, so a mismatch between "is a rare graphic" and "resolved
+            // as rare" is visible instead of guessed at.
+            Register("appraise", (s) =>
+            {
+                var sb = new System.Text.StringBuilder();
+                int n = 0;
+                foreach (var kv in _world.Items)
+                {
+                    GameObjects.Item it = kv.Value;
+                    if (it == null || it.IsDestroyed) continue;
+                    bool gfxRare = AppraisalPalette.IsRare(it.Graphic);
+                    ItemAppraisal.Result r = ItemAppraisal.Appraise(_world, it.Serial);
+                    if (!gfxRare && !r.Rare) continue;
+                    bool opl = _world.OPL.TryGetNameAndData(it.Serial, out string nm, out _);
+                    sb.AppendFormat(
+                        "0x{0:X8} gfx=0x{1:X4} gfxRare={2} rare={3} resultGfx=0x{4:X4} outline={5} kind={6} opl={7} name={8}\n",
+                        it.Serial, it.Graphic, gfxRare, r.Rare, r.Graphic,
+                        r.Outline.HasValue, r.Kind, opl, nm ?? "");
+                    n++;
+                }
+                sb.AppendFormat("enabled={0} paletteCount={1}\n",
+                    ItemAppraisal.Enabled, AppraisalPalette.RareGraphicCount);
+                try
+                {
+                    System.IO.File.WriteAllText(System.IO.Path.Combine(
+                        CUOEnviroment.ExecutablePath, "Data", "Client", "appraise_dump.txt"), sb.ToString());
+                    GameActions.Print(_world, $"appraise: wrote {n} rows to Data/Client/appraise_dump.txt");
+                }
+                catch (System.Exception ex) { GameActions.Print(_world, "appraise failed: " + ex.Message); }
+            });
+
             Register("syncfps", (_) =>
             {
                 Settings.GlobalSettings.FPS = GameController.SupportedRefreshRate;

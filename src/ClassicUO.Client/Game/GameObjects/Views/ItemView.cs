@@ -57,18 +57,72 @@ namespace ClassicUO.Game.GameObjects
         /// carries no maximum), so REF_STONES is a reference point rather than a real cap
         /// and heavier containers simply saturate.
         /// </summary>
-        private static Color ContainerFullnessOutline(string oplText)
+        /// <summary>
+        /// The universal container outline, encoding BOTH quantities the shard reports.
+        ///
+        ///   item count  -> the fill LEVEL: how far up the sprite the "filled" colour
+        ///                  reaches, rendered as the outline's vertical gradient
+        ///   weight      -> the COLOUR of that filled portion, on a LOG scale
+        ///
+        /// Two channels because the world surface has no others: a sprite outline can
+        /// express colour and opacity and nothing else, so pips or bars are unavailable
+        /// here. The gradient's two stops are the only way to carry a second value.
+        ///
+        /// Weight is logarithmic because home containers are effectively unbounded — the
+        /// heaviest observed here is ~16000 stones against a 100000 cap — and a linear
+        /// ramp would crush everything below a few thousand into one indistinguishable
+        /// shade. Log keeps 200 and 20000 clearly apart.
+        ///
+        /// Returns (top, bottom). Bottom is the filled colour; top blends toward the
+        /// empty tint as the level drops, so a nearly-empty container shows colour only
+        /// along its base — reading like a level in a vessel.
+        /// </summary>
+        private static (Color Top, Color Bottom) ContainerCapacityOutline(string oplText)
         {
-            const float REF_STONES = 900f;
-            const float MIN_A = 0.14f;
-            const float MAX_A = 0.62f;
+            const float MAX_STONES = 100000f;   // effective ceiling for home storage
+            const int   FULL_ITEMS = 125;       // classic container item limit
+            const float EMPTY_A = 0.10f;        // present, but clearly muted
 
+            int count = PickedChestRegistry.TooltipItemCount(oplText) ?? 0;
             int weight = PickedChestRegistry.TooltipWeight(oplText) ?? 0;
-            float t = weight <= 0 ? 0f : (float)Math.Sqrt(Math.Min(1f, weight / REF_STONES));
-            var a = (byte)(255 * (MIN_A + (MAX_A - MIN_A) * t));
 
-            Color c = AppraisalPalette.ContainerOutline;
-            return new Color(c.R, c.G, c.B, a);
+            Color empty = AppraisalPalette.ContainerOutline;
+
+            if (count <= 0)
+            {
+                // Empty: muted rather than merely faint. The neutral tint is darkened
+                // toward the background as well as dropped in opacity, so an empty
+                // container reads as "nothing here" instead of as a dim version of a
+                // full one — opacity alone left it ambiguous against a lightly-loaded
+                // container at the bottom of the ramp.
+                const float DIM = 0.55f;
+                var muted = new Color(
+                    (byte)(empty.R * DIM),
+                    (byte)(empty.G * DIM),
+                    (byte)(empty.B * DIM),
+                    (byte)(255 * EMPTY_A));
+                return (muted, muted);
+            }
+
+            // Weight -> hue along the capacity ramp.
+            float w = (float)(Math.Log(1 + Math.Min(weight, MAX_STONES)) / Math.Log(1 + MAX_STONES));
+            Color heavy = AppraisalPalette.CapacityRamp(w);
+
+            // Count -> level. Fuller containers also render more opaque, so the two cues
+            // reinforce rather than compete.
+            float level = Math.Min(1f, count / (float)FULL_ITEMS);
+            var alpha = (byte)(255 * (0.32f + 0.42f * level));
+
+            var bottom = new Color(heavy.R, heavy.G, heavy.B, alpha);
+            // Top stop interpolates from the empty tint up to the filled colour as the
+            // level rises; at level 1 both stops match and the outline is uniform.
+            var top = new Color(
+                (byte)(empty.R + (heavy.R - empty.R) * level),
+                (byte)(empty.G + (heavy.G - empty.G) * level),
+                (byte)(empty.B + (heavy.B - empty.B) * level),
+                alpha);
+
+            return (top, bottom);
         }
 
         public override bool Draw(UltimaBatcher2D batcher, int posX, int posY, float depth)
@@ -213,11 +267,15 @@ namespace ClassicUO.Game.GameObjects
             //   * No glow: non-pickable name (ballot box, furniture, books, …),
             //     or count == 0 without a CSV record (bank deco, furniture, …).
             Color? glowColor = null;
+            Color? glowColorEnd = null;
+            // Any ground container qualifies for the capacity outline — bags, backpacks,
+            // pouches and barrels included. The NonChestGraphics blacklist is about
+            // LOCKPICKING, not about whether something holds items, so it is applied
+            // further down to the teal decision only.
             bool highlightEnabled = ProfileManager.CurrentProfile != null
                 && ProfileManager.CurrentProfile.HighlightUnpickedChests
                 && OnGround
-                && ItemData.IsContainer
-                && !PickedChestRegistry.NonChestGraphics.Contains(Graphic);
+                && ItemData.IsContainer;
 
             if (highlightEnabled)
             {
@@ -226,9 +284,10 @@ namespace ClassicUO.Game.GameObjects
                     World.OPL.TryGetNameAndData(Serial, out string oplName, out string oplData);
                     string oplText = (oplName ?? string.Empty) + "\n" + (oplData ?? string.Empty);
 
-                    if (PickedChestRegistry.IsKnownNonChestName(oplText))
+                    if (PickedChestRegistry.IsNeverContainer(oplText))
                     {
-                        // Definitive: name says it's not a chest. Pin to "no glow".
+                        // Not storage at all (decorative, books, game boards). Pin to
+                        // "no glow" — it has no capacity worth reporting.
                         _chestGlowCache = null;
                         _chestGlowResolved = true;
                     }
@@ -244,6 +303,13 @@ namespace ClassicUO.Game.GameObjects
                         int? count = PickedChestRegistry.TooltipItemCount(oplText);
                         bool lockedDown = PickedChestRegistry.IsLockedDown(oplText);
 
+                        // Lockpicking candidacy is narrower than "is a container": a
+                        // backpack, pouch or barrel holds things but is never a pick
+                        // target. Those still earn the capacity outline below.
+                        bool lockCandidate =
+                            !PickedChestRegistry.NonChestGraphics.Contains(Graphic)
+                            && !PickedChestRegistry.IsNotLockpickable(oplText);
+
                         // A locked-down container is house furniture and can never be a
                         // lockpicking target. A container that reports its contents at all
                         // is, by definition, one whose lock isn't stopping us — you cannot
@@ -256,14 +322,16 @@ namespace ClassicUO.Game.GameObjects
                         // teal — the exact false positive this replaces.
                         if (lockedDown || count.HasValue)
                         {
-                            if (!lockedDown && count.Value == 0
+                            if (lockCandidate && !lockedDown && count.Value == 0
                                 && PickedChestRegistry.IsPicked(X, Y, World.MapIndex))
                             {
                                 glowColor = _lootedChestGlowColor;   // we emptied this one
                             }
                             else
                             {
-                                glowColor = ContainerFullnessOutline(oplText);
+                                (Color t, Color b) = ContainerCapacityOutline(oplText);
+                                glowColor = t;
+                                glowColorEnd = b;
                             }
                             _chestGlowCache = glowColor;
                             _chestGlowResolved = true;
@@ -278,9 +346,19 @@ namespace ClassicUO.Game.GameObjects
                         else
                         {
                             // Genuinely no contents line yet: either still locked, or the
-                            // OPL hasn't filled in. Deliberately not cached, so the next
-                            // frame with real data wins.
-                            glowColor = _unpickedChestGlowColor;
+                            // OPL hasn't filled in. Only a lockpick candidate earns teal
+                            // here; a closed bag or barrel just gets its capacity outline.
+                            // Deliberately not cached, so the next frame with real data wins.
+                            if (lockCandidate)
+                            {
+                                glowColor = _unpickedChestGlowColor;
+                            }
+                            else
+                            {
+                                (Color t2, Color b2) = ContainerCapacityOutline(oplText);
+                                glowColor = t2;
+                                glowColorEnd = b2;
+                            }
                         }
                     }
                 }
@@ -309,17 +387,19 @@ namespace ClassicUO.Game.GameObjects
             if (glowColor.HasValue)
             {
                 OutlineColor = glowColor.Value;
+                OutlineColorEnd = glowColorEnd;
                 _outlineOwned = true;
             }
             else if (_outlineOwned)
             {
                 OutlineColor = null;
+                OutlineColorEnd = null;
                 _outlineOwned = false;
             }
 
             if (!IsMulti && !IsCoin && Amount > 1 && ItemData.IsStackable)
             {
-                DrawStaticAnimated(batcher, graphic, posX - 5, posY - 5, hueVec, false, depth, outlineColor: OutlineColor);
+                DrawStaticAnimated(batcher, graphic, posX - 5, posY - 5, hueVec, false, depth, outlineColor: OutlineColor, outlineColorEnd: OutlineColorEnd);
             }
 
             if (
@@ -331,7 +411,7 @@ namespace ClassicUO.Game.GameObjects
                 hueVec.Z = 0.5f;
             }
 
-            DrawStaticAnimated(batcher, graphic, posX, posY, hueVec, false, depth, outlineColor: OutlineColor);
+            DrawStaticAnimated(batcher, graphic, posX, posY, hueVec, false, depth, outlineColor: OutlineColor, outlineColorEnd: OutlineColorEnd);
 
             return true;
         }

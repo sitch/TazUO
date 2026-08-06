@@ -72,19 +72,27 @@ namespace ClassicUO.Game.Managers
         // graphics (0x0E40, 0x0E7C) as dungeon treasure chests — only the tooltip name
         // distinguishes them ("metal chest" = bank static, "a metal chest" / "a treasure
         // chest" / "crate" = dynamic, possibly pickable).
-        public static readonly string[] NonChestNameKeywords = new[]
+        // TWO different questions, previously conflated in one list:
+        //
+        //   NeverContainer      — not storage at all. Draws nothing, ever.
+        //   NotLockpickable     — real storage with real capacity, but never a
+        //                         lockpicking target. Still gets the fullness outline.
+        //
+        // Merging them meant barrels, kegs and dressers were excluded from the capacity
+        // outline purely because they aren't worth picking, which is a different claim.
+        public static readonly string[] NeverContainerNameKeywords = new[]
         {
-            // "metal chest" is NOT in this list — bank-deco metal chests are filtered
-            // by the count==0 check below (they always tooltip with "(0 items, ...)"),
-            // while pickable metal chests have empty data and pass through.
-            //
-            // Furniture / non-pickable static containers go here. The count==0 check
-            // catches most of these too, but the name filter is a robust fallback for
-            // items whose tooltip might lack the "(0 items, 0 stones)" line.
-            "chest of drawers",
-            "dresser",
-            "armoire",
-            "wardrobe",
+            // "decorative" is definitional on this shard: a decorative container is a
+            // display prop and can never hold anything.
+            "decorative",
+            "bookcase",
+            "bookshelf",
+            // Potion kegs carry the IsContainer tile flag but are not browsable storage:
+            // they hold charges of one potion type, not arbitrary items, so a capacity
+            // outline would be reporting a number that means nothing here. Covers both
+            // "An empty potion keg" and "A keg of Greater Cure potions".
+            "potion keg",
+            "keg of ",
             "ballot box",
             "spellbook",
             "runebook",
@@ -96,24 +104,38 @@ namespace ClassicUO.Game.Managers
             "backgammon",
             "dart board",
             "game board",
+        };
+
+        public static readonly string[] NotLockpickableNameKeywords = new[]
+        {
+            "chest of drawers",
+            "dresser",
+            "armoire",
+            "wardrobe",
             "barrel",
             "keg",
             "trash",
         };
 
-        public static bool IsKnownNonChestName(string oplText)
+        private static bool MatchesAny(string oplText, string[] keywords)
         {
             if (string.IsNullOrEmpty(oplText)) return false;
-            // Match against the whole OPL blob (Name + Data merged). On this shard the
-            // Name field is often empty for statics — the actual item name lives in
-            // the single-click label that lands in Data via the merge-tooltip mod.
             string lower = oplText.ToLowerInvariant();
-            foreach (string kw in NonChestNameKeywords)
-            {
+            foreach (string kw in keywords)
                 if (lower.IndexOf(kw, StringComparison.Ordinal) >= 0) return true;
-            }
             return false;
         }
+
+        public static bool IsNeverContainer(string oplText) =>
+            MatchesAny(oplText, NeverContainerNameKeywords);
+
+        public static bool IsNotLockpickable(string oplText) =>
+            MatchesAny(oplText, NotLockpickableNameKeywords);
+
+        // Union of both lists — kept for callers that only care "is this not a
+        // treasure chest", e.g. the chestmaster script alignment.
+        public static bool IsKnownNonChestName(string oplText) =>
+            IsNeverContainer(oplText) || IsNotLockpickable(oplText);
 
         // Matches the tooltip "(N items, M stones)" line UO renders under a container
         // whose contents are knowable to the client (i.e., it has been opened). Ported

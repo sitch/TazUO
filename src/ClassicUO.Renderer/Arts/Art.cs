@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using ClassicUO.Assets;
 using ClassicUO.Utility;
 using ClassicUO.Utility.Logging;
@@ -32,6 +33,10 @@ namespace ClassicUO.Renderer.Arts
         public ref readonly SpriteInfo GetArt(uint idx)
             => ref Get(idx + 0x4000);
 
+        // Indices already reported as missing, so the warning is emitted once rather
+        // than once per frame per on-screen tile.
+        private readonly HashSet<uint> _missingArtLogged = new HashSet<uint>();
+
         private ref readonly SpriteInfo Get(uint idx)
         {
             if (idx >= _spriteInfos.Length)
@@ -51,11 +56,22 @@ namespace ClassicUO.Renderer.Arts
 
                 if (artInfo.Pixels.IsEmpty && idx > 0)
                 {
-                    // Trying to load a texture that does not exist in the client MULs
-                    // Degrading gracefully and only crash if not even the fallback ItemID exists
-                    Log.Error(
-                        $"Texture not found for sprite: idx: {idx}; itemid: {(idx > 0x4000 ? idx - 0x4000 : '-')}"
-                    );
+                    // Trying to load a texture that does not exist in the client MULs.
+                    // Degrade gracefully; only crash if not even the fallback ItemID exists.
+                    //
+                    // Logged ONCE PER INDEX, at Warn. A shard that references art absent
+                    // from these MULs re-hits this every frame the tile is on screen —
+                    // one missing land tile produced 11,518 identical Error lines in a
+                    // single session here and was a large part of a 3 GB log. The
+                    // condition is a data mismatch, not a per-frame failure, so it only
+                    // needs saying once.
+                    if (_missingArtLogged.Add(idx))
+                    {
+                        Log.Warn(
+                            $"Texture not found for sprite: idx: {idx}" +
+                            (idx > 0x4000 ? $"; itemid: 0x{idx - 0x4000:X4}" : " (land tile)")
+                        );
+                    }
                     return ref Get(0); // ItemID of "UNUSED" placeholder
                 }
 

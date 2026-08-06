@@ -1589,14 +1589,19 @@ namespace ClassicUO.Game.UI.Gumps
             /// Shared inset for every element drawn inside the slot (inset border, pips,
             /// edge bars) so they all clear the outer and inset border rings.
             /// </summary>
-            private int EdgeInset => 6 + _profile.GridHighlightSize * 2 + 2;
+            // Layout is computed with the top-tier bonus included UNCONDITIONALLY, so
+            // pips and edge bars sit at identical positions whatever tier is drawn. A
+            // pixel of padding on lesser items is far cheaper than a grid that jitters
+            // as you scroll past an exotic.
+            private int EdgeInset =>
+                6 + _profile.GridHighlightSize * 2 + AppraisalPalette.TopTierBorderBonus + 2;
 
             /// <summary>
             /// Draws a highlighted border around the grid item
             /// </summary>
-            private void DrawHighlightBorder(UltimaBatcher2D batcher, int x, int y, Texture2D borderTexture, Vector3 borderHueVec)
+            private void DrawHighlightBorder(UltimaBatcher2D batcher, int x, int y, Texture2D borderTexture, Vector3 borderHueVec, int thickness = 0)
             {
-                int bsize = _profile.GridHighlightSize;
+                int bsize = thickness > 0 ? thickness : _profile.GridHighlightSize;
                 int bx = x + 6;
                 int by = y + 6;
                 int innerWidth = Width - 12;
@@ -1622,7 +1627,7 @@ namespace ClassicUO.Game.UI.Gumps
             private void DrawInsetBorder(UltimaBatcher2D batcher, int x, int y, Texture2D tex, Vector3 hue)
             {
                 int bsize = _profile.GridHighlightSize;
-                int gap = bsize + 1;
+                int gap = bsize + AppraisalPalette.TopTierBorderBonus + 1;
                 int bx = x + 6 + gap;
                 int by = y + 6 + gap;
                 int iw = Width - 12 - gap * 2;
@@ -1808,7 +1813,9 @@ namespace ClassicUO.Game.UI.Gumps
                     {
                         Texture2D borderTexture = SolidColorTextureCache.GetTexture(appraisal.Outline.Value);
 
-                        DrawHighlightBorder(batcher, x, y, borderTexture, borderHueVec);
+                        DrawHighlightBorder(batcher, x, y, borderTexture, borderHueVec,
+                            _profile.GridHighlightSize
+                            + (appraisal.BorderTier >= 5 ? AppraisalPalette.TopTierBorderBonus : 0));
 
                         // Exceptional gets a second, inset border rather than a color of its
                         // own — quality is orthogonal to tier, so it needs its own channel.
@@ -1846,6 +1853,18 @@ namespace ClassicUO.Game.UI.Gumps
                 Color? wandColor = appraisal.WandColor;
                 if (wandColor.HasValue)
                     DrawEdgeBar(batcher, x, y, wandColor.Value, true, false, borderHueVec);
+
+                // Rare marker: a small filled square in the top-left corner. Corners are
+                // the last free real estate — pips are centred on the top and bottom
+                // edges, the bars are centred vertically on the sides — so this composes
+                // with everything else. Drawn even when the item also has a tier border,
+                // since "collectible" and "powerful" are independent claims.
+                if (appraisal.Rare)
+                {
+                    int inset = EdgeInset;
+                    Texture2D rareTex = SolidColorTextureCache.GetTexture(AppraisalPalette.RareOutline);
+                    batcher.Draw(rareTex, new Rectangle(x + inset, y + inset, 5, 5), borderHueVec);
+                }
 
                 // Slayer mark, also independent of the border — a slayer is a categorical
                 // property, not a tier, so it gets its own corner rather than competing

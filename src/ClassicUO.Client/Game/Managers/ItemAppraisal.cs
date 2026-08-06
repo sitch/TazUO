@@ -132,6 +132,21 @@ namespace ClassicUO.Game.Managers
             public bool SuperSlayer;
             /// <summary>Charge-type key (e.g. "identification"), or null when not a wand.</summary>
             public string WandType;
+            /// <summary>Art graphic, needed because rares are matched by graphic, not text.</summary>
+            public ushort Graphic;
+            /// <summary>Collector rare, by graphic OR by name (see AppraisalPalette).</summary>
+            public bool Rare;
+            /// <summary>
+            /// Text used for name-based rare matching, kept so it re-evaluates when the
+            /// palette's rareNames list is edited live.
+            ///
+            /// This is the OPL Name PLUS the first line of Data, because a locked-down
+            /// item does not keep its real name in Name: the label merger promotes the
+            /// "locked down" label there and the actual name is pushed into Data. 786
+            /// items in this player's own database are in that state, so matching Name
+            /// alone silently missed every rare locked down in the house.
+            /// </summary>
+            public string Name;
             /// <summary>Border color: tier or unidentified. Null for a plain wand.</summary>
             public Color? Outline;
 
@@ -154,7 +169,7 @@ namespace ClassicUO.Game.Managers
 
             public bool HasAnything =>
                 Kind != AppraisalKind.None || Unidentified
-                || DurabilityTier > 0 || Slayer != SlayerFamily.None;
+                || DurabilityTier > 0 || Slayer != SlayerFamily.None || Rare;
 
             /// <summary>Left-bar color for a wand, from the live palette.</summary>
             public Color? WandColor
@@ -201,7 +216,20 @@ namespace ClassicUO.Game.Managers
             if (_cache.TryGetValue(serial, out Entry e))
             {
                 if (e.Frozen)
+                {
+                    // Repair an entry that froze before the item was resolvable. Graphic is
+                    // stamped from world.Items, which can miss in the first frames after a
+                    // container opens, and rarity is computed FROM the graphic — so a 0
+                    // there means rarity was never actually evaluated, and the item would
+                    // stay unmarked forever. Symptom was two identical candelabra in one
+                    // bag where only one carried the rare border.
+                    if (e.Value.Graphic == 0
+                        && world.Items.TryGetValue(serial, out GameObjects.Item late))
+                    {
+                        e.Value.Graphic = late.Graphic;
+                    }
                     return Recolor(e.Value);
+                }
 
                 // Not frozen yet: reuse only while the OPL text is genuinely unchanged.
                 //
@@ -219,9 +247,34 @@ namespace ClassicUO.Game.Managers
             }
 
             if (!world.OPL.TryGetNameAndData(serial, out string name, out string data))
+            {
+                // Rarity is decided by GRAPHIC alone and needs no tooltip, so a missing
+                // OPL entry must not suppress it. This is the common case in the world:
+                // ground decorations only get OPL once something asks for it (a hover, or
+                // a container gump laying them out), so gating rares behind OPL meant a
+                // rare sitting on a table was never marked until pointed at.
+                if (world.Items.TryGetValue(serial, out GameObjects.Item bare)
+                    && AppraisalPalette.IsRare(bare.Graphic))
+                {
+                    return Recolor(new Result { Graphic = bare.Graphic });
+                }
                 return default;
+            }
 
             Result r = Parse((name ?? string.Empty) + "\n" + (data ?? string.Empty));
+            // Name + first line of Data — see Result.Name for why Data matters here.
+            // Only the first line, to keep cached entries small; the real name is always
+            // the leading line when the merger has displaced it.
+            string firstData = data;
+            if (!string.IsNullOrEmpty(firstData))
+            {
+                int nl = firstData.IndexOf('\n');
+                if (nl > 0) firstData = firstData.Substring(0, nl);
+            }
+            r.Name = string.IsNullOrEmpty(firstData) ? name : (name + "\n" + firstData);
+            if (world.Items.TryGetValue(serial, out GameObjects.Item gi))
+                r.Graphic = gi.Graphic;
+            r = Recolor(r);
 
             world.OPL.TryGetRevision(serial, out uint revision);
 
@@ -253,6 +306,14 @@ namespace ClassicUO.Game.Managers
         /// </summary>
         private static Result Recolor(Result r)
         {
+            // Re-checked here rather than cached, so appending to rareGraphics in the
+            // palette file lights items up without invalidating any parse results.
+            // Graphic OR name. Shard-custom rares reuse ordinary art — Marijuana is drawn
+            // with the Nightshade graphic, shared with 144 ordinary reagents here — so the
+            // graphic alone would either miss them or flag every reagent.
+            r.Rare = (r.Graphic != 0 && AppraisalPalette.IsRare(r.Graphic))
+                     || AppraisalPalette.IsRareName(r.Name);
+
             if (r.Unidentified && r.Kind != AppraisalKind.Wand)
                 r.Outline = AppraisalPalette.Unidentified;
             else if (r.Kind == AppraisalKind.Weapon || r.Kind == AppraisalKind.Armor)
@@ -261,6 +322,13 @@ namespace ClassicUO.Game.Managers
                 r.Outline = AppraisalPalette.Unidentified;
             else
                 r.Outline = null;
+
+            // A rare carries no magic tier, so the border is free — claim it. If the item
+            // somehow does have a tier, that wins the border and the corner mark still
+            // identifies it as a rare.
+            if (r.Rare && !r.Outline.HasValue)
+                r.Outline = AppraisalPalette.RareOutline;
+
             return r;
         }
 

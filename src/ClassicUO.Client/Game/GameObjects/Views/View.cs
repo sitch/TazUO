@@ -41,6 +41,10 @@ namespace ClassicUO.Game.GameObjects
         public ObjectHandlesStatus ObjectHandlesStatus;
         public Rectangle FrameInfo;
         public Color? OutlineColor = null;
+        // Optional second gradient stop for the outline. When set, the outline blends
+        // from OutlineColor at the TOP of the sprite to OutlineColorEnd at the BOTTOM.
+        // Used by the container capacity outline to render a fill level.
+        public Color? OutlineColorEnd = null;
         protected bool IsFlipped;
 
         public abstract bool Draw(UltimaBatcher2D batcher, int posX, int posY, float depth);
@@ -141,7 +145,8 @@ namespace ClassicUO.Game.GameObjects
             Vector3 hue,
             float depth,
             bool isWet = false,
-            Color? outlineColor = null
+            Color? outlineColor = null,
+            Color? outlineColorEnd = null
         )
         {
             ref readonly SpriteInfo artInfo = ref Client.Game.UO.Arts.GetArt(graphic);
@@ -208,21 +213,43 @@ namespace ClassicUO.Game.GameObjects
                     var outlineNormal = new Vector3(oc.R / 255f, oc.G / 255f, oc.B / 255f);
                     // The outline colour's ALPHA channel scales opacity, on top of the
                     // object's own alpha. Callers wanting a flat outline pass an opaque
-                    // colour (A=255) and behave exactly as before; the container fullness
-                    // outline varies A to encode how full the container is.
+                    // colour (A=255) and behave exactly as before.
                     Vector3 outlineHue = ShaderHueTranslator.GetOutlineHueVector(hue.Z * (oc.A / 255f));
+
+                    Vector3? endNormal = null;
+                    Vector2 outlinePos = pos;
+                    Rectangle outlineUV = artInfo.UV;
+
+                    if (outlineColorEnd.HasValue)
+                    {
+                        Color ec = outlineColorEnd.Value;
+                        endNormal = new Vector3(ec.R / 255f, ec.G / 255f, ec.B / 255f);
+
+                        // A gradient MUST be mapped to the sprite's real bounds, not the
+                        // art tile. UO tiles carry heavy transparent margin, so quad-mapped
+                        // the visible sprite only ever samples the middle of the ramp and
+                        // never reaches either endpoint — measured at roughly half the
+                        // intended range, with small sprites collapsing to near-flat.
+                        Rectangle b = Client.Game.UO.Arts.GetRealArtBounds(graphic);
+                        if (b.Width > 0 && b.Height > 0)
+                        {
+                            outlineUV = new Rectangle(artInfo.UV.X + b.X, artInfo.UV.Y + b.Y, b.Width, b.Height);
+                            outlinePos = new Vector2(pos.X + b.X, pos.Y + b.Y);
+                        }
+                    }
 
                     batcher.DrawOutlined(
                         artInfo.Texture,
-                        pos,
-                        artInfo.UV,
+                        outlinePos,
+                        outlineUV,
                         outlineHue,
                         outlineNormal,
                         0f,
                         Vector2.Zero,
                         Vector2.One,
                         SpriteEffects.None,
-                        renderDepth - 0.001f
+                        renderDepth - 0.001f,
+                        endNormal
                     );
                 }
             }
@@ -304,7 +331,8 @@ namespace ClassicUO.Game.GameObjects
             bool shadow,
             float depth,
             bool isWet = false,
-            Color? outlineColor = null
+            Color? outlineColor = null,
+            Color? outlineColorEnd = null
         )
         {
             ref UOFileIndex index = ref Client.Game.UO.FileManager.Arts.File.GetValidRefEntry(graphic + ART_STATIC_OFFSET);
@@ -380,21 +408,43 @@ namespace ClassicUO.Game.GameObjects
                     var outlineNormal = new Vector3(oc.R / 255f, oc.G / 255f, oc.B / 255f);
                     // The outline colour's ALPHA channel scales opacity, on top of the
                     // object's own alpha. Callers wanting a flat outline pass an opaque
-                    // colour (A=255) and behave exactly as before; the container fullness
-                    // outline varies A to encode how full the container is.
+                    // colour (A=255) and behave exactly as before.
                     Vector3 outlineHue = ShaderHueTranslator.GetOutlineHueVector(hue.Z * (oc.A / 255f));
+
+                    Vector3? endNormal = null;
+                    Vector2 outlinePos = pos;
+                    Rectangle outlineUV = artInfo.UV;
+
+                    if (outlineColorEnd.HasValue)
+                    {
+                        Color ec = outlineColorEnd.Value;
+                        endNormal = new Vector3(ec.R / 255f, ec.G / 255f, ec.B / 255f);
+
+                        // A gradient MUST be mapped to the sprite's real bounds, not the
+                        // art tile. UO tiles carry heavy transparent margin, so quad-mapped
+                        // the visible sprite only ever samples the middle of the ramp and
+                        // never reaches either endpoint — measured at roughly half the
+                        // intended range, with small sprites collapsing to near-flat.
+                        Rectangle b = Client.Game.UO.Arts.GetRealArtBounds(graphic);
+                        if (b.Width > 0 && b.Height > 0)
+                        {
+                            outlineUV = new Rectangle(artInfo.UV.X + b.X, artInfo.UV.Y + b.Y, b.Width, b.Height);
+                            outlinePos = new Vector2(pos.X + b.X, pos.Y + b.Y);
+                        }
+                    }
 
                     batcher.DrawOutlined(
                         artInfo.Texture,
-                        pos,
-                        artInfo.UV,
+                        outlinePos,
+                        outlineUV,
                         outlineHue,
                         outlineNormal,
                         0f,
                         Vector2.Zero,
                         Vector2.One,
                         SpriteEffects.None,
-                        renderDepth - 0.001f
+                        renderDepth - 0.001f,
+                        endNormal
                     );
                 }
             }
