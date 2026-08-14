@@ -455,6 +455,15 @@ namespace ClassicUO
 
             Mouse.Update();
 
+            // FNA re-disables the screen saver on every focus-gain and mouse-enter, so
+            // giving it back has to happen per frame rather than once at startup. Both
+            // SDL calls early-out when the flag already matches, so the steady state is
+            // one bool check per frame and no D-Bus traffic.
+            if (ProfileManager.CurrentProfile != null && ProfileManager.CurrentProfile.AllowScreenSaver)
+            {
+                SDL_EnableScreenSaver();
+            }
+
             ProcessNetworkPackets();
 
             if(_pluginsInitialized)

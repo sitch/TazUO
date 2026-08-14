@@ -1000,6 +1000,20 @@ namespace ClassicUO.Game.UI.Gumps
 
             content.BlankLine();
 
+            CheckboxWithLabel allowScreenSaver;
+
+            content.AddToRight
+            (
+                allowScreenSaver = new CheckboxWithLabel("Allow screen saver / display sleep",
+                    isChecked: profile.AllowScreenSaver,
+                    valueChanged: (b) => { profile.AllowScreenSaver = b; }), true,
+                page
+            );
+
+            allowScreenSaver.SetTooltip("Lets the desktop dim, blank or sleep while the client is running. Off by default, matching the usual game behaviour of holding the display awake.");
+
+            content.BlankLine();
+
             content.AddToRight
             (
                 new CheckboxWithLabel(lang.GetVideo.EnableVSync, isChecked: profile.EnableVSync, valueChanged: (b) =>

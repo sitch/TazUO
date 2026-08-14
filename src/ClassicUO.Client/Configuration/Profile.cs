@@ -666,6 +666,13 @@ namespace ClassicUO.Configuration
         // this is inert anywhere but In Mani Ylem, and new characters here get the
         // calibrated cast/recovery values without a per-character toggle.
         public bool UseShardSpellTimings { get; set; } = true;
+        // FNA calls SDL_DisableScreenSaver() on window creation and again on every
+        // focus-gain and mouse-enter, which on Wayland becomes a D-Bus screensaver
+        // inhibit, so the desktop never dims while the client is up. The usual
+        // SDL_VIDEO_ALLOW_SCREENSAVER=1 escape hatch cannot undo it: SDL reads that
+        // hint once during video init, before FNA's call. When this is on, the update
+        // loop hands the screen saver back every frame instead.
+        public bool AllowScreenSaver { get; set; } = false;
         public bool NearbyLootOpensHumanCorpses { get; set; }
         public ushort TurnDelay { get; set; } = 100;
         public bool SellAgentEnabled { get; set; }
