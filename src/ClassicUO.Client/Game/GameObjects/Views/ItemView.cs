@@ -87,12 +87,15 @@ namespace ClassicUO.Game.GameObjects
 
             Color empty = AppraisalPalette.ContainerOutline;
 
-            if (count <= 0)
+            if (count <= 0 && weight <= 0)
             {
                 // Empty containers draw NOTHING. A faint edge on every empty crate,
                 // barrel and drawer in a house is a lot of ink for "there is nothing
                 // here" — the outline exists to report contents, and an empty container
                 // has none to report. Its absence is the signal.
+                //
+                // Empty means BOTH numbers are zero. Either one non-zero is contents,
+                // and contents always earn a border.
                 return (null, null);
             }
 
@@ -276,10 +279,19 @@ namespace ClassicUO.Game.GameObjects
                     World.OPL.TryGetNameAndData(Serial, out string oplName, out string oplData);
                     string oplText = (oplName ?? string.Empty) + "\n" + (oplData ?? string.Empty);
 
-                    if (PickedChestRegistry.IsNeverContainer(oplText))
+                    // Anything reporting contents other than "(0 items, 0 stones)" gets a
+                    // border, whatever its name says. The name lists below guess at what a
+                    // container is FOR; a non-empty contents line is the server saying what
+                    // is IN it, and that wins.
+                    int? count = PickedChestRegistry.TooltipItemCount(oplText);
+                    bool hasContents = (count ?? 0) > 0
+                        || (PickedChestRegistry.TooltipWeight(oplText) ?? 0) > 0;
+
+                    if (PickedChestRegistry.IsNeverContainer(oplText) && !hasContents)
                     {
                         // Not storage at all (decorative, books, game boards). Pin to
-                        // "no glow" — it has no capacity worth reporting.
+                        // "no glow" — it has no capacity worth reporting. A bookcase that
+                        // turns out to hold books falls through to the capacity outline.
                         _chestGlowCache = null;
                         _chestGlowResolved = true;
                     }
@@ -292,7 +304,6 @@ namespace ClassicUO.Game.GameObjects
                     }
                     else
                     {
-                        int? count = PickedChestRegistry.TooltipItemCount(oplText);
                         bool lockedDown = PickedChestRegistry.IsLockedDown(oplText);
 
                         // Lockpicking candidacy is narrower than "is a container": a
@@ -314,7 +325,7 @@ namespace ClassicUO.Game.GameObjects
                         // teal — the exact false positive this replaces.
                         if (lockedDown || count.HasValue)
                         {
-                            if (lockCandidate && !lockedDown && count.Value == 0
+                            if (lockCandidate && !lockedDown && !hasContents
                                 && PickedChestRegistry.IsPicked(X, Y, World.MapIndex))
                             {
                                 glowColor = _lootedChestGlowColor;   // we emptied this one
