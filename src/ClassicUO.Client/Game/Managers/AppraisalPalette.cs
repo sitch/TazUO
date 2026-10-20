@@ -210,6 +210,23 @@ namespace ClassicUO.Game.Managers
             0x0E28,                                   // a water bong ("bottle" art)
         };
 
+        // Potion kegs, keyed by potion family. UO's own potion colours — the same ones
+        // the shard uses for an unnamed keg ("A keg of yellow liquid" is heal) — lifted
+        // to read as a border on a dark grid slot. Night sight's black cannot, so it
+        // takes a slate blue. "unknown" covers a keg whose contents can't be named.
+        private static readonly Dictionary<string, Color> DefaultKegs = new()
+        {
+            ["heal"] = new Color(0xF2, 0xD4, 0x3A),
+            ["cure"] = new Color(0xFF, 0x8C, 0x1A),
+            ["poison"] = new Color(0x4F, 0xD0, 0x3A),
+            ["agility"] = new Color(0x3A, 0x8C, 0xFF),
+            ["strength"] = new Color(0xF0, 0xF0, 0xF0),
+            ["refresh"] = new Color(0xE8, 0x38, 0x3A),
+            ["explosion"] = new Color(0xB2, 0x5C, 0xFF),
+            ["nightsight"] = new Color(0x7A, 0x86, 0xA8),
+            ["unknown"] = new Color(0xB4, 0xA0, 0x82),
+        };
+
         // Rares carry no magic tier, so the outer border is free for them. A hue well
         // clear of the tier ramp, since "collectible" is a different claim from "powerful".
         private static readonly Color DefaultRareOutline = new Color(0xFF, 0x6F, 0xA8);
@@ -218,6 +235,7 @@ namespace ClassicUO.Game.Managers
         private static Color[] _tiers = (Color[])DefaultTiers.Clone();
         private static Dictionary<string, Color> _slayers = new(DefaultSlayers);
         private static Dictionary<string, Color> _wands = new(DefaultWands, StringComparer.OrdinalIgnoreCase);
+        private static Dictionary<string, Color> _kegs = new(DefaultKegs, StringComparer.OrdinalIgnoreCase);
         private static Color _unidentified = DefaultUnidentified;
         private static Color _durabilityPip = DefaultDurabilityPip;
         private static Color _genericWand = DefaultGenericWand;
@@ -289,6 +307,14 @@ namespace ClassicUO.Game.Managers
         {
             MaybeReload();
             return _wands.TryGetValue(type, out color);
+        }
+
+        /// <summary>Border colour for a potion keg's family; "unknown" for anything unlisted.</summary>
+        public static Color Keg(string family)
+        {
+            MaybeReload();
+            if (family != null && _kegs.TryGetValue(family, out Color c)) return c;
+            return _kegs.TryGetValue("unknown", out Color u) ? u : DefaultKegs["unknown"];
         }
 
         /// <summary>Charge-type keys, longest first so "greater healing" beats "healing".</summary>
@@ -389,6 +415,7 @@ namespace ClassicUO.Game.Managers
 
             _slayers = ReadMap(root, "slayers", DefaultSlayers, StringComparer.Ordinal);
             _wands = ReadMap(root, "wands", DefaultWands, StringComparer.OrdinalIgnoreCase);
+            _kegs = ReadMap(root, "kegs", DefaultKegs, StringComparer.OrdinalIgnoreCase);
 
             // A file written by an earlier build is missing any key added since, and the
             // user would never learn those knobs exist. Rewrite once, merging what was
@@ -397,7 +424,8 @@ namespace ClassicUO.Game.Managers
                 || !root.TryGetProperty("rareNames", out _)
                 || !root.TryGetProperty("capacityRamp", out _)
                 || !root.TryGetProperty("topTierBorderBonus", out _)
-                || !root.TryGetProperty("containerOutline", out _))
+                || !root.TryGetProperty("containerOutline", out _)
+                || !root.TryGetProperty("kegs", out _))
             {
                 WriteLive();
             }
@@ -465,8 +493,6 @@ namespace ClassicUO.Game.Managers
                 sb.AppendFormat("  \"rareOutline\": \"{0}\",\n", Hex(_rareOutline));
                 sb.AppendLine("  \"_rareNamesNote\": \"For shard-custom rares that REUSE common art (Marijuana uses the Nightshade graphic, a Water Bong uses bottle art) the graphic cannot identify them - match the name instead. Case-insensitive substring.\",");
                 sb.AppendFormat("  \"rareNames\": [{0}],\n",
-                    string.Join(", ", System.Array.ConvertAll(DefaultRareNames, n => "\"" + n + "\"")));
-                sb.AppendFormat("  \"rareNames\": [{0}],\n",
                     string.Join(", ", System.Array.ConvertAll(_rareNames, n => "\"" + n + "\"")));
                 sb.AppendLine("  \"_rareGraphicsNote\": \"Rares are matched by art graphic; nothing in the tooltip marks them. Append as you find more.\",");
                 var rl = new List<ushort>(_rareGraphics); rl.Sort();
@@ -474,7 +500,9 @@ namespace ClassicUO.Game.Managers
                     string.Join(", ", rl.ConvertAll(g => "\"0x" + g.ToString("X4") + "\"")));
                 sb.AppendLine();
                 AppendMap(sb, "slayers", _slayers, true);
-                AppendMap(sb, "wands", _wands, false);
+                AppendMap(sb, "wands", _wands, true);
+                sb.AppendLine("  \"_kegsNote\": \"Potion keg border by family (grid view). The border climbs from the bottom with the fill level; an empty keg draws none.\",");
+                AppendMap(sb, "kegs", _kegs, false);
                 sb.AppendLine("}");
                 File.WriteAllText(PalettePath, sb.ToString());
                 _lastMtime = File.GetLastWriteTimeUtc(PalettePath);
@@ -520,7 +548,9 @@ namespace ClassicUO.Game.Managers
                     string.Join(", ", System.Array.ConvertAll(DefaultRareGraphics, g => "\"0x" + g.ToString("X4") + "\"")));
                 sb.AppendLine();
                 AppendMap(sb, "slayers", DefaultSlayers, true);
-                AppendMap(sb, "wands", DefaultWands, false);
+                AppendMap(sb, "wands", DefaultWands, true);
+                sb.AppendLine("  \"_kegsNote\": \"Potion keg border by family (grid view). The border climbs from the bottom with the fill level; an empty keg draws none.\",");
+                AppendMap(sb, "kegs", DefaultKegs, false);
                 sb.AppendLine("}");
 
                 File.WriteAllText(PalettePath, sb.ToString());

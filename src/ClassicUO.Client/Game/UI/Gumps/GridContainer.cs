@@ -1621,6 +1621,35 @@ namespace ClassicUO.Game.UI.Gumps
             }
 
             /// <summary>
+            /// The highlight border filled like a vessel: the bottom edge always, the sides
+            /// rising to <paramref name="level"/>, and the top edge only when completely
+            /// full — so "almost to the top" and "full" still read differently.
+            /// </summary>
+            private void DrawLevelBorder(UltimaBatcher2D batcher, int x, int y, Texture2D tex, Vector3 hue, float level)
+            {
+                if (level >= 1f)
+                {
+                    DrawHighlightBorder(batcher, x, y, tex, hue);
+                    return;
+                }
+
+                int bsize = _profile.GridHighlightSize;
+                int bx = x + 6;
+                int by = y + 6;
+                int innerWidth = Width - 12;
+                int innerHeight = Height - 12;
+                int bottomY = by + innerHeight - bsize;
+
+                batcher.Draw(tex, new Rectangle(bx, bottomY, innerWidth, bsize), hue);
+
+                int side = (int)Math.Round((innerHeight - bsize * 2) * level);
+                if (side <= 0) return;
+
+                batcher.Draw(tex, new Rectangle(bx, bottomY - side, bsize, side), hue);
+                batcher.Draw(tex, new Rectangle(bx + innerWidth - bsize, bottomY - side, bsize, side), hue);
+            }
+
+            /// <summary>
             /// Second border, inset one step inside the main one — marks Exceptional
             /// quality without spending the color channel, which tier already owns.
             /// </summary>
@@ -1802,6 +1831,14 @@ namespace ClassicUO.Game.UI.Gumps
                     Texture2D borderTexture = SolidColorTextureCache.GetTexture(_item.HighlightColor);
 
                     DrawHighlightBorder(batcher, x, y, borderTexture, borderHueVec);
+                }
+                else if (appraisal.KegLevel > 0f)
+                {
+                    // Potion keg: colour is the potion family, the border's height is the
+                    // fill. An empty keg — or one whose fill label hasn't arrived — draws
+                    // nothing, since there is no level to report.
+                    DrawLevelBorder(batcher, x, y,
+                        SolidColorTextureCache.GetTexture(appraisal.KegColor), borderHueVec, appraisal.KegLevel);
                 }
                 else
                 {

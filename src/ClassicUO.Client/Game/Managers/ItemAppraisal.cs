@@ -171,6 +171,16 @@ namespace ClassicUO.Game.Managers
                 Kind != AppraisalKind.None || Unidentified || Exceptional
                 || DurabilityTier > 0 || Slayer != SlayerFamily.None || Rare;
 
+            /// <summary>
+            /// Potion family of a potion keg ("heal", "cure", ...), "unknown" for a keg
+            /// whose contents can't be named, null when the item is not a potion keg.
+            /// </summary>
+            public string KegPotion;
+            /// <summary>Keg fill, 0..1. Zero when empty OR not yet reported.</summary>
+            public float KegLevel;
+
+            public Color KegColor => AppraisalPalette.Keg(KegPotion);
+
             /// <summary>Left-bar color for a wand, from the live palette.</summary>
             public Color? WandColor
             {
@@ -294,8 +304,12 @@ namespace ClassicUO.Game.Managers
             // guarantees the OPL had a further chance to fill in before we commit to an
             // answer forever — the partial-text trap that produced the stuck grey wands.
             // Results that find nothing still give up after MAX_EMPTY_ATTEMPTS.
-            e.Frozen = (e.Attempts >= 2 && r.HasAnything && !r.Unidentified)
-                       || e.Attempts >= MAX_EMPTY_ATTEMPTS;
+            //
+            // Potion kegs never freeze: pouring changes the fill level, so the answer is
+            // only ever good until the next label burst bumps the revision.
+            e.Frozen = r.KegPotion == null
+                       && ((e.Attempts >= 2 && r.HasAnything && !r.Unidentified)
+                           || e.Attempts >= MAX_EMPTY_ATTEMPTS);
 
             return r;
         }
@@ -395,7 +409,102 @@ namespace ClassicUO.Game.Managers
             else if (r.Slayer != SlayerFamily.None)
                 r.Kind = AppraisalKind.Weapon;   // slayer with no readable tier still matters
 
+            ParseKeg(text, ref r);
+
             return Recolor(r);
+        }
+
+        // ── Potion kegs ─────────────────────────────────────────────────────────────
+        // Both facts arrive ONLY on the single-click label channel. The OPL name is no
+        // help and actively misleads: a keg crafted empty keeps "An empty potion keg"
+        // (1041641) as its name forever, so a Greater Explosion keg that is very full
+        // still reads "An empty potion keg" on its first line. The fill line decides;
+        // the name line is never consulted.
+
+        // 1041620-1041639 "A keg of <Type> potions". Matched as substrings of the type
+        // phrase, so "Total Refreshment" finds "refresh" and "Greater Heal" finds "heal".
+        private static readonly (string Word, string Family)[] KegPotionFamilies =
+        {
+            ("nightsight", "nightsight"),
+            ("cure", "cure"),
+            ("agility", "agility"),
+            ("strength", "strength"),
+            ("poison", "poison"),
+            ("refresh", "refresh"),
+            ("heal", "heal"),
+            ("explosion", "explosion"),
+        };
+
+        // 1041611-1041618 "A keg of <colour> liquid." — a keg whose potion the viewer
+        // can't name. The block is ordered by potion family (black = nightsight ...
+        // purple = explosion), the same order as the potion clilocs, so the colour of
+        // the liquid IS the family and an unnamed keg colours like a named one.
+        private static readonly (string Word, string Family)[] KegLiquidFamilies =
+        {
+            ("black", "nightsight"),
+            ("orange", "cure"),
+            ("blue", "agility"),
+            ("white", "strength"),
+            ("green", "poison"),
+            ("red", "refresh"),
+            ("yellow", "heal"),
+            ("purple", "explosion"),
+        };
+
+        // 502246-502258, the twelve fill lines. Each maps to the fraction the phrase
+        // itself states; the shard only ever reports these buckets, never a count.
+        private static readonly (string Phrase, float Level)[] KegFillLevels =
+        {
+            ("The keg is empty", 0f),
+            ("The keg is nearly empty", 0.05f),
+            ("The keg is not very full", 0.12f),
+            ("The keg is about one quarter full", 0.25f),
+            ("The keg is about one third full", 0.33f),
+            ("The keg is almost half full", 0.43f),
+            ("The keg is approximately half full", 0.5f),
+            ("The keg is more than half full", 0.62f),
+            ("The keg is about three quarters full", 0.75f),
+            ("The keg is very full", 0.88f),
+            ("The liquid is almost to the top of the keg", 0.97f),
+            ("The keg is completely full", 1f),
+        };
+
+        internal static void ParseKeg(string text, ref Result r)
+        {
+            if (text.IndexOf("potion keg", StringComparison.OrdinalIgnoreCase) < 0
+                && text.IndexOf("keg of ", StringComparison.OrdinalIgnoreCase) < 0)
+                return;
+
+            r.KegPotion = MatchKegType(text, " potions", KegPotionFamilies)
+                          ?? MatchKegType(text, " liquid", KegLiquidFamilies)
+                          ?? "unknown";
+
+            foreach ((string phrase, float level) in KegFillLevels)
+            {
+                if (text.IndexOf(phrase, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    r.KegLevel = level;
+                    break;
+                }
+            }
+        }
+
+        /// <summary>Family named between "keg of " and the suffix, or null.</summary>
+        private static string MatchKegType(string text, string suffix, (string Word, string Family)[] table)
+        {
+            int start = text.IndexOf("keg of ", StringComparison.OrdinalIgnoreCase);
+            if (start < 0) return null;
+            start += "keg of ".Length;
+            int end = text.IndexOf(suffix, start, StringComparison.OrdinalIgnoreCase);
+            if (end < 0) return null;
+
+            string type = text.Substring(start, end - start);
+            foreach ((string word, string family) in table)
+            {
+                if (type.IndexOf(word, StringComparison.OrdinalIgnoreCase) >= 0)
+                    return family;
+            }
+            return null;
         }
 
         /// <summary>
