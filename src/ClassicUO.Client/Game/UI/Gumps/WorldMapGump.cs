@@ -810,8 +810,11 @@ public class WorldMapGump : ResizableGump
         ContextMenu.Add(_options["markers_manager"]);
         ContextMenu.Add(_options["add_marker_on_player"]);
         ContextMenu.Add("", null);
-        ContextMenu.Add(_options["open_web_map"]);
-        ContextMenu.Add(_options["auto_start_web_map"]);
+        if (MapWebServerManager.Enabled)
+        {
+            ContextMenu.Add(_options["open_web_map"]);
+            ContextMenu.Add(_options["auto_start_web_map"]);
+        }
         ContextMenu.Add(_options["enhanced_map"]);
 
         if (_options.TryGetValue("send_alert", out ContextMenuItemEntry sendAlert))

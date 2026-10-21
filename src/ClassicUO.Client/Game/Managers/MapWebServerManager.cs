@@ -19,11 +19,23 @@ namespace ClassicUO.Game.Managers
             _server = new MapWebServer();
         }
 
+        // Off in the sitch fork. The browser map (http://localhost:8088) is not used, and
+        // its map-texture work ran graphics calls off the main thread, which corrupted the
+        // Vulkan driver's heap and crashed the client on every other character switch.
+        // Every entry point funnels through Start(), so refusing there turns the whole
+        // feature off — auto-start on login included — and WorldMapGump hides its menu
+        // entries on the same flag. Left as a switch rather than deleted so upstream
+        // merges stay small.
+        public static bool Enabled => false;
+
         public bool IsRunning => _server?.IsRunning ?? false;
         public int Port => _server?.Port ?? 8088;
 
         public async Task<bool> Start(int? port = null)
         {
+            if (!Enabled)
+                return false;
+
             // Check if map texture exists first
             int mapIndex = World.Instance?.MapIndex ?? 0;
             Texture2D mapTexture = UI.Gumps.WorldMapGump.GetMapTextureForMap();

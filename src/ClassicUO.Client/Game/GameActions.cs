@@ -395,6 +395,9 @@ internal static class GameActions
 
     internal static void OpenWorldMapWebWindow()
     {
+        if (!MapWebServerManager.Enabled)
+            return;
+
         MapWebServerManager server = MapWebServerManager.Instance;
 
         if (!server.IsRunning)
