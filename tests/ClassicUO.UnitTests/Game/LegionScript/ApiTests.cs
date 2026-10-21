@@ -1,10 +1,12 @@
 using System;
 using ClassicUO.LegionScripting;
 using IronPython.Hosting;
+using ClassicUO.UnitTests.Fixtures;
 using Xunit;
 
 namespace ClassicUO.UnitTests.Game.LegionScript;
 
+[Collection(MainThreadCollection.Name)]
 public class ApiTests
 {
     private LegionAPI api;

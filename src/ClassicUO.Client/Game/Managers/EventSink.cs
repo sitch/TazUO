@@ -31,7 +31,8 @@ public class EventSink
     internal static void InvokeOnItemCreated(Item sender)
     {
         OnItemCreatedInternal?.Invoke(sender, EventArgs.Empty);
-        OnItemCreated?.Invoke(sender, new ApiItem(sender));
+        if (OnItemCreated != null)
+            OnItemCreated(sender, new ApiItem(sender));
     }
 
     /// <summary>
@@ -50,7 +51,8 @@ public class EventSink
     internal static void InvokeOnItemUpdated(Item sender)
     {
         OnItemUpdatedInternal?.Invoke(sender, EventArgs.Empty);
-        OnItemUpdated?.Invoke(sender, new ApiItem(sender));
+        if (OnItemUpdated != null)
+            OnItemUpdated(sender, new ApiItem(sender));
     }
 
     /// <summary>
@@ -94,7 +96,7 @@ public class EventSink
     internal static void InvokeRawMessageReceived(object sender, MessageEventArgs e) => RawMessageReceived?.Invoke(sender, e);
 
     /// <summary>
-    ///  Not currently used. May be removed later or put into use, not sure right now
+    /// Invoked when a cliloc message is received from the server
     /// </summary>
     [ApiEvent]
     internal static event EventHandler<MessageEventArgs> ClilocMessageReceived;
@@ -139,7 +141,8 @@ public class EventSink
     internal static void InvokeOnBuffAdded(object sender, BuffEventArgs e)
     {
         OnBuffAddedInternal?.Invoke(sender, e);
-        OnBuffAdded?.Invoke(sender, new ApiBuff(e.Buff));
+        if (OnBuffAdded != null)
+            OnBuffAdded(sender, new ApiBuff(e.Buff));
     }
 
     /// <summary>
@@ -157,7 +160,8 @@ public class EventSink
     internal static void InvokeOnBuffRemoved(object sender, BuffEventArgs e)
     {
         OnBuffRemovedInternal?.Invoke(sender, e);
-        OnBuffRemoved?.Invoke(sender, new ApiBuff(e.Buff));
+        if (OnBuffRemoved != null)
+            OnBuffRemoved(sender, new ApiBuff(e.Buff));
     }
 
     /// <summary>
@@ -184,6 +188,12 @@ public class EventSink
     internal static event EventHandler<uint> OnOpenContainer;
 
     internal static void InvokeOnOpenContainer(Item sender, uint serial) => OnOpenContainer?.Invoke(sender, serial);
+
+    /// <summary>Invoked when the client sends a double-click (use) request for an object's serial.</summary>
+    [ApiEvent]
+    internal static event EventHandler<uint> ObjectUsed;
+
+    internal static void InvokeObjectUsed(uint serial) => ObjectUsed?.Invoke(null, serial);
 
     /// <summary>
     /// Invoked when the player receives a death packet from the server
@@ -217,6 +227,14 @@ public class EventSink
     internal static event EventHandler<int> OnPlayerHitsChanged;
 
     internal static void InvokeOnPlayerStatChange(object sender, int newValue) => OnPlayerHitsChanged?.Invoke(sender, newValue);
+
+    /// <summary>
+    /// Invoked when the player's stats have been updated by the server (hits, mana, stamina,
+    /// attributes, resistances, gold, etc.)
+    /// </summary>
+    public static event EventHandler<EventArgs> PlayerStatsUpdated;
+
+    public static void InvokePlayerStatsUpdated() => PlayerStatsUpdated?.Invoke(null, EventArgs.Empty);
 
     /// <summary>
     /// Called when the visual spell manager detects a spell being cast.
@@ -260,7 +278,8 @@ public class EventSink
     public static void InvokeMobileCreated(Mobile m)
     {
         MobileCreated?.Invoke(m, m);
-        ApiMobileCreated?.Invoke(null, new ApiMobile(m));
+        if (ApiMobileCreated != null)
+            ApiMobileCreated(null, new ApiMobile(m));
     }
 
     public static event EventHandler<SkillChangeArgs> SkillValueChangedEvent;

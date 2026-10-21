@@ -2,14 +2,13 @@
 using ClassicUO.Configuration;
 using ClassicUO.Game.Data;
 using ClassicUO.Game.GameObjects;
+using ClassicUO.Game.Managers.Hotkeys;
 using ClassicUO.Game.Scenes;
 using ClassicUO.Game.UI.Gumps;
 using ClassicUO.Input;
 using ClassicUO.Network;
-using ClassicUO.Resources;
 using ClassicUO.Utility;
 using ClassicUO.Utility.Logging;
-using SDL3;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -17,30 +16,50 @@ using System.Linq;
 using System.Text;
 using System.Xml;
 using ClassicUO.Common.Enums;
-using ClassicUO.Game.UI.Gumps.SpellBar;
 using ClassicUO.LegionScripting;
 using static SDL3.SDL;
+using ClassicUO.Game.UI;
+using ClassicUO.Utility.Debounce;
 
 namespace ClassicUO.Game.Managers
 {
     public sealed class MacroManager : LinkedObject
     {
-        public static readonly string[] MacroNames = Enum.GetNames(typeof(MacroType));
+        /// <summary>
+        /// How long after a trigger <see cref="IsActive"/> keeps reporting active, however fast the
+        /// macro actually finished.
+        /// </summary>
+        /// <remarks>
+        /// Every trigger site calls <see cref="SetMacroToExecute"/> and then <see cref="Update"/> back
+        /// to back, and Update drains the whole action chain in one call unless something yields, so a
+        /// macro without a wait, loop or target wait is over before the caller returns - zero frames.
+        /// Without a floor, "active" would be invisible for most macros and a 2-3 frame blink for the
+        /// quick-yielding rest. Long enough to read as a button press, short enough not to lag a
+        /// double-tap.
+        /// </remarks>
+        private const long ACTIVE_MIN_HOLD_MS = 180;
+
         private readonly uint[] _itemsInHand = new uint[2];
         private MacroObject _lastMacro;
+        private MacroObject _currentMacroHead; // head node of the macro currently executing (for toggle-stop)
         private long _nextTimer;
         private readonly World _world;
 
+        /// <summary>Head node of the last macro triggered, and when. Retained past the end of execution
+        /// to serve <see cref="ACTIVE_MIN_HOLD_MS"/>; cleared by an explicit stop.</summary>
+        private MacroObject _lastTriggeredHead;
+        private long _lastTriggeredAt;
+
         private readonly byte[] _skillTable =
-        {
+        [
             1, 2, 35, 4, 6, 12,
             14, 15, 16, 19, 21, 56 /*imbuing*/,
             23, 3, 46, 9, 30, 22,
             48, 32, 33, 47, 36, 38
-        };
+        ];
 
         private readonly int[] _spellsCountTable =
-        {
+        [
             Constants.SPELLBOOK_1_SPELLS_COUNT,
             Constants.SPELLBOOK_2_SPELLS_COUNT,
             Constants.SPELLBOOK_3_SPELLS_COUNT,
@@ -48,10 +67,38 @@ namespace ClassicUO.Game.Managers
             Constants.SPELLBOOK_5_SPELLS_COUNT,
             Constants.SPELLBOOK_6_SPELLS_COUNT,
             Constants.SPELLBOOK_7_SPELLS_COUNT
-        };
+        ];
 
+        // Leading-edge only, one instance per action: first press of each action acts instantly, repeats
+        // of *that same* action within 100ms are collapsed. Separate instances (rather than one shared
+        // debouncer) so a quick Dismount-then-Mount still fires both instead of the second being swallowed.
+        private readonly Debounce _mountDebouncer = new(() => ExecuteMountAction(MountAction.Mount), 100, true, false);
+        private readonly Debounce _dismountDebouncer = new(() => ExecuteMountAction(MountAction.Dismount), 100, true, false);
+        private readonly Debounce _toggleMountDebouncer = new(() => ExecuteMountAction(MountAction.Toggle), 100, true, false);
 
-        public MacroManager(World world) { _world = world; }
+        public MacroManager(World world)
+        {
+            _world = world;
+            EventSink.JournalEntryAdded += OnJournalEntryAdded;
+        }
+
+        private void OnJournalEntryAdded(object sender, JournalEntry e)
+        {
+            if (e == null || string.IsNullOrEmpty(e.Text) || _world?.Player == null)
+            {
+                return;
+            }
+
+            for (var macro = (Macro)Items; macro != null; macro = (Macro)macro.Next)
+            {
+                if (macro.HasJournalTriggers && macro.MatchesJournalTrigger(e.Text) && macro.Items is MacroObject macroObject)
+                {
+                    SetMacroToExecute(macroObject);
+                    WaitForTargetTimer = 0;
+                    break;
+                }
+            }
+        }
 
         public long WaitForTargetTimer { get; set; }
 
@@ -103,12 +150,13 @@ namespace ClassicUO.Game.Managers
             }
         }
 
-        public void Save()
+        public void Save(string path = null)
         {
             List<Macro> list = GetAllMacros();
 
             string tempPath = Path.GetTempFileName();
-            string path = Path.Combine(ProfileManager.ProfilePath, "macros.xml");
+
+            path ??= Path.Combine(ProfileManager.ProfilePath, "macros.xml");
 
             if (!File.Exists(tempPath))
             {
@@ -138,7 +186,7 @@ namespace ClassicUO.Game.Managers
                     xml.WriteEndDocument();
                 }
 
-                if(File.Exists(path))
+                if (File.Exists(path))
                     File.Delete(path);
                 File.Move(tempPath, path);
             }
@@ -149,7 +197,7 @@ namespace ClassicUO.Game.Managers
             }
         }
 
-        #nullable enable
+#nullable enable
         public string? GetXmlExport()
         {
             try
@@ -182,7 +230,7 @@ namespace ClassicUO.Game.Managers
 
             return null;
         }
-        #nullable disable
+#nullable disable
 
         public bool ImportFromXml(string xml)
         {
@@ -233,11 +281,13 @@ namespace ClassicUO.Game.Managers
 
         private void CreateDefaultMacros()
         {
+            if (LoadFromDefaultMacroSave()) return;
+
             PushToBack
             (
                 new Macro
                 (
-                    ResGeneral.Paperdoll,
+                    TazLang.Get("paperdoll"),
                     (SDL_Keycode)112,
                     true,
                     false,
@@ -255,7 +305,7 @@ namespace ClassicUO.Game.Managers
             (
                 new Macro
                 (
-                    ResGeneral.Options,
+                    TazLang.Get("options"),
                     (SDL_Keycode)111,
                     true,
                     false,
@@ -273,7 +323,7 @@ namespace ClassicUO.Game.Managers
             (
                 new Macro
                 (
-                    ResGeneral.Journal,
+                    TazLang.Get("journal"),
                     (SDL_Keycode)106,
                     true,
                     false,
@@ -291,7 +341,7 @@ namespace ClassicUO.Game.Managers
             (
                 new Macro
                 (
-                    ResGeneral.Backpack,
+                    TazLang.Get("backpack"),
                     (SDL_Keycode)105,
                     true,
                     false,
@@ -336,6 +386,40 @@ namespace ClassicUO.Game.Managers
             );
         }
 
+        private bool LoadFromDefaultMacroSave()
+        {
+            string defaultMacroXmlPath = Path.Combine(ProfileManager.RootPath, "macros.xml");
+
+            if (!Path.Exists(defaultMacroXmlPath)) return false;
+
+            var doc = new XmlDocument();
+
+            try
+            {
+                doc.Load(defaultMacroXmlPath);
+                Clear();
+
+                XmlElement root = doc["macros"];
+
+                if (root != null)
+                {
+                    foreach (XmlElement xml in root.GetElementsByTagName("macro"))
+                    {
+                        var macro = new Macro(xml.GetAttribute("name"));
+                        macro.Load(xml);
+                        PushToBack(macro);
+                    }
+
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex.ToString());
+            }
+
+            return false;
+        }
 
         public List<Macro> GetAllMacros()
         {
@@ -497,7 +581,87 @@ namespace ClassicUO.Game.Managers
             return obj;
         }
 
-        public void SetMacroToExecute(MacroObject macro) => _lastMacro = macro;
+        public void SetMacroToExecute(MacroObject macro)
+        {
+            // If this exact macro is already running and it contains a loop,
+            // treat triggering it again as a "stop" request.
+            if (_lastMacro != null && _currentMacroHead == macro && MacroContainsLoop(macro))
+            {
+                StopExecution();
+                return;
+            }
+
+            // Reset any loop containers in this macro's action chain so a fresh
+            // invocation always starts loops from iteration 0, even if a previous
+            // run was interrupted mid-loop.
+            for (MacroObject node = macro; node != null; node = (MacroObject)node.Next)
+            {
+                if (node is MacroLoopContainer loop)
+                {
+                    loop.Reset();
+                }
+            }
+
+            _lastMacro = macro;
+            _currentMacroHead = macro;
+
+            _lastTriggeredHead = macro;
+            _lastTriggeredAt = Time.Ticks;
+        }
+
+        /// <summary>
+        /// Whether a macro should be presented as running - for a button that changes appearance while
+        /// its macro executes.
+        /// </summary>
+        /// <remarks>
+        /// Stays true for <see cref="ACTIVE_MIN_HOLD_MS"/> after a trigger even once execution has
+        /// ended, so the state is actually visible; see that constant for why. A toggle-stop clears it
+        /// at once rather than holding, so pressing a running loop off looks immediate.
+        /// <para>
+        /// Two reference compares and a subtract. Safe to call per frame per button; it reads state the
+        /// trigger already recorded and never drives execution.
+        /// </para>
+        /// </remarks>
+        /// <param name="head">Head node of the macro's action chain, i.e. <c>macro.Items as MacroObject</c>.</param>
+        /// <returns>False for a null head, which no macro can be running under.</returns>
+        public bool IsActive(MacroObject head) =>
+            head != null
+            && (_currentMacroHead == head
+                || (_lastTriggeredHead == head && Time.Ticks - _lastTriggeredAt < ACTIVE_MIN_HOLD_MS));
+
+        private static bool MacroContainsLoop(MacroObject macro)
+        {
+            for (MacroObject node = macro; node != null; node = (MacroObject)node.Next)
+            {
+                if (node is MacroLoopContainer)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        public void StopExecution()
+        {
+            // Reset any loop containers so a future run starts clean.
+            if (_currentMacroHead != null)
+            {
+                for (MacroObject node = _currentMacroHead; node != null; node = (MacroObject)node.Next)
+                {
+                    if (node is MacroLoopContainer loop)
+                    {
+                        loop.Reset();
+                    }
+                }
+            }
+
+            _lastMacro = null;
+            _currentMacroHead = null;
+
+            // Dropped rather than left to expire: stopping a running loop should read as immediate.
+            _lastTriggeredHead = null;
+        }
 
         public void Update()
         {
@@ -507,6 +671,7 @@ namespace ClassicUO.Game.Managers
                 {
                     case 2:
                         _lastMacro = null;
+                        _currentMacroHead = null;
 
                         break;
 
@@ -514,6 +679,11 @@ namespace ClassicUO.Game.Managers
 
                     case 0:
                         _lastMacro = (MacroObject)_lastMacro?.Next;
+
+                        if (_lastMacro == null)
+                        {
+                            _currentMacroHead = null;
+                        }
 
                         break;
                 }
@@ -547,6 +717,11 @@ namespace ClassicUO.Game.Managers
                 return 0;
             }
 
+            if (macro is MacroLoopContainer loopContainer)
+            {
+                return ProcessLoopContainer(loopContainer);
+            }
+
             int result = 0;
 
             switch (macro.Code)
@@ -557,7 +732,7 @@ namespace ClassicUO.Game.Managers
                 case MacroType.Yell:
                 case MacroType.RazorMacro:
 
-                    if(macro is MacroObjectString { Text: { } text })
+                    if (macro is MacroObjectString { Text: { } text })
                     {
                         MessageType type = MessageType.Regular;
                         ushort hue = ProfileManager.CurrentProfile.SpeechHue;
@@ -565,7 +740,7 @@ namespace ClassicUO.Game.Managers
                         switch (macro.Code)
                         {
                             case MacroType.Emote:
-                                text = ResGeneral.EmoteChar + text + ResGeneral.EmoteChar;
+                                text = TazLang.Get("emote_char") + text + TazLang.Get("emote_char");
                                 type = MessageType.Emote;
                                 hue = ProfileManager.CurrentProfile.EmoteHue;
 
@@ -589,6 +764,27 @@ namespace ClassicUO.Game.Managers
                         }
 
                         GameActions.Say(text, hue, type);
+                    }
+
+                    break;
+
+                case MacroType.PrivateSay:
+
+                    if (macro is MacroObjectString { Text: { } msg })
+                    {
+                        _world.MessageManager.HandleMessage
+                        (
+                            _world.Player,
+                            msg,
+                            _world.Player.Name ?? "Me",
+                            ProfileManager.CurrentProfile.SpeechHue,
+                            MessageType.Regular,
+                            3,
+                            TextType.OBJECT,
+                            true,
+                            Settings.GlobalSettings.Language,
+                            true
+                        );
                     }
 
                     break;
@@ -743,8 +939,8 @@ namespace ClassicUO.Game.Managers
 
                                     if (party == null)
                                     {
-                                        int x = Client.Game.Window.ClientBounds.Width / 2 - 272;
-                                        int y = Client.Game.Window.ClientBounds.Height / 2 - 240;
+                                        int x = ScaleHelper.LogicalWindowWidth / 2 - 272;
+                                        int y = ScaleHelper.LogicalWindowHeight / 2 - 240;
                                         UIManager.Add(new PartyGump(_world, x, y, _world.Party.CanLoot));
                                     }
                                     else
@@ -794,7 +990,7 @@ namespace ClassicUO.Game.Managers
 
                                     if (macro.Code == MacroType.Close)
                                     {
-                                        UIManager.GetGump<ModernOptionsGump>()?.Dispose();
+                                        GameActions.CloseSettings();
                                     }
 
                                     break;
@@ -1128,8 +1324,8 @@ namespace ClassicUO.Game.Managers
 
                                     if (party == null)
                                     {
-                                        int x = Client.Game.Window.ClientBounds.Width / 2 - 272;
-                                        int y = Client.Game.Window.ClientBounds.Height / 2 - 240;
+                                        int x = ScaleHelper.LogicalWindowWidth / 2 - 272;
+                                        int y = ScaleHelper.LogicalWindowHeight / 2 - 240;
                                         UIManager.Add(new PartyGump(_world, x, y, _world.Party.CanLoot));
                                     }
                                     else
@@ -1178,67 +1374,20 @@ namespace ClassicUO.Game.Managers
 
                     break;
 
-                case MacroType.SpellBarRowUp:
-                    SpellBar.Instance?.ChangeRow(true);
-
-                    break;
-
-                case MacroType.SpellBarRowDown:
-                    SpellBar.Instance?.ChangeRow(false);
-
-                    break;
-
-                case MacroType.SetSpellBarRow:
-                    string spellRow = ((MacroObjectString)macro).Text;
-
-                    if (int.TryParse(spellRow, out int row))
-                    {
-                        SpellBar.Instance?.SetRow(row);
-                    }
-                    else
-                    {
-                        GameActions.Print(_world, "That is not a valid row.", Constants.HUE_ERROR);
-                    }
-                    break;
-
                 case MacroType.Dismount:
-                    Item m = _world.Player.FindItemByLayer(Layer.Mount);
-                    if (m != null)
-                    {
-                        GameActions.DoubleClickQueued(_world.Player, true);
-                        ScriptRecorder.Instance.RecordDismount();
-                    }
+                    _dismountDebouncer.Invoke();
                     break;
 
                 case MacroType.Mount:
-                    if(!GameActions.Mount())
-                    {
-                        GameActions.Print(_world, "Saved mount not found.", Constants.HUE_ERROR);
-                        goto case MacroType.SetMount;
-                    }
+                    _mountDebouncer.Invoke();
                     break;
 
                 case MacroType.SetMount:
-                    GameActions.Print(_world, "Target a mount to save it for the Mount macro.", 48);
-                    _world.TargetManager.SetTargeting(CursorTarget.SetMount, 0, TargetType.Neutral);
+                    PromptSetMount();
                     break;
 
                 case MacroType.ToggleMount:
-                    if (_world.Player.FindItemByLayer(Layer.Mount) != null)
-                    {
-                        // Player is mounted, dismount
-                        GameActions.DoubleClickQueued(_world.Player);
-                        ScriptRecorder.Instance.RecordDismount();
-                    }
-                    else
-                    {
-                        // Player is not mounted, try to mount
-                        if(!GameActions.Mount())
-                        {
-                            GameActions.Print(_world, "Saved mount not found.", Constants.HUE_ERROR);
-                            goto case MacroType.SetMount;
-                        }
-                    }
+                    _toggleMountDebouncer.Invoke();
                     break;
 
                 case MacroType.AddFriend:
@@ -1440,35 +1589,35 @@ namespace ClassicUO.Game.Managers
                     break;
 
                 case MacroType.ToggleVoiceRecognition:
-                {
-                    VoiceRecognitionManager vm = VoiceRecognitionManager.Instance;
-                    if (vm.IsInitializing)
                     {
-                        GameActions.Print(_world, "[Voice] Model is still loading...");
-                    }
-                    else if (!vm.IsInitialized)
-                    {
-                        Configuration.Profile profile = ProfileManager.CurrentProfile;
-                        if (profile != null && !string.IsNullOrEmpty(profile.VoiceModelPath))
+                        VoiceRecognitionManager vm = VoiceRecognitionManager.Instance;
+                        if (vm.IsInitializing)
                         {
-                            GameActions.Print(_world, "[Voice] Loading model...");
-                            vm.InitializeAsync(profile.VoiceModelPath, startListeningAfter: true);
+                            GameActions.Print(_world, "[Voice] Model is still loading...");
+                        }
+                        else if (!vm.IsInitialized)
+                        {
+                            Configuration.Profile profile = ProfileManager.CurrentProfile;
+                            if (profile != null && !string.IsNullOrEmpty(profile.VoiceModelPath))
+                            {
+                                GameActions.Print(_world, "[Voice] Loading model...");
+                                vm.InitializeAsync(profile.VoiceModelPath, startListeningAfter: true);
+                            }
+                            else
+                            {
+                                GameActions.Print(_world, "[Voice] No model path set - configure in Options > Sound");
+                            }
                         }
                         else
                         {
-                            GameActions.Print(_world, "[Voice] No model path set - configure in Options > Sound");
+                            vm.ToggleListening();
+                            if (!vm.IsListening)
+                                GameActions.Print(_world, "[Voice] Off");
+                            // "[Voice] Listening..." is printed by VoiceRecognitionManager.StatusMessage when recording actually starts
                         }
-                    }
-                    else
-                    {
-                        vm.ToggleListening();
-                        if (!vm.IsListening)
-                            GameActions.Print(_world, "[Voice] Off");
-                        // "[Voice] Listening..." is printed by VoiceRecognitionManager.StatusMessage when recording actually starts
-                    }
 
-                    break;
-                }
+                        break;
+                    }
 
                 case MacroType.LastObject:
 
@@ -1569,7 +1718,7 @@ namespace ClassicUO.Game.Managers
 
                     if (_itemsInHand[handIndex] != 0)
                     {
-                        if(_world.Items.TryGetValue(_itemsInHand[handIndex], out Item item))
+                        if (_world.Items.TryGetValue(_itemsInHand[handIndex], out Item item))
                         {
                             ObjectActionQueue.Instance.Enqueue(ObjectActionQueueItem.EquipItem(item, (Layer)item.ItemData.Layer), ActionPriority.EquipItem);
 
@@ -1659,7 +1808,7 @@ namespace ClassicUO.Game.Managers
                     break;
 
                 case MacroType.CircleTrans:
-                    ProfileManager.CurrentProfile.UseCircleOfTransparency = !ProfileManager.CurrentProfile.UseCircleOfTransparency;
+                    ProfileManager.GlobalSettings.UseCircleOfTransparency = !ProfileManager.GlobalSettings.UseCircleOfTransparency;
 
                     break;
 
@@ -1677,7 +1826,7 @@ namespace ClassicUO.Game.Managers
                 case MacroType.AlwaysRun:
                     ProfileManager.CurrentProfile.AlwaysRun = !ProfileManager.CurrentProfile.AlwaysRun;
 
-                    GameActions.Print(_world, ProfileManager.CurrentProfile.AlwaysRun ? ResGeneral.AlwaysRunIsNowOn : ResGeneral.AlwaysRunIsNowOff);
+                    GameActions.Print(_world, ProfileManager.CurrentProfile.AlwaysRun ? TazLang.Get("always_run_is_now_on") : TazLang.Get("always_run_is_now_off"));
 
                     break;
 
@@ -1842,7 +1991,7 @@ namespace ClassicUO.Game.Managers
 
                         _world.ClientViewRange = res;
 
-                        GameActions.Print(_world, string.Format(ResGeneral.ClientViewRangeIsNow0, res));
+                        GameActions.Print(_world, string.Format(TazLang.Get("client_view_range_is_now0"), res));
                     }
 
                     break;
@@ -1855,7 +2004,7 @@ namespace ClassicUO.Game.Managers
                         _world.ClientViewRange = Constants.MAX_VIEW_RANGE;
                     }
 
-                    GameActions.Print(_world, string.Format(ResGeneral.ClientViewRangeIsNow0, _world.ClientViewRange));
+                    GameActions.Print(_world, string.Format(TazLang.Get("client_view_range_is_now0"), _world.ClientViewRange));
 
                     break;
 
@@ -1867,25 +2016,25 @@ namespace ClassicUO.Game.Managers
                         _world.ClientViewRange = Constants.MIN_VIEW_RANGE;
                     }
 
-                    GameActions.Print(_world, string.Format(ResGeneral.ClientViewRangeIsNow0, _world.ClientViewRange));
+                    GameActions.Print(_world, string.Format(TazLang.Get("client_view_range_is_now0"), _world.ClientViewRange));
 
                     break;
 
                 case MacroType.MaxUpdateRange:
                     _world.ClientViewRange = Constants.MAX_VIEW_RANGE;
-                    GameActions.Print(_world, string.Format(ResGeneral.ClientViewRangeIsNow0, _world.ClientViewRange));
+                    GameActions.Print(_world, string.Format(TazLang.Get("client_view_range_is_now0"), _world.ClientViewRange));
 
                     break;
 
                 case MacroType.MinUpdateRange:
                     _world.ClientViewRange = Constants.MIN_VIEW_RANGE;
-                    GameActions.Print(_world, string.Format(ResGeneral.ClientViewRangeIsNow0, _world.ClientViewRange));
+                    GameActions.Print(_world, string.Format(TazLang.Get("client_view_range_is_now0"), _world.ClientViewRange));
 
                     break;
 
                 case MacroType.DefaultUpdateRange:
                     _world.ClientViewRange = Constants.MAX_VIEW_RANGE;
-                    GameActions.Print(_world, string.Format(ResGeneral.ClientViewRangeIsNow0, _world.ClientViewRange));
+                    GameActions.Print(_world, string.Format(TazLang.Get("client_view_range_is_now0"), _world.ClientViewRange));
 
                     break;
 
@@ -1904,6 +2053,7 @@ namespace ClassicUO.Game.Managers
                     // 2 - Follower (only your followers)
                     // 3 - Object (???)
                     // 4 - Mobile (any mobiles)
+                    // 5 - Friend (only mobiles on your friends list)
                     var scantype = (ScanTypeObject)(macro.SubCode - MacroSubType.Hostile);
 
                     if (scanRange == ScanModeObject.Nearest)
@@ -2003,6 +2153,14 @@ namespace ClassicUO.Game.Managers
 
                     break;
 
+                case MacroType.SetZoomLevel:
+                    if (macro is MacroObjectString zoomStr && float.TryParse(zoomStr.Text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float zoomLevel))
+                    {
+                        Client.Game.Scene.Camera.Zoom = zoomLevel;
+                    }
+
+                    break;
+
                 case MacroType.ToggleChatVisibility:
                     UIManager.SystemChat?.ToggleChatVisibility();
 
@@ -2018,13 +2176,23 @@ namespace ClassicUO.Game.Managers
                     break;
 
                 case MacroType.Grab:
-                    GameActions.Print(_world, ResGeneral.TargetAnItemToGrabIt);
+                    GameActions.Print(_world, TazLang.Get("target_an_item_to_grab_it"));
                     _world.TargetManager.SetTargeting(CursorTarget.Grab, 0, TargetType.Neutral);
 
                     break;
 
+                case MacroType.LootHoveredItem:
+                {
+                    Item lootItem = GetHoveredItem();
+
+                    if (lootItem != null && !lootItem.IsDestroyed && lootItem.IsLootable)
+                        GameActions.GrabItem(_world, lootItem.Serial, lootItem.Amount);
+
+                    break;
+                }
+
                 case MacroType.SetGrabBag:
-                    GameActions.Print(_world, ResGumps.TargetContainerToGrabItemsInto);
+                    GameActions.Print(_world, TazLang.Get("target_container_to_grab_items_into"));
                     _world.TargetManager.SetTargeting(CursorTarget.SetGrabBag, 0, TargetType.Neutral);
 
                     break;
@@ -2279,16 +2447,16 @@ namespace ClassicUO.Game.Managers
                     break;
 
                 case MacroType.CloseCorpses:
-                    int? gridLootType = ProfileManager.CurrentProfile?.GridLootType; // 0 = none, 1 = only grid, 2 = both
+                    CorpseContainerStyle corpseStyle = ProfileManager.CurrentProfile?.CorpseContainerStyle ?? CorpseContainerStyle.Grid;
 
-                    if (gridLootType == 0 || gridLootType == 2)
+                    if (corpseStyle is CorpseContainerStyle.Original or CorpseContainerStyle.OldGridLootAndContainer)
                         UIManager.ForEach<ContainerGump>(g =>
                         {
-                            if(g.Graphic == ContainerGump.CORPSES_GUMP)
+                            if (g.Graphic == ContainerGump.CORPSES_GUMP)
                                 g.Dispose();
                         });
 
-                    if (gridLootType == 1 || gridLootType == 2)
+                    if (corpseStyle is CorpseContainerStyle.OldGridLoot or CorpseContainerStyle.OldGridLootAndContainer)
                         UIManager.ForEach<GridLootGump>(g =>
                         {
                             g.Dispose();
@@ -2319,7 +2487,7 @@ namespace ClassicUO.Game.Managers
 
                 case MacroType.BorderCaveTiles:
                     ProfileManager.CurrentProfile.EnableCaveBorder = !ProfileManager.CurrentProfile.EnableCaveBorder;
-                    if(ProfileManager.CurrentProfile.EnableCaveBorder)
+                    if (ProfileManager.CurrentProfile.EnableCaveBorder)
                         StaticFilters.ApplyCaveTileBorder();
 
                     break;
@@ -2368,8 +2536,7 @@ namespace ClassicUO.Game.Managers
                     break;
 
                 case MacroType.ToggleHotkeys:
-                    ProfileManager.CurrentProfile.DisableHotkeys = !ProfileManager.CurrentProfile.DisableHotkeys;
-                    GameActions.Print($"Hotkeys {(ProfileManager.CurrentProfile.DisableHotkeys ? "disabled" : "enabled")}.");
+                    HotKeyRegistrar.ToggleHotkeysEnabled();
                     break;
 
 
@@ -2380,15 +2547,24 @@ namespace ClassicUO.Game.Managers
                     break;
 
                 case MacroType.ToggleAutoLoot:
-                    ProfileManager.CurrentProfile.EnableAutoLoot = !ProfileManager.CurrentProfile.EnableAutoLoot;
-                    if (!ProfileManager.CurrentProfile.EnableAutoLoot) AutoLootManager.Instance.ClearActiveLootQueue();
+                    bool newLootStatus = !ProfileManager.CurrentProfile.EnableAutoLoot;
+                    ProfileManager.CurrentProfile.EnableAutoLoot = newLootStatus;
+                    if (!newLootStatus) AutoLootManager.Instance.ClearActiveLootQueue();
+                    GameActions.Print($"Auto loot {(newLootStatus ? "enabled" : "disabled")}.", newLootStatus ? Constants.HUE_SUCCESS : Constants.HUE_ERROR);
+                    break;
+
+                case MacroType.ToggleScavenging:
+                    bool newScavengerStatus = !ProfileManager.CurrentProfile.EnableScavenger;
+                    ProfileManager.CurrentProfile.EnableScavenger = newScavengerStatus;
+                    if (!newScavengerStatus) ScavengerManager.Instance.ClearActiveLootQueue();
+                    GameActions.Print($"Scavenging {(newScavengerStatus ? "enabled" : "disabled")}.", newScavengerStatus ? Constants.HUE_SUCCESS : Constants.HUE_ERROR);
                     break;
 
                 case MacroType.SetLastTarget:
                     GameActions.Print("Who would you like to set as last target?");
                     _world.TargetManager.SetTargeting((o) =>
                     {
-                        if(o is Entity e)
+                        if (o is Entity e)
                             SetLastTarget(e);
                     });
                     break;
@@ -2396,9 +2572,64 @@ namespace ClassicUO.Game.Managers
                 case MacroType.ToggleAutoWalk:
                     GameScene.Instance.ToggleAutoWalk(null);
                     break;
+
+                case MacroType.ToggleBandageAgent:
+                    bool newStatus = !ProfileManager.CurrentProfile.EnableBandageAgent;
+                    ProfileManager.CurrentProfile.EnableBandageAgent = newStatus;
+                    GameActions.Print($"Bandage agent {(newStatus ? "enabled" : "disabled")}.", newStatus ? Constants.HUE_SUCCESS : Constants.HUE_ERROR);
+                    break;
+
+                case MacroType.ToggleBuyAgent:
+                    bool newBuyStatus = !ProfileManager.CurrentProfile.BuyAgentEnabled;
+                    ProfileManager.CurrentProfile.BuyAgentEnabled = newBuyStatus;
+                    GameActions.Print($"Buy agent {(newBuyStatus ? "enabled" : "disabled")}.", newBuyStatus ? Constants.HUE_SUCCESS : Constants.HUE_ERROR);
+                    break;
+
+                case MacroType.ToggleSellAgent:
+                    bool newSellStatus = !ProfileManager.CurrentProfile.SellAgentEnabled;
+                    ProfileManager.CurrentProfile.SellAgentEnabled = newSellStatus;
+                    GameActions.Print($"Sell agent {(newSellStatus ? "enabled" : "disabled")}.", newSellStatus ? Constants.HUE_SUCCESS : Constants.HUE_ERROR);
+                    break;
+
+                case MacroType.SetOrganizerSource:
+                    if (macro is MacroObjectString { Text: { } organizerName } && !string.IsNullOrWhiteSpace(organizerName))
+                    {
+                        OrganizerAgent.Instance.SetSourceContainerViaTarget(organizerName);
+                    }
+                    else
+                    {
+                        GameActions.Print(_world, "Set the organizer name (or index) in the macro to target a source container for it.", Constants.HUE_ERROR);
+                    }
+                    break;
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// Resolves the item currently under the mouse for the LootHoveredItem macro.
+        /// Prefers the UI control directly under the cursor (grid containers, regular
+        /// containers, paperdoll and modern paperdoll all expose their item via
+        /// LocalSerial), stopping at the gump boundary so empty space inside a container
+        /// does not resolve to the container itself. Falls back to the world object under
+        /// the cursor for items on the ground and item nameplates.
+        /// </summary>
+        private Item GetHoveredItem()
+        {
+            for (IGui control = UIManager.MouseOverControl; control != null && control is not Gump; control = control.Parent)
+            {
+                if (!SerialHelper.IsItem(control.LocalSerial))
+                    continue;
+
+                Item item = _world.Items.Get(control.LocalSerial);
+
+                if (item != null)
+                    return item;
+            }
+
+            BaseGameObject obj = SelectedObject.Object;
+
+            return obj as Item ?? (obj as TextObject)?.Owner as Item;
         }
 
         private void SetLastTarget(uint serial)
@@ -2411,7 +2642,8 @@ namespace ClassicUO.Game.Managers
                 {
                     if (ent != null)
                     {
-                        GameActions.MessageOverhead(_world, string.Format(ResGeneral.Target0, ent.Name), Notoriety.GetHue(((Mobile)ent).NotorietyFlag), _world.Player);
+                        if (!ProfileManager.CurrentProfile.HideMacroTargetMessage)
+                            GameActions.MessageOverhead(_world, string.Format(TazLang.Get("target0"), ent.Name), Notoriety.GetHue(((Mobile)ent).NotorietyFlag), _world.Player);
 
                         _world.TargetManager.NewTargetSystemSerial = serial;
                         _world.TargetManager.SelectedTarget = serial;
@@ -2424,7 +2656,8 @@ namespace ClassicUO.Game.Managers
                 {
                     if (ent != null)
                     {
-                        GameActions.MessageOverhead(_world, string.Format(ResGeneral.Target0, ent.Name), 992, _world.Player);
+                        if (!ProfileManager.CurrentProfile.HideMacroTargetMessage)
+                            GameActions.MessageOverhead(_world, string.Format(TazLang.Get("target0"), ent.Name), 992, _world.Player);
                         _world.TargetManager.SelectedTarget = serial;
                         _world.TargetManager.LastTargetInfo.SetEntity(serial);
 
@@ -2433,11 +2666,141 @@ namespace ClassicUO.Game.Managers
                 }
             }
 
-            GameActions.Print(_world, ResGeneral.EntityNotFound);
+            GameActions.Print(_world, TazLang.Get("entity_not_found"));
         }
 
-    }
+        private int ProcessLoopContainer(MacroLoopContainer container)
+        {
+            // First time touching this container
+            if (container.CurrentIteration == -1)
+            {
+                container.CurrentIteration = 0;
+                container.CurrentItemIndex = 0;
+            }
 
+            // All iterations done -> container finished, advance to next outer item
+            if (container.CurrentIteration >= container.LoopCount)
+            {
+                container.Reset();
+                return 0;
+            }
+
+            // Reached end of items for this iteration
+            if (container.CurrentItemIndex < 0 || container.CurrentItemIndex >= container.Items.Count)
+            {
+                container.CurrentIteration++;
+
+                if (container.CurrentIteration < container.LoopCount)
+                {
+                    container.CurrentItemIndex = 0;
+
+                    if (container.DelayBetweenIterations > 0)
+                    {
+                        _nextTimer = Time.Ticks + container.DelayBetweenIterations;
+                    }
+
+                    // Stay on this container; don't let Update() advance _lastMacro
+                    return 1;
+                }
+                else
+                {
+                    container.Reset();
+                    return 0; // whole loop finished, move to next outer item
+                }
+            }
+
+            // Execute current item
+            MacroObject currentItem = container.Items.ElementAt(container.CurrentItemIndex);
+            int result = Process(currentItem);
+
+            if (result == 0)
+            {
+                container.CurrentItemIndex++;
+
+                // More items remain (or more iterations) -> keep Update() on this container
+                // so it processes the next item on the next call, rather than advancing past it.
+                return 1;
+            }
+
+            // result == 1 (waiting/break) or 2 (stop) -> propagate as-is
+            return result;
+        }
+
+        /// <summary>
+        /// Prompts the player to target their designated mount
+        /// </summary>
+        private static void PromptSetMount()
+        {
+            World world = World.Instance;
+            if (world == null)
+                return;
+
+            GameActions.Print(world, "Target a mount to save it for the Mount macro.", 48);
+            world.TargetManager.SetTargeting(CursorTarget.SetMount, 0, TargetType.Neutral);
+        }
+
+        /// <summary>
+        ///     Runs a mount/dismount/toggle action, deciding <see cref="MountAction.Toggle" /> by current
+        ///     mount state. Invoked via one of the per-action debouncers (<see cref="_mountDebouncer" />,
+        ///     <see cref="_dismountDebouncer" />, <see cref="_toggleMountDebouncer" />), so this may run on a
+        ///     threadpool timer thread; the body is marshaled onto the main thread since it touches
+        ///     <see cref="World" /> and sends packets.
+        /// </summary>
+        private static void ExecuteMountAction(MountAction action) =>
+            MainThreadQueue.InvokeOnMainThread(() =>
+                {
+                    World world = World.Instance;
+                    if (world?.Player == null)
+                        return;
+
+                    if (action == MountAction.Mount)
+                    {
+                        Mount();
+                        return;
+                    }
+
+                    bool isMounted = world.Player.FindItemByLayer(Layer.Mount) != null;
+
+                    if (!isMounted)
+                    {
+                        // Toggle with nothing to dismount falls through to mounting; a plain Dismount stays a no-op.
+                        if (action == MountAction.Toggle)
+                            Mount();
+                        return;
+                    }
+
+                    GameActions.DoubleClick(world, world.Player, true, true);
+                    ScriptRecorder.Instance.RecordDismount();
+                }
+            );
+
+        /// <summary>Mounts the player's saved mount, reporting an error and prompting for a new one if unset/unreachable.</summary>
+        private static void Mount()
+        {
+            GameActions.MountResult result = GameActions.Mount(false);
+            switch (result)
+            {
+                case GameActions.MountResult.NoDesignatedMount:
+                    GameActions.Print("There is no saved mount", Constants.HUE_ERROR);
+                    PromptSetMount();
+                    break;
+                case GameActions.MountResult.MountNotFound:
+                    PromptSetMount();
+                    break;
+                case GameActions.MountResult.MountTooFar:
+                    GameActions.Print("Saved mount is too far", Constants.HUE_WARN);
+                    break;
+            }
+        }
+
+        /// <summary>Actions dispatchable through <see cref="ExecuteMountAction" />.</summary>
+        private enum MountAction
+        {
+            Mount,
+            Dismount,
+            Toggle
+        }
+    }
 
     public class Macro : LinkedObject, IEquatable<Macro>
     {
@@ -2481,9 +2844,146 @@ namespace ClassicUO.Game.Managers
         public bool Alt { get; set; }
         public bool Ctrl { get; set; }
         public bool Shift { get; set; }
-        public bool HideLabel = false;
+
+        private string _journalTriggers = string.Empty;
+
+        /// <summary>
+        /// Semicolon (;) separated list of journal messages that will trigger this macro when received.
+        /// A macro is triggered when a journal entry contains any one of these substrings (case-insensitive).
+        /// </summary>
+        public string JournalTriggers
+        {
+            get => _journalTriggers;
+            set
+            {
+                _journalTriggers = value ?? string.Empty;
+                HasJournalTriggers = !string.IsNullOrWhiteSpace(_journalTriggers);
+            }
+        }
+
+        /// <summary>
+        /// Cached flag indicating this macro has at least one journal trigger configured.
+        /// Used as a cheap pre-check so journal processing can skip macros without triggers.
+        /// </summary>
+        public bool HasJournalTriggers { get; private set; }
+
+        /// <summary>
+        /// Returns true when the given journal text matches one of this macro's configured journal triggers.
+        /// </summary>
+        public bool MatchesJournalTrigger(string text)
+        {
+            if (!HasJournalTriggers || string.IsNullOrEmpty(text))
+            {
+                return false;
+            }
+
+            string[] triggers = _journalTriggers.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+            foreach (string trigger in triggers)
+            {
+                if (!string.IsNullOrEmpty(trigger) && text.Contains(trigger, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        public HotkeyBinding GetBinding() => new()
+        {
+            Key = Key,
+            Ctrl = Ctrl,
+            Shift = Shift,
+            Alt = Alt,
+            MouseButton = MouseButton,
+            WheelScroll = WheelScroll,
+            WheelUp = WheelUp,
+            ControllerButtons = ControllerButtons
+        };
+
+        public void ApplyBinding(HotkeyBinding binding)
+        {
+            Key = binding.Key;
+            Ctrl = binding.Ctrl;
+            Shift = binding.Shift;
+            Alt = binding.Alt;
+            MouseButton = binding.MouseButton;
+            WheelScroll = binding.WheelScroll;
+            WheelUp = binding.WheelUp;
+            ControllerButtons = binding.ControllerButtons;
+        }
+
+        /// <summary>
+        /// Text the button shows at rest. Null falls back to <see cref="Name"/>, so a button keeps
+        /// following the macro's name unless deliberately given its own; empty hides the label.
+        /// </summary>
+        public string Label = null;
+
+        /// <summary>
+        /// Text the button shows while the macro is running. Null means "same as <see cref="Label"/>";
+        /// empty hides the label.
+        /// </summary>
+        public string ActiveLabel = null;
+
+        /// <summary>Hue the label is drawn in at rest.</summary>
+        public ushort LabelHue = DEFAULT_LABEL_HUE;
+
+        /// <summary>
+        /// Hue the label is drawn in while the macro is running. Null means "same as
+        /// <see cref="LabelHue"/>".
+        /// </summary>
+        public ushort? ActiveLabelHue = null;
+
+        /// <summary>Opacity of the label at rest, as a percentage.</summary>
+        public byte LabelOpacity = FULL_OPACITY;
+
+        /// <summary>
+        /// Opacity of the label while the macro is running, as a percentage. Null means "same as
+        /// <see cref="LabelOpacity"/>".
+        /// </summary>
+        public byte? ActiveLabelOpacity = null;
+
+        /// <summary>Hue a button label is drawn in unless given another, as it always was.</summary>
+        public const ushort DEFAULT_LABEL_HUE = 0x03B2;
+
+        /// <summary>Fully opaque, the percentage a label is drawn at unless given another.</summary>
+        public const byte FULL_OPACITY = 100;
+
+        /// <summary>Hue of the button at rest. 0 draws it unhued.</summary>
         public ushort Hue = 0x00;
+
+        /// <summary>Gump graphic of the button at rest. Null draws a bare plate.</summary>
         public ushort? Graphic = null;
+
+        /// <summary>
+        /// Hue of the button while the macro is running. Null means "same as <see cref="Hue"/>".
+        /// </summary>
+        /// <remarks>
+        /// Nullable where <see cref="Hue"/> is not, because 0 is a real value here - the unhued
+        /// appearance - and so cannot double as "unset". Null is what leaves a macro that predates the
+        /// two-state appearance looking the same in both states, which is why it needs no migration.
+        /// </remarks>
+        public ushort? ActiveHue = null;
+
+        /// <summary>
+        /// Gump graphic of the button while the macro is running. Null means "same as
+        /// <see cref="Graphic"/>", so a macro that has never been given one simply does not change
+        /// appearance - which is what every macro saved before this field existed wants.
+        /// </summary>
+        /// <remarks>
+        /// Signed, and wider than <see cref="Graphic"/>, because this field has three states where that
+        /// one has two: inherit (null), draw nothing (<see cref="ACTIVE_GRAPHIC_NONE"/>), or draw a
+        /// graphic. Folding the first two together would make "no graphic while running" unsayable.
+        /// </remarks>
+        public int? ActiveGraphic = null;
+
+        /// <summary>
+        /// Value of <see cref="ActiveGraphic"/> meaning the running button draws no graphic at all,
+        /// as opposed to null's "whatever <see cref="Graphic"/> is".
+        /// </summary>
+        public const int ACTIVE_GRAPHIC_NONE = -1;
+
         private byte _scale = 100;
         public byte Scale
         {
@@ -2494,6 +2994,63 @@ namespace ClassicUO.Game.Managers
                 else _scale = value;
             }
         }
+
+        /// <summary>Which graphic the button shows in a given run state.</summary>
+        /// <param name="isActive">Whether the macro is currently running.</param>
+        /// <returns>The graphic to draw, or null for a bare plate.</returns>
+        public ushort? GraphicFor(bool isActive)
+        {
+            if (!isActive || ActiveGraphic is not { } active)
+                return Graphic;
+
+            return active < 0 ? null : (ushort)active;
+        }
+
+        /// <summary>Which hue the button shows in a given run state.</summary>
+        /// <param name="isActive">Whether the macro is currently running.</param>
+        /// <returns>The hue to draw with; 0 for unhued.</returns>
+        public ushort HueFor(bool isActive) => isActive ? ActiveHue ?? Hue : Hue;
+
+        /// <summary>
+        /// Reads the button's label texts, carrying a macro saved before they existed over from the
+        /// "hidelabel" flag they replaced.
+        /// </summary>
+        /// <remarks>
+        /// The old flag only said whether to draw <see cref="Name"/>, so it maps exactly: hidden
+        /// becomes an empty label, and shown becomes null, which still follows the name through a
+        /// later rename just as it always did.
+        /// </remarks>
+        /// <param name="xml">The macro element being read.</param>
+        private void ReadLabels(XmlElement xml)
+        {
+            if (xml.HasAttribute("label"))
+                Label = xml.GetAttribute("label");
+            else if (bool.TryParse(xml.GetAttribute("hidelabel"), out bool hidden) && hidden)
+                Label = string.Empty;
+
+            if (xml.HasAttribute("activelabel"))
+                ActiveLabel = xml.GetAttribute("activelabel");
+        }
+
+        /// <summary>Which text the button shows in a given run state.</summary>
+        /// <remarks>
+        /// Each level falls through to the one above it when unset: the running text to the resting
+        /// text, and the resting text to the macro's own name. Empty is a value, not "unset", and is
+        /// what hides the label.
+        /// </remarks>
+        /// <param name="isActive">Whether the macro is currently running.</param>
+        /// <returns>The text to draw, or empty for a button that shows no label.</returns>
+        public string LabelFor(bool isActive) => (isActive ? ActiveLabel ?? Label : Label) ?? Name;
+
+        /// <summary>Which hue the label is drawn in for a given run state.</summary>
+        /// <param name="isActive">Whether the macro is currently running.</param>
+        /// <returns>The hue to draw the label in.</returns>
+        public ushort LabelHueFor(bool isActive) => isActive ? ActiveLabelHue ?? LabelHue : LabelHue;
+
+        /// <summary>Which opacity the label is drawn at for a given run state.</summary>
+        /// <param name="isActive">Whether the macro is currently running.</param>
+        /// <returns>The opacity as a percentage, 0 to <see cref="FULL_OPACITY"/>.</returns>
+        public byte LabelOpacityFor(bool isActive) => isActive ? ActiveLabelOpacity ?? LabelOpacity : LabelOpacity;
 
         public bool Equals(Macro other)
         {
@@ -2540,26 +3097,51 @@ namespace ClassicUO.Game.Managers
             writer.WriteAttributeString("alt", Alt.ToString());
             writer.WriteAttributeString("ctrl", Ctrl.ToString());
             writer.WriteAttributeString("shift", Shift.ToString());
-            writer.WriteAttributeString("hidelabel", HideLabel.ToString());
+            // Written only when set: an absent attribute is how null - "follow the macro's name" -
+            // is told apart from an empty one, which hides the label.
+            if (Label != null)
+            {
+                writer.WriteAttributeString("label", Label);
+            }
+
+            if (ActiveLabel != null)
+            {
+                writer.WriteAttributeString("activelabel", ActiveLabel);
+            }
+
+            writer.WriteAttributeString("labelhue", LabelHue.ToString());
+            writer.WriteAttributeString("activelabelhue", ActiveLabelHue.HasValue ? ActiveLabelHue.ToString() : string.Empty);
+            writer.WriteAttributeString("labelopacity", LabelOpacity.ToString());
+            writer.WriteAttributeString("activelabelopacity", ActiveLabelOpacity.HasValue ? ActiveLabelOpacity.ToString() : string.Empty);
             writer.WriteAttributeString("hue", Hue.ToString());
+            writer.WriteAttributeString("activehue", ActiveHue.HasValue ? ActiveHue.ToString() : string.Empty);
             writer.WriteAttributeString("graphic", Graphic.HasValue ? Graphic.ToString() : string.Empty);
+            writer.WriteAttributeString("activegraphic", ActiveGraphic.HasValue ? ActiveGraphic.ToString() : string.Empty);
             writer.WriteAttributeString("scale", Scale.ToString());
+            writer.WriteAttributeString("journaltriggers", JournalTriggers ?? string.Empty);
 
             writer.WriteStartElement("actions");
 
             for (var action = (MacroObject)Items; action != null; action = (MacroObject)action.Next)
             {
-                writer.WriteStartElement("action");
-                writer.WriteAttributeString("code", ((int)action.Code).ToString());
-                writer.WriteAttributeString("subcode", ((int)action.SubCode).ToString());
-                writer.WriteAttributeString("submenutype", action.SubMenuType.ToString());
-
-                if (action.HasString())
+                if (action is MacroLoopContainer loopContainer)
                 {
-                    writer.WriteAttributeString("text", ((MacroObjectString)action).Text);
+                    loopContainer.Save(writer);
                 }
+                else
+                {
+                    writer.WriteStartElement("action");
+                    writer.WriteAttributeString("code", ((int)action.Code).ToString());
+                    writer.WriteAttributeString("subcode", ((int)action.SubCode).ToString());
+                    writer.WriteAttributeString("submenutype", action.SubMenuType.ToString());
 
-                writer.WriteEndElement();
+                    if (action.HasString())
+                    {
+                        writer.WriteAttributeString("text", ((MacroObjectString)action).Text);
+                    }
+
+                    writer.WriteEndElement();
+                }
             }
 
             writer.WriteEndElement();
@@ -2586,11 +3168,39 @@ namespace ClassicUO.Game.Managers
                 return;
             }
 
-            Key = (SDL_Keycode)int.Parse(xml.GetAttribute("key"));
+            if (!Enum.TryParse(xml.GetAttribute("key"), out SDL_Keycode mainKey))
+                mainKey = (int)SDL_Keycode.SDLK_UNKNOWN;
+
+
+
+            Key = mainKey;
             Alt = bool.Parse(xml.GetAttribute("alt"));
             Ctrl = bool.Parse(xml.GetAttribute("ctrl"));
             Shift = bool.Parse(xml.GetAttribute("shift"));
-            bool.TryParse(xml.GetAttribute("hidelabel"), out HideLabel);
+            ReadLabels(xml);
+
+            // Parsed into locals and only then assigned: TryParse writes its out parameter even when it
+            // fails, so reading straight into the field would zero the default on a macro saved before
+            // these existed - a black label at zero opacity.
+            if (ushort.TryParse(xml.GetAttribute("labelhue"), out ushort labelHue))
+            {
+                LabelHue = labelHue;
+            }
+
+            if (byte.TryParse(xml.GetAttribute("labelopacity"), out byte labelOpacity))
+            {
+                LabelOpacity = labelOpacity;
+            }
+
+            if (ushort.TryParse(xml.GetAttribute("activelabelhue"), out ushort activeLabelHue))
+            {
+                ActiveLabelHue = activeLabelHue;
+            }
+
+            if (byte.TryParse(xml.GetAttribute("activelabelopacity"), out byte activeLabelOpacity))
+            {
+                ActiveLabelOpacity = activeLabelOpacity;
+            }
             ushort.TryParse(xml.GetAttribute("hue"), out Hue);
             if (byte.TryParse(xml.GetAttribute("scale"), out byte savedScale))
             {
@@ -2599,6 +3209,23 @@ namespace ClassicUO.Game.Managers
             if (ushort.TryParse(xml.GetAttribute("graphic"), out ushort graphic))
             {
                 Graphic = graphic;
+            }
+
+            // Missing (saved before these fields existed) and empty both leave these null, which means
+            // "same as the resting value" - so an older macro keeps one appearance, no migration needed.
+            if (int.TryParse(xml.GetAttribute("activegraphic"), out int activeGraphic))
+            {
+                ActiveGraphic = activeGraphic;
+            }
+
+            if (ushort.TryParse(xml.GetAttribute("activehue"), out ushort activeHue))
+            {
+                ActiveHue = activeHue;
+            }
+
+            if (xml.HasAttribute("journaltriggers"))
+            {
+                JournalTriggers = xml.GetAttribute("journaltriggers");
             }
 
             if (xml.HasAttribute("mousebutton"))
@@ -2620,58 +3247,65 @@ namespace ClassicUO.Game.Managers
 
             if (actions != null)
             {
-                foreach (XmlElement xmlAction in actions.GetElementsByTagName("action"))
+                foreach (XmlNode node in actions.ChildNodes)
                 {
-                    var code = (MacroType)int.Parse(xmlAction.GetAttribute("code"));
-                    var sub = (MacroSubType)int.Parse(xmlAction.GetAttribute("subcode"));
-
-                    // ########### PATCH ###########
-                    // FIXME: path to remove the MovePlayer macro. This macro is not needed. We have Walk.
-                    if ((int)code == 61 /*MacroType.MovePlayer*/)
+                    if (node is XmlElement xmlElement)
                     {
-                        code = MacroType.Walk;
-
-                        switch ((int)sub)
+                        if (xmlElement.Name == "loop")
                         {
-                            case 211: // top
-                                sub = MacroSubType.NW;
+                            var container = MacroLoopContainer.Load(xmlElement);
+                            PushToBack(container);
+                        }
+                        else if (xmlElement.Name == "action")
+                        {
+                            var code = (MacroType)int.Parse(xmlElement.GetAttribute("code"));
+                            var sub = (MacroSubType)int.Parse(xmlElement.GetAttribute("subcode"));
 
-                                break;
+                            // ########### PATCH ###########
+                            // FIXME: path to remove the MovePlayer macro. This macro is not needed. We have Walk.
+                            if ((int)code == 61 /*MacroType.MovePlayer*/)
+                            {
+                                code = MacroType.Walk;
 
-                            case 214: // left
-                                sub = MacroSubType.SW;
+                                switch ((int)sub)
+                                {
+                                    case 211: // top
+                                        sub = MacroSubType.NW;
+                                        break;
 
-                                break;
+                                    case 214: // left
+                                        sub = MacroSubType.SW;
+                                        break;
 
-                            case 213: // down
-                                sub = MacroSubType.SE;
+                                    case 213: // down
+                                        sub = MacroSubType.SE;
+                                        break;
 
-                                break;
+                                    case 212: // right
+                                        sub = MacroSubType.NE;
+                                        break;
+                                }
+                            }
+                            // ########### END PATCH ###########
 
-                            case 212: // right
-                                sub = MacroSubType.NE;
+                            sbyte subMenuType = sbyte.Parse(xmlElement.GetAttribute("submenutype"));
 
-                                break;
+                            MacroObject m;
+
+                            if (xmlElement.HasAttribute("text"))
+                            {
+                                m = new MacroObjectString(code, sub, xmlElement.GetAttribute("text"));
+                            }
+                            else
+                            {
+                                m = new MacroObject(code, sub);
+                            }
+
+                            m.SubMenuType = subMenuType;
+
+                            PushToBack(m);
                         }
                     }
-                    // ########### END PATCH ###########
-
-                    sbyte subMenuType = sbyte.Parse(xmlAction.GetAttribute("submenutype"));
-
-                    MacroObject m;
-
-                    if (xmlAction.HasAttribute("text"))
-                    {
-                        m = new MacroObjectString(code, sub, xmlAction.GetAttribute("text"));
-                    }
-                    else
-                    {
-                        m = new MacroObject(code, sub);
-                    }
-
-                    m.SubMenuType = subMenuType;
-
-                    PushToBack(m);
                 }
             }
 
@@ -2710,9 +3344,11 @@ namespace ClassicUO.Game.Managers
                 case MacroType.ModifyUpdateRange:
                 case MacroType.RazorMacro:
                 case MacroType.UseCounterBar:
-                case MacroType.SetSpellBarRow:
                 case MacroType.ClientCommand:
                 case MacroType.UseType:
+                case MacroType.SetOrganizerSource:
+                case MacroType.SetZoomLevel:
+                case MacroType.PrivateSay:
                     obj = new MacroObjectString(code, MacroSubType.MSC_NONE);
 
                     break;
@@ -2724,6 +3360,16 @@ namespace ClassicUO.Game.Managers
             }
 
             return obj;
+        }
+
+        public static MacroLoopContainer CreateLoopContainer(int loopCount = 1, int delayBetweenIterations = 0)
+        {
+            var container = new MacroLoopContainer
+            {
+                LoopCount = loopCount,
+                DelayBetweenIterations = delayBetweenIterations
+            };
+            return container;
         }
 
         public static Macro CreateEmptyMacro(string name)
@@ -2896,9 +3542,11 @@ namespace ClassicUO.Game.Managers
                 case MacroType.ModifyUpdateRange:
                 case MacroType.RazorMacro:
                 case MacroType.UseCounterBar:
-                case MacroType.SetSpellBarRow:
                 case MacroType.ClientCommand:
                 case MacroType.UseType:
+                case MacroType.SetOrganizerSource:
+                case MacroType.SetZoomLevel:
+                case MacroType.PrivateSay:
                     SubMenuType = 2;
 
                     break;
@@ -2927,5 +3575,77 @@ namespace ClassicUO.Game.Managers
         public string Text { get; set; }
 
         public override bool HasString() => true;
+    }
+
+    public class MacroLoopContainer : MacroObject
+    {
+        public int LoopCount { get; set; } = 1;
+        public int DelayBetweenIterations { get; set; } = 0;
+        public int CurrentIteration { get; set; } = -1;
+        public int CurrentItemIndex { get; set; } = -1;
+        public LinkedList<MacroObject> Items { get; } = new();
+
+        public MacroLoopContainer() : base((MacroType)MacroType.LoopContainer, MacroSubType.MSC_NONE)
+        {
+            Code = (MacroType)MacroType.LoopContainer;
+            SubMenuType = 0;
+        }
+
+        public void Save(XmlTextWriter writer)
+        {
+            writer.WriteStartElement("loop");
+            writer.WriteAttributeString("loopcount", LoopCount.ToString());
+            writer.WriteAttributeString("delaybetween", DelayBetweenIterations.ToString());
+
+            foreach (MacroObject action in Items)
+            {
+                writer.WriteStartElement("action");
+                writer.WriteAttributeString("code", ((int)action.Code).ToString());
+                writer.WriteAttributeString("subcode", ((int)action.SubCode).ToString());
+                writer.WriteAttributeString("submenutype", action.SubMenuType.ToString());
+
+                if (action.HasString())
+                    writer.WriteAttributeString("text", ((MacroObjectString)action).Text);
+
+                writer.WriteEndElement();
+            }
+
+            writer.WriteEndElement();
+        }
+
+        public static MacroLoopContainer Load(XmlElement xmlLoop)
+        {
+            var container = new MacroLoopContainer();
+
+            if (int.TryParse(xmlLoop.GetAttribute("loopcount"), out int loopCount))
+                container.LoopCount = loopCount;
+
+            if (int.TryParse(xmlLoop.GetAttribute("delaybetween"), out int delay))
+                container.DelayBetweenIterations = delay;
+
+            foreach (XmlElement xmlAction in xmlLoop.GetElementsByTagName("action"))
+            {
+                var code = (MacroType)int.Parse(xmlAction.GetAttribute("code"));
+                var sub = (MacroSubType)int.Parse(xmlAction.GetAttribute("subcode"));
+                sbyte subMenuType = sbyte.Parse(xmlAction.GetAttribute("submenutype"));
+
+                MacroObject m;
+                if (xmlAction.HasAttribute("text"))
+                    m = new MacroObjectString(code, sub, xmlAction.GetAttribute("text"));
+                else
+                    m = new MacroObject(code, sub);
+
+                m.SubMenuType = subMenuType;
+                container.Items.AddLast(m);
+            }
+
+            return container;
+        }
+
+        public void Reset()
+        {
+            CurrentIteration = -1;
+            CurrentItemIndex = -1;
+        }
     }
 }

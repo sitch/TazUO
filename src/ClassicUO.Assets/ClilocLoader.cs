@@ -15,6 +15,45 @@ namespace ClassicUO.Assets
     {
         private string _cliloc;
         private readonly Dictionary<int, string> _entries = new Dictionary<int, string>();
+        private readonly Dictionary<int, string> _englishEntries = new Dictionary<int, string>();
+
+        public IReadOnlyDictionary<int, string> Entries => _entries;
+
+        public static Dictionary<int, string> LoadFromFile(string path, bool skipEmpty = true)
+        {
+            var result = new Dictionary<int, string>();
+            if (!File.Exists(path)) return result;
+
+            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            byte[] buf = new byte[fs.Length];
+            int read = 0;
+            while (read < buf.Length)
+            {
+                int n = fs.Read(buf, read, buf.Length - read);
+                if (n == 0) break;
+                read += n;
+            }
+
+            byte[] output = buf.Length > 3 && buf[3] == 0x8E ? BwtDecompress.Decompress(buf) : buf;
+            var reader = new StackDataReader(output);
+            reader.ReadInt32LE();
+            reader.ReadInt16LE();
+
+            while (reader.Remaining > 0)
+            {
+                int number = reader.ReadInt32LE();
+                reader.ReadUInt8();
+                short length = reader.ReadInt16LE();
+                string text = reader.ReadUTF8(length);
+
+                if(!text.NotNullNotEmpty() && skipEmpty)
+                    continue;
+
+                result[number] = text;
+            }
+
+            return result;
+        }
 
         public ClilocLoader(UOFileManager fileManager) : base(fileManager)
         {
@@ -59,13 +98,95 @@ namespace ClassicUO.Assets
             {
                 string enupath = FileManager.GetUOFilePath("Cliloc.enu");
                 ReadCliloc(enupath);
+                ReadCliloc(enupath, _englishEntries);
+            }
+            else
+            {
+                ReadCliloc(path, _englishEntries);
             }
 
             ReadCliloc(path);
+
+            ReadOurs();
         }
 
-        void ReadCliloc(string path)
+        /// <summary>
+        /// Strings of the shard's own, from a plain text file, read last so they win.
+        ///
+        /// A context menu entry, a gump caption and an item's name are all cliloc numbers, and a
+        /// shard is limited to whatever the client already happens to say. There is no number for
+        /// "Send to kennel" because Origin never needed one, so anything a shard adds is either
+        /// approximated with a string that nearly fits or shown as a raw number.
+        ///
+        /// The file is read after Cliloc.enu and after the language file, and this dictionary is
+        /// last-write-wins - which is how the language file already overrides the English one. So
+        /// the same mechanism adds new numbers and corrects existing ones, and neither needs the
+        /// compressed original touched.
+        ///
+        /// Plain text rather than the client's own format on purpose: a line somebody can read,
+        /// diff and edit beats a BWT-compressed blob for a file that will hold a few dozen
+        /// entries. Anything above 3,100,000 is free - the client's own stop at 3,011,032.
+        ///
+        ///     # Clilocs.txt, in the client folder
+        ///     3100001    Breed
+        ///     3100002    Send to kennel
+        /// </summary>
+        private void ReadOurs()
         {
+            string path = FileManager.GetUOFilePath("Clilocs.txt");
+
+            if (!File.Exists(path))
+            {
+                return;
+            }
+
+            var added = 0;
+
+            try
+            {
+                foreach (string line in File.ReadLines(path))
+                {
+                    string trimmed = line.Trim();
+
+                    if (trimmed.Length == 0 || trimmed[0] == '#')
+                    {
+                        continue;
+                    }
+
+                    // A tab or the first run of spaces separates the number from the text, so the
+                    // text itself may contain anything including tabs after that point.
+                    int at = trimmed.IndexOfAny(new[] { '\t', ' ' });
+
+                    if (at <= 0)
+                    {
+                        continue;
+                    }
+
+                    if (!int.TryParse(trimmed.AsSpan(0, at), out int number))
+                    {
+                        continue;
+                    }
+
+                    _entries[number] = string.Intern(trimmed[(at + 1)..].TrimStart());
+                    added++;
+                }
+            }
+            catch (IOException e)
+            {
+                Log.Warn($"could not read {path}: {e.Message}");
+                return;
+            }
+
+            if (added > 0)
+            {
+                Log.Trace($"{added} cliloc string(s) of our own from {Path.GetFileName(path)}");
+            }
+        }
+
+        void ReadCliloc(string path, Dictionary<int, string> target = null)
+        {
+            target ??= _entries;
+
             using var fileStream = new FileStream(path, FileMode.Open, FileAccess.Read);
 
             int bytesRead;
@@ -87,16 +208,34 @@ namespace ClassicUO.Assets
                 short length = reader.ReadInt16LE();
                 string text = string.Intern(reader.ReadUTF8(length));
 
-                _entries[number] = text;
+                target[number] = text;
             }
         }
 
-        public override void ClearResources() => _entries.Clear();
+        public override void ClearResources()
+        {
+            _entries.Clear();
+            _englishEntries.Clear();
+        }
 
         public string GetString(int number)
         {
             _entries.TryGetValue(number, out string text);
 
+            return text;
+        }
+
+        public string GetStringOrDefault(int number, string fallback)
+        {
+            if (_entries.TryGetValue(number, out string text))
+                return text;
+            
+            return fallback;
+        }
+
+        public string GetEnglishString(int number)
+        {
+            _englishEntries.TryGetValue(number, out string text);
             return text;
         }
 

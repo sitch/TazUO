@@ -80,7 +80,6 @@ namespace ClassicUO.Game.GameObjects
 
         public abstract bool CheckMouseSelection();
 
-        // FIXME: remove it
         public sbyte FoliageIndex = -1;
         public ushort OriginalGraphic => originalGraphic == 0 ? Graphic : originalGraphic;
         public void ResetOriginalGraphic() => originalGraphic = 0;
@@ -122,7 +121,22 @@ namespace ClassicUO.Game.GameObjects
                 hue = value;
             }
         }
+
+        /// <summary>
+        /// The hue captured before a highlight was applied. Null when no highlight is active,
+        /// allowing the original hue to be restored later.
+        /// </summary>
+        public ushort? OriginalHue { get; set; }
+
         public Vector3 Offset;
+
+        /// <summary>
+        /// Tracks whether this object is currently treated as within the tree-to-stumps radius.
+        /// Used to apply hysteresis so trees near the radius boundary don't flash when the
+        /// player's screen position bobs slightly during walk/run animations.
+        /// </summary>
+        public bool WithinStumpRadius;
+
         public short PriorityZ;
         public GameObject TNext;
         public GameObject TPrevious;
@@ -278,7 +292,7 @@ namespace ClassicUO.Game.GameObjects
             int offsetY = 0;
 
             int minX = 6;
-            int maxX = minX + Client.Game.Scene.Camera.Bounds.Width - 6;
+            int maxX = Client.Game.Scene.Camera.Bounds.Width - 6;
             int minY = 0;
             //int maxY = minY + ProfileManager.CurrentProfile.GameWindowSize.Y - 6;
 
@@ -293,15 +307,15 @@ namespace ClassicUO.Game.GameObjects
                     continue;
                 }
 
-                int startX = item.RealScreenPosition.X;
-                int endX = startX + item.TextBox.Width;
+                int textWidth = item.TextBox.MeasuredSize.X;
+                int startX = item.RealScreenPosition.X + ((item.TextBox.Width - textWidth) >> 1);
+                int endX = startX + textWidth;
 
                 if (startX < minX)
                 {
                     item.RealScreenPosition.X += minX - startX;
                 }
-
-                if (endX > maxX)
+                else if (endX > maxX)
                 {
                     item.RealScreenPosition.X -= endX - maxX;
                 }

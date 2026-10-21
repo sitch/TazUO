@@ -52,6 +52,7 @@ namespace ClassicUO.Game.UI.Controls
         private float _size;
         private Color _color;
         private bool _dirty = false;
+        private bool _drawFailed = false;
 
         private int getStrokeSize
         {
@@ -111,37 +112,56 @@ namespace ClassicUO.Game.UI.Controls
         /// <param name="text"></param>
         /// <param name="width">Leave null to make width fit the text.</param>
         /// <param name="applyTextFormatting">True will add a stroke, and convert html colors if those are true. Set to false to keep text as is.</param>
-        private void CreateRichTextLayout(string text)
+        private void CreateRichTextLayout(string text, int retries = 0)
         {
-            text ??= string.Empty;  //Prevent null ref error while still updating everything else
-            _dirty = false;         //Reset these because we're creating a new text object
-            WantUpdateSize = false; //Not resetting them causes this to happen twice from the constructor setting _font and what not.
-
-            if (Options == null)
+            if (retries > 2)
+                text = string.Empty; //We've tried without commands, something is majorly wrong with this text.
+            
+            if (retries > 3)
             {
-                Log.Error("Options was null when creating rich text layout(TextBox.cs)"); //Avoid a bad textbox object by using default options
-                Options = RTLOptions.Default();
+                Dispose();
+                return;
             }
 
-            if (Options.ConvertHtmlColors)
-                text = ConvertHTMLColorsToFSS(text);
+            try {
+                text ??= string.Empty;  //Prevent null ref error while still updating everything else
+                text = StringHelper.RemoveUnpairedSurrogates(text); //Lone surrogates crash FontStashSharp's text measuring
+                _dirty = false;         //Reset these because we're creating a new text object
+                WantUpdateSize = false; //Not resetting them causes this to happen twice from the constructor setting _font and what not.
+                _drawFailed = false;    //New layout gets a fresh chance to draw
 
-            if (Options.StrokeEffect && !text.StartsWith("/es"))
-                text = $"/es[{getStrokeSize}]" + text;
-
-            if (_rtl == null || _rtl.Text != text || _rtl.Width != Options.Width)
-                _rtl = new RichTextLayout
+                if (Options == null)
                 {
-                    Font = TrueTypeLoader.Instance.GetFont(_font, _size),
-                    Text = text,
-                    IgnoreColorCommand = Options.IgnoreColorCommands,
-                    SupportsCommands = Options.SupportsCommands,
-                    CalculateGlyphs = Options.CalculateGlyphs,
-                    Width = Options.Width
-                };
+                    Log.Error("Options was null when creating rich text layout(TextBox.cs)"); //Avoid a bad textbox object by using default options
+                    Options = RTLOptions.Default();
+                }
 
-            base.Width = Options.Width ?? _rtl.Size.X;
-            base.Height = Height;
+                if (Options.ConvertHtmlColors)
+                    text = ConvertHTMLColorsToFSS(text);
+
+                if (Options.StrokeEffect && !text.StartsWith("/es"))
+                    text = $"/es[{getStrokeSize}]" + text;
+
+                if (_rtl == null || _rtl.Text != text || _rtl.Width != Options.Width)
+                    _rtl = new RichTextLayout
+                    {
+                        Font = TrueTypeLoader.Instance.GetFont(_font, _size),
+                        Text = text,
+                        IgnoreColorCommand = Options.IgnoreColorCommands,
+                        SupportsCommands = Options.SupportsCommands,
+                        CalculateGlyphs = Options.CalculateGlyphs,
+                        Width = Options.Width
+                    };
+
+                base.Width = Options.Width ?? _rtl.Size.X;
+                base.Height = Height;
+            } catch
+            {
+                Options.SupportsCommands = false;
+                Options.CalculateGlyphs = false;
+                retries++;
+                CreateRichTextLayout(text, retries);
+            }
         }
 
         public static Color ConvertHueToColor(int hue)
@@ -232,6 +252,8 @@ namespace ClassicUO.Game.UI.Controls
             {
                 if (_rtl.Text != value)
                 {
+                    value = StringHelper.RemoveUnpairedSurrogates(value); //Lone surrogates crash FontStashSharp's text measuring
+
                     if (Options.ConvertHtmlColors)
                     {
                         _rtl.Text = ConvertHTMLColorsToFSS(value);
@@ -307,6 +329,7 @@ namespace ClassicUO.Game.UI.Controls
             Options = null;
             Alpha = 1f;
             _dirty = false;
+            _drawFailed = false;
             WantUpdateSize = false;
         }
 
@@ -394,9 +417,16 @@ namespace ClassicUO.Game.UI.Controls
             return Draw(batcher, x, y, _color);
         }
 
-        public bool Draw(UltimaBatcher2D batcher, int x, int y, Color color)
+        public bool Draw(UltimaBatcher2D batcher, int x, int y, float depth)
         {
-            if (IsDisposed)
+            base.Draw(batcher, x, y);
+
+            return Draw(batcher, x, y, _color, depth);
+        }
+
+        public bool Draw(UltimaBatcher2D batcher, int x, int y, Color color, float depth = 0f)
+        {
+            if (IsDisposed || _drawFailed)
             {
                 return false;
             }
@@ -410,7 +440,17 @@ namespace ClassicUO.Game.UI.Controls
                 x += Width;
             }
 
-            _rtl.Draw(batcher, new Vector2(x, y), color * Alpha, horizontalAlignment: Options.Align);
+            try
+            {
+                _rtl.Draw(batcher, new Vector2(x, y), color * Alpha, horizontalAlignment: Options.Align, layerDepth: depth);
+            }
+            catch (System.Exception e)
+            {
+                // Glyphs rasterize lazily here, so an unfittable glyph throws at draw time; skip it instead of crashing and stop retrying.
+                _drawFailed = true;
+                Log.Error($"Failed to draw TextBox text, it will be skipped. [{_font}:{_size}] - {e.Message}");
+                return false;
+            }
 
             return true;
         }

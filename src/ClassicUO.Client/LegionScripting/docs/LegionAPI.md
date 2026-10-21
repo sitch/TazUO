@@ -13,13 +13,6 @@ All methods, properties, enums, etc need to pre prefaced with `API.` for example
  `API.Msg("An example")`.
 :::
 
-:::tip[API.py File]
-If you download the [API.py](https://github.com/PlayTazUO/TazUO/blob/dev/src/ClassicUO.Client/LegionScripting/docs/API.py) file, put it in the same folder as your python scripts and add `import API` to your script, that will enable some mild form of autocomplete in an editor like VS Code.  
-
-You can now type `-updateapi` in game to download the latest API.py file.
-:::
-
-[Additional notes](../notes/)  
 
 
 ## Properties
@@ -104,6 +97,28 @@ You can now type `-updateapi` in game to download the latest API.py file.
  The graphic of the last targeting object
 
 
+### `LastSpellIndex`
+
+**Type:** `int`
+
+ The index of the last spell cast by the player.
+ Example:
+ ```py
+ API.SysMsg("Last spell index: " + str(API.LastSpellIndex))
+ ```
+
+
+### `LastSpellName`
+
+**Type:** `string`
+
+ The name of the last spell cast by the player.
+ Example:
+ ```py
+ API.SysMsg("Last spell: " + API.LastSpellName)
+ ```
+
+
 ### `Found`
 
 **Type:** `uint`
@@ -169,6 +184,36 @@ You can now type `-updateapi` in game to download the latest API.py file.
 - `Server`
 - `Global`
 
+### EffectType
+
+:::note[Description]
+ How a graphic effect created by `CreateEffect` behaves.
+
+:::
+
+**Values:**
+- `Moving`
+- `Lightning`
+- `FixedXYZ`
+- `FixedFrom`
+
+### EffectBlendMode
+
+:::note[Description]
+ Blend mode used when drawing a graphic effect. Mirrors the values the server sends.
+
+:::
+
+**Values:**
+- `Normal`
+- `Multiply`
+- `Screen`
+- `ScreenMore`
+- `ScreenLess`
+- `NormalHalfTransparent`
+- `ShadowBlue`
+- `ScreenRed`
+
 
 ## Methods
 ### ProcessCallbacks
@@ -176,7 +221,7 @@ You can now type `-updateapi` in game to download the latest API.py file.
  Use this when you need to wait for players to click buttons.
  Example:
  ```py
- while True:
+ while not API.StopRequested:
    API.ProcessCallbacks()
    API.Pause(0.1)
  ```
@@ -200,7 +245,7 @@ You can now type `-updateapi` in game to download the latest API.py file.
  def on_shift_a():
      API.SysMsg("SHIFT+A pressed!")
  API.OnHotKey("SHIFT+A", on_shift_a)
- while True:
+ while not API.StopRequested:
    API.ProcessCallbacks()
    API.Pause(0.1)
  ```
@@ -217,8 +262,84 @@ You can now type `-updateapi` in game to download the latest API.py file.
 | Name | Type | Optional | Description |
 | --- | --- | --- | --- |
 | `key` | `string` | ❌ No | Key combination to listen for, e.g. "CTRL+SHIFT+F1". |
-| `callback` | `object` | ✅ Yes | Python function to invoke when the hotkey is pressed.  
-         If <c>null</c> , the hotkey will be unregistered. |
+| `callback` | `object` | ✅ Yes | Python function to invoke when the hotkey is pressed.<br>         If None, the hotkey will be unregistered. |
+
+**Return Type:** `void` *(Does not return anything)*
+
+---
+
+### IsKeyPressed
+`(key)`
+ Returns true if the given key combination is currently held down.
+ The key format matches `OnHotKey` , e.g. "CTRL+SHIFT+F1" or "A".
+ Extra modifiers beyond those specified do not prevent a match.
+
+
+**Parameters:**
+
+| Name | Type | Optional | Description |
+| --- | --- | --- | --- |
+| `key` | `string` | ❌ No | Key combination to check, e.g. "CTRL+SHIFT+F1". |
+
+**Return Type:** `bool`
+
+---
+
+### RequestHotkey
+`(prompt, timeout)`
+ Shows the in-game hotkey capture window and waits for the player to pick a key combination.
+ The returned string matches what `OnHotKey` and `IsKeyPressed` accept, so it can be passed
+ straight to them, e.g. "CTRL+SHIFT+F1" or "A".
+ Only keyboard bindings are returned; mouse, wheel, controller and modifier-only captures are
+ rejected. Blocks until the player saves a key or closes the window (or the timeout elapses).
+ Example:
+ ```py
+ key = API.RequestHotkey()
+ if key:
+   API.OnHotKey(key, on_pressed)
+ ```
+
+
+**Parameters:**
+
+| Name | Type | Optional | Description |
+| --- | --- | --- | --- |
+| `prompt` | `string` | ✅ Yes | Optional message shown above the capture box. |
+| `timeout` | `double` | ✅ Yes | Maximum number of seconds to wait for the player to choose a hotkey. |
+
+**Return Type:** `string`
+
+---
+
+### ScheduleTimedCallback
+`(delayMs, callback, timesToRepeat)`
+ Schedules a callback to be invoked after a specified delay.
+
+ Note that as with keyboard hotkeys, you must call `ProcessCallbacks` for the callback to actually be run.
+
+
+**Parameters:**
+
+| Name | Type | Optional | Description |
+| --- | --- | --- | --- |
+| `delayMs` | `uint` | ❌ No | The delay, in milliseconds, after which to invoke the callback.<br>         <br/>  The minimum delay is 5ms. |
+| `callback` | `Action` | ❌ No | The callback to invoke |
+| `timesToRepeat` | `int` | ✅ Yes | The number of times the callback should be repeated after the initial invocation.<br>         Repeated invocations respect the requested delay.<br>         A negative number means "forever", 0 means "do not repeat" (i.e., invoke once), and positive numbers mean "repeat N times".<br>         A repeat of '9', for example, will result in 10 total invocations (1 initial + 9 repeats). |
+
+**Return Type:** `uint`
+
+---
+
+### RemoveTimedCallback
+`(id)`
+ Removes a previously scheduled timed callback
+
+
+**Parameters:**
+
+| Name | Type | Optional | Description |
+| --- | --- | --- | --- |
+| `id` | `uint` | ❌ No | The callback's ID, as returned by `ScheduleTimedCallback` |
 
 **Return Type:** `void` *(Does not return anything)*
 
@@ -453,6 +574,28 @@ You can now type `-updateapi` in game to download the latest API.py file.
 
 ---
 
+### GetSpellsInSpellbook
+`(serial)`
+ Get the names of all spells scribed into a spellbook.
+ Example:
+ ```py
+ spells = API.GetSpellsInSpellbook(book_serial)
+ if spells:
+   for spell in spells:
+     API.SysMsg(spell)
+ ```
+
+
+**Parameters:**
+
+| Name | Type | Optional | Description |
+| --- | --- | --- | --- |
+| `serial` | `uint` | ❌ No | Serial of the spellbook item |
+
+**Return Type:** `string[]`
+
+---
+
 ### ContextMenu
 `(serial, entry)`
  Send a context menu(right click menu) response.
@@ -471,6 +614,29 @@ You can now type `-updateapi` in game to download the latest API.py file.
 | `entry` | `ushort` | ❌ No | Entries start at 0, the top entry will be 0, then 1, 2, etc. (Usually) |
 
 **Return Type:** `void` *(Does not return anything)*
+
+---
+
+### ContextMenu
+`(serial, entry, timeout)`
+ Send a context menu(right click menu) response by matching the entry text.
+ This opens the menu, finds the entry whose text matches, and responds with the correct index.
+ The match is case-insensitive and matches the first entry that contains the given text.
+ Example:
+ ```py
+ API.ContextMenu(API.Player, "Open Paperdoll")
+ ```
+
+
+**Parameters:**
+
+| Name | Type | Optional | Description |
+| --- | --- | --- | --- |
+| `serial` | `uint` | ❌ No |  |
+| `entry` | `string` | ❌ No | The text of the menu entry to select |
+| `timeout` | `double` | ✅ Yes | Seconds to wait for the menu to appear |
+
+**Return Type:** `bool`
 
 ---
 
@@ -637,7 +803,7 @@ You can now type `-updateapi` in game to download the latest API.py file.
 | `amt` | `ushort` | ✅ Yes | 0 to grab entire stack |
 | `x` | `int` | ✅ Yes | Offset from your location |
 | `y` | `int` | ✅ Yes | Offset from your location |
-| `z` | `int` | ✅ Yes | Offset from your location. Leave blank in most cases |
+| `z` | `int` | ✅ Yes | Z offset from your location. Leave blank to auto-use the ground/static z at the destination tile |
 | `OSI` | `bool` | ✅ Yes | True if you are playing OSI |
 
 **Return Type:** `void` *(Does not return anything)*
@@ -664,7 +830,7 @@ You can now type `-updateapi` in game to download the latest API.py file.
 | `amt` | `int` | ✅ Yes | 0 to grab entire stack |
 | `x` | `int` | ✅ Yes | Offset from your location |
 | `y` | `int` | ✅ Yes | Offset from your location |
-| `z` | `int` | ✅ Yes | Offset from your location. Leave blank in most cases |
+| `z` | `int` | ✅ Yes | Z offset from your location. Leave blank to auto-use the ground/static z at the destination tile |
 | `OSI` | `bool` | ✅ Yes | True if you are playing OSI |
 
 **Return Type:** `void` *(Does not return anything)*
@@ -681,8 +847,7 @@ You can now type `-updateapi` in game to download the latest API.py file.
 | Name | Type | Optional | Description |
 | --- | --- | --- | --- |
 | `serial` | `uint` | ✅ Yes | The serial of the item to pick up. |
-| `amt` | `int` | ✅ Yes | The amount of the item to pick up.  
-         If 0, the full stack will be picked up (if stackable). |
+| `amt` | `int` | ✅ Yes | The amount of the item to pick up.<br>         If 0, the full stack will be picked up (if stackable). |
 
 **Return Type:** `void` *(Does not return anything)*
 
@@ -698,14 +863,10 @@ You can now type `-updateapi` in game to download the latest API.py file.
 | Name | Type | Optional | Description |
 | --- | --- | --- | --- |
 | `serial` | `uint` | ✅ Yes | The unique serial identifier of the item to drop. |
-| `x` | `int` | ✅ Yes | The X coordinate of the ground drop location, or the X position inside a container if a container is specified.  
-         If not specified, defaults to the player's current X position. |
-| `y` | `int` | ✅ Yes | The Y coordinate of the ground drop location, or the X position inside a container if a container is specified.  
-         If not specified, defaults to the player's current Y position. |
-| `z` | `int` | ✅ Yes | The Z coordinate (elevation) of the ground drop location. Unused if dropping into container.  
-         If not specified, defaults to the Z value of the static or map land at (x, y) if x and y are specified. |
-| `container` | `uint` | ✅ Yes | The serial of the container to drop the item into.  
-         If unspecified, the item will be dropped on the ground. |
+| `x` | `int` | ✅ Yes | The X coordinate of the ground drop location, or the X position inside a container if a container is specified.<br>         If not specified, defaults to the player's current X position. |
+| `y` | `int` | ✅ Yes | The Y coordinate of the ground drop location, or the X position inside a container if a container is specified.<br>         If not specified, defaults to the player's current Y position. |
+| `z` | `int` | ✅ Yes | The Z coordinate (elevation) of the ground drop location. Unused if dropping into container.<br>         If not specified, defaults to the Z value of the static or map land at (x, y) if x and y are specified. |
+| `container` | `uint` | ✅ Yes | The serial of the container to drop the item into.<br>         If unspecified, the item will be dropped on the ground. |
 
 **Return Type:** `void` *(Does not return anything)*
 
@@ -713,7 +874,7 @@ You can now type `-updateapi` in game to download the latest API.py file.
 
 ### GetHeldItem
 
- Retrieves data of the currently held item on the game cursor.
+ Retrieves serial of the currently held item on the game cursor.
 
 
 **Return Type:** `uint`
@@ -927,6 +1088,60 @@ You can now type `-updateapi` in game to download the latest API.py file.
 
 ---
 
+### ActiveSpells
+
+ Get a list of spell ids for spells that are currently toggled on/active.
+ These are toggle spells/moves (for example Ninjitsu or Bushido moves) that the server
+ reports as active, the same ones the spell bar highlights.
+ Example:
+ ```py
+ for spellId in API.ActiveSpells():
+     API.SysMsg("Active spell id: " + str(spellId))
+ ```
+
+
+**Return Type:** `int[]`
+
+---
+
+### ActiveSpellNames
+
+ Get a list of names for spells that are currently toggled on/active.
+ These are toggle spells/moves (for example Ninjitsu or Bushido moves) that the server
+ reports as active, the same ones the spell bar highlights.
+ Example:
+ ```py
+ for name in API.ActiveSpellNames():
+     API.SysMsg("Active spell: " + name)
+ ```
+
+
+**Return Type:** `string[]`
+
+---
+
+### IsSpellActive
+`(spell)`
+ Check if a toggle spell/move is currently active.
+ You can pass a spell name (for example "Confidence") or a spell id.
+ These are toggle spells/moves that the server reports as active, the same ones the spell bar highlights.
+ Example:
+ ```py
+ if API.IsSpellActive("Confidence"):
+     API.SysMsg("Confidence is active!")
+ ```
+
+
+**Parameters:**
+
+| Name | Type | Optional | Description |
+| --- | --- | --- | --- |
+| `spell` | `object` | ❌ No | The spell name or spell id to check. |
+
+**Return Type:** `bool`
+
+---
+
 ### SysMsg
 `(message, hue)`
  Show a system message(Left side of screen).
@@ -952,7 +1167,7 @@ You can now type `-updateapi` in game to download the latest API.py file.
  Say a message outloud.
  Example:
  ```py
- API.Say("Hello friend!")
+ API.Msg("Hello friend!")
  ```
 
 
@@ -1322,6 +1537,131 @@ You can now type `-updateapi` in game to download the latest API.py file.
 
 ---
 
+### UpdateCooldown
+`(name, maxValue, currentValue)`
+ Updates an existing cooldown bar. Only the provided values are applied.
+ Example:
+ ```py
+ API.UpdateCooldown("Healing", maxValue=10, currentValue=5)
+ ```
+
+
+**Parameters:**
+
+| Name | Type | Optional | Description |
+| --- | --- | --- | --- |
+| `name` | `string` | ❌ No | Name of the cooldown bar to update |
+| `maxValue` | `double` | ✅ Yes | New total duration in seconds. Omit or pass -1 to leave unchanged |
+| `currentValue` | `double` | ✅ Yes | New remaining time in seconds. Omit or pass -1 to leave unchanged |
+
+**Return Type:** `void` *(Does not return anything)*
+
+---
+
+### RestartCooldown
+`(name)`
+ Restarts the countdown of an existing cooldown bar to its full duration.
+ Example:
+ ```py
+ API.RestartCooldown("Healing")
+ ```
+
+
+**Parameters:**
+
+| Name | Type | Optional | Description |
+| --- | --- | --- | --- |
+| `name` | `string` | ❌ No | Name of the cooldown bar to restart |
+
+**Return Type:** `void` *(Does not return anything)*
+
+---
+
+### DeleteCooldown
+`(name)`
+ Deletes an existing cooldown bar.
+ Example:
+ ```py
+ API.DeleteCooldown("Healing")
+ ```
+
+
+**Parameters:**
+
+| Name | Type | Optional | Description |
+| --- | --- | --- | --- |
+| `name` | `string` | ❌ No | Name of the cooldown bar to delete |
+
+**Return Type:** `void` *(Does not return anything)*
+
+---
+
+### CooldownExists
+`(name)`
+ Checks whether a cooldown bar with the given name exists.
+ Example:
+ ```py
+ if API.CooldownExists("Healing"):
+ ```
+
+
+**Parameters:**
+
+| Name | Type | Optional | Description |
+| --- | --- | --- | --- |
+| `name` | `string` | ❌ No | Name of the cooldown bar to check |
+
+**Return Type:** `bool`
+
+---
+
+### CreateEffect
+`(graphic, type, source, target, hue, sourceX, sourceY, sourceZ, targetX, targetY, targetZ, duration, speed, fixedDirection, doesExplode, blendMode)`
+ Creates and displays a graphic effect in the world, the same kind the server sends for spells,
+ projectiles, explosions, etc. This is a purely local, visual effect - no packet is sent and only
+ you see it.
+ The type decides how it behaves: `EffectType.FixedXYZ` and
+ `EffectType.FixedFrom` stay in place, `EffectType.Moving` travels from
+ the source to the target, and `EffectType.Lightning` draws a bolt from the source.
+ Positions come from the source/target serials when given, otherwise from the coordinates, which
+ default to the player's position.
+ Example:
+ ```py
+ # A stationary animation on the tile next to the player, for 2 seconds
+ API.CreateEffect(0x373A, sourceX=API.Player.X + 1, sourceY=API.Player.Y, hue=0x0481)
+
+ # A projectile fired from the player at the nearest murderer
+ mob = API.NearestMobile([API.Notoriety.Murderer], 8)
+ if mob:
+   API.CreateEffect(0x36D0, type=API.EffectType.Moving, source=API.Player, target=mob)
+ ```
+
+
+**Parameters:**
+
+| Name | Type | Optional | Description |
+| --- | --- | --- | --- |
+| `graphic` | `ushort` | ❌ No | The animation/art graphic to draw. |
+| `type` | `EffectType` | ✅ Yes | How the effect behaves. Defaults to a stationary effect. |
+| `source` | `uint` | ✅ Yes | Serial of the source item/mobile. Takes priority over the source coordinates. |
+| `target` | `uint` | ✅ Yes | Serial of the target item/mobile. Takes priority over the target coordinates. |
+| `hue` | `ushort` | ✅ Yes | Hue to color the effect. 0 means no hue. |
+| `sourceX` | `int?` | ✅ Yes | Source X coordinate. Defaults to the player's X. |
+| `sourceY` | `int?` | ✅ Yes | Source Y coordinate. Defaults to the player's Y. |
+| `sourceZ` | `int?` | ✅ Yes | Source Z coordinate. Defaults to the player's Z. |
+| `targetX` | `int?` | ✅ Yes | Target X coordinate. Defaults to the source X. |
+| `targetY` | `int?` | ✅ Yes | Target Y coordinate. Defaults to the source Y. |
+| `targetZ` | `int?` | ✅ Yes | Target Z coordinate. Defaults to the source Z. |
+| `duration` | `double` | ✅ Yes | How long the effect lasts, in seconds. 0 or less makes it last until it leaves the area. |
+| `speed` | `byte` | ✅ Yes | Animation speed. 0 uses the default speed. |
+| `fixedDirection` | `bool` | ✅ Yes | Hold the effect's direction instead of rotating it to face the target. |
+| `doesExplode` | `bool` | ✅ Yes | Create an explosion at the target when a moving effect arrives. |
+| `blendMode` | `EffectBlendMode` | ✅ Yes | How the effect is blended over the world. |
+
+**Return Type:** `void` *(Does not return anything)*
+
+---
+
 ### IgnoreObject
 `(serial)`
  Adds an item or mobile to your ignore list.
@@ -1397,7 +1737,7 @@ You can now type `-updateapi` in game to download the latest API.py file.
 ---
 
 ### Pathfind
-`(x, y, z, distance, wait, timeout)`
+`(x, y, z, distance, wait, timeout, run)`
  Attempt to pathfind to a location.  This will fail with large distances.
  Example:
  ```py
@@ -1415,13 +1755,14 @@ You can now type `-updateapi` in game to download the latest API.py file.
 | `distance` | `int` | ✅ Yes | Distance away from goal to stop. |
 | `wait` | `bool` | ✅ Yes | True/False if you want to wait for pathfinding to complete or time out |
 | `timeout` | `int` | ✅ Yes | Seconds to wait before cancelling waiting |
+| `run` | `bool` | ✅ Yes | True/False should we run? |
 
 **Return Type:** `bool`
 
 ---
 
 ### PathfindEntity
-`(entity, distance, wait, timeout)`
+`(entity, distance, wait, timeout, run)`
  Attempt to pathfind to a mobile or item.
  Example:
  ```py
@@ -1439,6 +1780,7 @@ You can now type `-updateapi` in game to download the latest API.py file.
 | `distance` | `int` | ✅ Yes | Distance to stop from goal |
 | `wait` | `bool` | ✅ Yes | True/False if you want to wait for pathfinding to complete or time out |
 | `timeout` | `int` | ✅ Yes | Seconds to wait before cancelling waiting |
+| `run` | `bool` | ✅ Yes | True/False should we run? |
 
 **Return Type:** `bool`
 
@@ -1752,7 +2094,7 @@ You can now type `-updateapi` in game to download the latest API.py file.
 
 ### RequestAnyTarget
 `(timeout)`
- Prompts the player to target any object in the game world, including an <c>Item</c> , <c>Mobile</c> , <c>Land</c> tile, <c>Static</c> , or <c>Multi</c> .
+ Prompts the player to target any object in the game world, including an Item, Mobile, Land tile, Static, or Multi.
  Waits for the player to select a target within a given timeout period.
 
 
@@ -1760,8 +2102,7 @@ You can now type `-updateapi` in game to download the latest API.py file.
 
 | Name | Type | Optional | Description |
 | --- | --- | --- | --- |
-| `timeout` | `double` | ✅ Yes | The maximum time, in seconds, to wait for a valid target selection.  
-         If the timeout expires without a selection, the method returns <c>null</c> . |
+| `timeout` | `double` | ✅ Yes | The maximum time, in seconds, to wait for a valid target selection.<br>         If the timeout expires without a selection, the method returns null. |
 
 **Return Type:** `ApiGameObject`
 
@@ -1775,6 +2116,28 @@ You can now type `-updateapi` in game to download the latest API.py file.
  API.TargetSelf()
  ```
 
+
+**Return Type:** `void` *(Does not return anything)*
+
+---
+
+### TargetRel
+`(xOffset, yOffset, tilesOnly)`
+ Target the spot at an offset from your position, resolving it the same way a click would:
+ the topmost visible object there is targeted, whether that is an entity, a static/multi, or land.
+ Example:
+ ```py
+ API.TargetRel(1, 1)
+ ```
+
+
+**Parameters:**
+
+| Name | Type | Optional | Description |
+| --- | --- | --- | --- |
+| `xOffset` | `int` | ❌ No | X offset from your position, in tiles. |
+| `yOffset` | `int` | ❌ No | Y offset from your position, in tiles. |
+| `tilesOnly` | `bool` | ✅ Yes | When true (default), entities are ignored and only statics/multi or land are targeted. |
 
 **Return Type:** `void` *(Does not return anything)*
 
@@ -1802,9 +2165,9 @@ You can now type `-updateapi` in game to download the latest API.py file.
 ---
 
 ### TargetTileRel
-`(xOffset, yOffset, graphic)`
- Target a tile relative to your location.
- If this doesn't work, try TargetLandRel instead.'
+`(xOffset, yOffset, graphic, tilesOnly)`
+ Target the highest visible object at a tile relative to your location, skipping land.
+ Resolves the spot the same way <see cref="TargetRel"/> does, but never falls back to land.
  Example:
  ```py
  API.TargetTileRel(1, 1)
@@ -1817,7 +2180,8 @@ You can now type `-updateapi` in game to download the latest API.py file.
 | --- | --- | --- | --- |
 | `xOffset` | `int` | ❌ No | X Offset from your position |
 | `yOffset` | `int` | ❌ No | Y Offset from your position |
-| `graphic` | `ushort` | ✅ Yes | Optional graphic, will try to use the graphic of the tile at that location if left empty. |
+| `graphic` | `ushort` | ✅ Yes | Optional graphic, will try to use the graphic of the highest tile at that location if left empty. |
+| `tilesOnly` | `bool` | ✅ Yes | When true (default), entities are ignored and only statics/multi are targeted. |
 
 **Return Type:** `void` *(Does not return anything)*
 
@@ -1860,6 +2224,32 @@ You can now type `-updateapi` in game to download the latest API.py file.
    API.SysMsg("Targeting cancelled, april fools made you target something!")
  ```
 
+
+**Return Type:** `void` *(Does not return anything)*
+
+---
+
+### SetLastTarget
+`(serial, x, y, z, graphic)`
+ Override the client's last target. Pass a serial for an entity, or a location (x/y/z)
+ for a land tile. Include graphic to mark the location as a static instead.
+ Example:
+ ```py
+ API.SetLastTarget(serial=0x12345678)
+ API.SetLastTarget(x=1243, y=1337, z=0)
+ API.SetLastTarget(x=1243, y=1337, z=0, graphic=0x1)
+ ```
+
+
+**Parameters:**
+
+| Name | Type | Optional | Description |
+| --- | --- | --- | --- |
+| `serial` | `uint?` | ✅ Yes | Serial of the item/mobile to target. Takes precedence over location. |
+| `x` | `ushort?` | ✅ Yes | X coordinate of the target location. |
+| `y` | `ushort?` | ✅ Yes | Y coordinate of the target location. |
+| `z` | `short?` | ✅ Yes | Z coordinate of the target location. |
+| `graphic` | `ushort?` | ✅ Yes | Graphic of the static at the location. Omit to target land. |
 
 **Return Type:** `void` *(Does not return anything)*
 
@@ -2396,6 +2786,25 @@ You can now type `-updateapi` in game to download the latest API.py file.
 
 ---
 
+### PlaySound
+`(index)`
+ Play a sound effect locally (only audible to you).
+ Example:
+ ```py
+ API.PlaySound(0x13E)
+ ```
+
+
+**Parameters:**
+
+| Name | Type | Optional | Description |
+| --- | --- | --- | --- |
+| `index` | `int` | ❌ No | The sound effect ID to play |
+
+**Return Type:** `void` *(Does not return anything)*
+
+---
+
 ### InJournalAny
 `(msgs, clearMatches)`
  Check if the journal contains *any* of the strings in this list.
@@ -2475,7 +2884,7 @@ You can now type `-updateapi` in game to download the latest API.py file.
 
 | Name | Type | Optional | Description |
 | --- | --- | --- | --- |
-| `seconds` | `double` | ❌ No | 0-30 seconds. |
+| `seconds` | `double` | ❌ No |  |
 
 **Return Type:** `void` *(Does not return anything)*
 
@@ -2489,6 +2898,41 @@ You can now type `-updateapi` in game to download the latest API.py file.
  API.Stop()
  ```
 
+
+**Return Type:** `void` *(Does not return anything)*
+
+---
+
+### OnStop
+`(callback)`
+ Register an optional callback to run when this script is being stopped.
+ When set, stopping the script will be delayed until this callback has been
+ processed, or until a maximum of 5 seconds have passed.
+
+ Callbacks only run while the script is calling `API.ProcessCallbacks`,
+ so make sure your script keeps calling it (for example in its main loop) for
+ the OnStop callback to actually run before the timeout elapses.
+
+ Example:
+ ```py
+ def on_stop():
+   API.SysMsg("Cleaning up before stopping...")
+ API.OnStop(on_stop)
+ while not API.StopRequested:
+   API.ProcessCallbacks()
+   API.Pause(0.1)
+ ```
+ To unregister, call with no callback:
+ ```py
+ API.OnStop()
+ ```
+
+
+**Parameters:**
+
+| Name | Type | Optional | Description |
+| --- | --- | --- | --- |
+| `callback` | `object` | ✅ Yes | The function to invoke when the script is stopping, or `null` to unregister. |
 
 **Return Type:** `void` *(Does not return anything)*
 
@@ -2541,7 +2985,33 @@ You can now type `-updateapi` in game to download the latest API.py file.
 
 | Name | Type | Optional | Description |
 | --- | --- | --- | --- |
-| `virtue` | `string` | ❌ No | honor/sacrifice/valor |
+| `virtue` | `string` | ❌ No | honor/sacrifice/valor/justice |
+
+**Return Type:** `void` *(Does not return anything)*
+
+---
+
+### OpenQuestLog
+
+ Open the quest log gump.
+ Example:
+ ```py
+ API.OpenQuestLog()
+ ```
+
+
+**Return Type:** `void` *(Does not return anything)*
+
+---
+
+### OpenHelp
+
+ Open the help menu.
+ Example:
+ ```py
+ API.OpenHelp()
+ ```
+
 
 **Return Type:** `void` *(Does not return anything)*
 
@@ -2668,8 +3138,9 @@ You can now type `-updateapi` in game to download the latest API.py file.
 ---
 
 ### GetAllMobiles
-`(graphic, distance, notoriety)`
+`(graphic, distance, notoriety, sortby, name, graphics, minDistance, isHuman, isFemale, isGhost, isFriend, poisoned, paralyzed, hasLineOfSight, hues)`
  Return a list of all mobiles the client is aware of, optionally filtered by graphic, distance, and/or notoriety.
+ Any additional filter is ignored unless supplied.
  Example:
  ```py
  # Get all mobiles
@@ -2680,6 +3151,12 @@ You can now type `-updateapi` in game to download the latest API.py file.
  nearby_humans = API.GetAllMobiles(400, 5)
  # Get all enemies (murderers and criminals) within 15 tiles
  enemies = API.GetAllMobiles(distance=15, notoriety=[API.Notoriety.Murderer, API.Notoriety.Criminal])
+ # Get all mobiles sorted by current hits, lowest first
+ sorted_by_hits = API.GetAllMobiles(sortby="hits")
+ # Get all poisonous ogres within 10 tiles in line of sight
+ targets = API.GetAllMobiles(name="ogre", distance=10, poisoned=True, hasLineOfSight=True)
+ # Get only dead friends with a specific hue, at least 2 tiles away
+ ghosts = API.GetAllMobiles(isGhost=True, isFriend=True, minDistance=2, hues=[0x83EA])
  ```
 
 
@@ -2690,6 +3167,18 @@ You can now type `-updateapi` in game to download the latest API.py file.
 | `graphic` | `ushort?` | ✅ Yes | Optional graphic ID to filter by |
 | `distance` | `int?` | ✅ Yes | Optional maximum distance from player |
 | `notoriety` | `IList<Notoriety>` | ✅ Yes | Optional list of notoriety flags to filter by |
+| `sortby` | `string` | ✅ Yes | Sort order, case insensitive: "Distance", "Hits" or "MaxHits". Defaults to "Distance". |
+| `name` | `string` | ✅ Yes | Optional partial name to match, case insensitive |
+| `graphics` | `ushort[]` | ✅ Yes | Optional list of graphic IDs to match; a mobile matches if its graphic equals any entry |
+| `minDistance` | `int?` | ✅ Yes | Optional minimum distance from player |
+| `isHuman` | `bool?` | ✅ Yes | When set, only include (True) or exclude (False) humanoid mobiles |
+| `isFemale` | `bool?` | ✅ Yes | When set, only include (True) or exclude (False) female mobiles |
+| `isGhost` | `bool?` | ✅ Yes | When set, only include (True) or exclude (False) ghosts (dead mobiles) |
+| `isFriend` | `bool?` | ✅ Yes | When set, only include (True) or exclude (False) mobiles on the friends list |
+| `poisoned` | `bool?` | ✅ Yes | When set, only include (True) or exclude (False) poisoned mobiles |
+| `paralyzed` | `bool?` | ✅ Yes | When set, only include (True) or exclude (False) paralyzed mobiles |
+| `hasLineOfSight` | `bool?` | ✅ Yes | When set, only include (True) or exclude (False) mobiles with line of sight to the player |
+| `hues` | `ushort[]` | ✅ Yes | Optional list of hues to match; a mobile matches if its hue equals any entry |
 
 **Return Type:** `ApiMobile[]`
 
@@ -3066,7 +3555,7 @@ You can now type `-updateapi` in game to download the latest API.py file.
 ---
 
 ### CreateGumpTextBox
-`(text, width, height, multiline)`
+`(text, width, height, multiline, fontSize)`
  Use API.Gumps.CreateGumpTextBox instead.
 
 
@@ -3078,6 +3567,7 @@ You can now type `-updateapi` in game to download the latest API.py file.
 | `width` | `int` | ✅ Yes |  |
 | `height` | `int` | ✅ Yes |  |
 | `multiline` | `bool` | ✅ Yes |  |
+| `fontSize` | `float` | ✅ Yes |  |
 
 **Return Type:** `ApiUiTtfTextInputField`
 
@@ -3277,11 +3767,11 @@ You can now type `-updateapi` in game to download the latest API.py file.
 ---
 
 ### ToggleScript
-`(scriptName)`
+`(scriptPath)`
  Toggle another script on or off.
  Example:
  ```py
- API.ToggleScript("MyScript.py")
+ API.ToggleScript("mygroup/MyScript.py")
  ```
 
 
@@ -3289,39 +3779,83 @@ You can now type `-updateapi` in game to download the latest API.py file.
 
 | Name | Type | Optional | Description |
 | --- | --- | --- | --- |
-| `scriptName` | `string` | ❌ No | Full name including extension. Can be .py or .lscript. |
+| `scriptPath` | `string` | ❌ No | The script's path relative to the LegionScripts folder (e.g. "mygroup/MyScript.py"). Use a path returned by ListRunningScripts" to avoid ambiguity between scripts that share a file name. |
 
 **Return Type:** `void` *(Does not return anything)*
 
 ---
 
 ### PlayScript
-`(scriptName)`
+`(scriptPath)`
  Play a legion script.
+ Example:
+ ```py
+ API.PlayScript("mygroup/MyScript.py")
+ ```
 
 
 **Parameters:**
 
 | Name | Type | Optional | Description |
 | --- | --- | --- | --- |
-| `scriptName` | `string` | ❌ No | This is the file name including extension. |
+| `scriptPath` | `string` | ❌ No | The script's path relative to the LegionScripts folder (e.g. "mygroup/MyScript.py"). Use a path returned by ListRunningScripts to avoid ambiguity between scripts that share a file name. |
 
 **Return Type:** `void` *(Does not return anything)*
 
 ---
 
 ### StopScript
-`(scriptName)`
+`(scriptPath)`
  Stop a legion script.
+ Example:
+ ```py
+ API.StopScript("mygroup/MyScript.py")
+ ```
 
 
 **Parameters:**
 
 | Name | Type | Optional | Description |
 | --- | --- | --- | --- |
-| `scriptName` | `string` | ❌ No | This is the file name including extension. |
+| `scriptPath` | `string` | ❌ No | The script's path relative to the LegionScripts folder (e.g. "mygroup/MyScript.py"). Use a path returned by ListRunningScripts to avoid ambiguity between scripts that share a file name. |
 
 **Return Type:** `void` *(Does not return anything)*
+
+---
+
+### ListRunningScripts
+
+ Get the paths of all currently running legion scripts.
+ The paths are relative to the LegionScripts folder and can be passed
+ straight back to PlayScript, StopScript, ToggleScript or IsScriptRunning.
+ Example:
+ ```py
+ for path in API.ListRunningScripts():
+     API.SysMsg(path)
+ ```
+
+
+**Return Type:** `IList<string>`
+
+---
+
+### IsScriptRunning
+`(scriptPath)`
+ Check if a legion script is currently running.
+ Example:
+ ```py
+ if not API.IsScriptRunning("mygroup/MyScript.py"):
+     API.PlayScript("mygroup/MyScript.py")
+ ```
+
+
+**Parameters:**
+
+| Name | Type | Optional | Description |
+| --- | --- | --- | --- |
+| `scriptPath` | `string` | ❌ No | The script's path relative to the LegionScripts folder (e.g. "mygroup/MyScript.py"). Use a path returned by ListRunningScripts to avoid ambiguity between scripts that share a file name. |
+
+**Return Type:** `bool`
 
 ---
 
@@ -3526,6 +4060,62 @@ You can now type `-updateapi` in game to download the latest API.py file.
 | `identifier` | `uint` | ✅ Yes | An identified number if you want multiple arrows. |
 
 **Return Type:** `void` *(Does not return anything)*
+
+---
+
+### GetClilocString
+`(cliloc, englishOnly)`
+ Get the string for a cliloc number.
+ Example:
+ ```py
+ text = API.GetClilocString(1020000)
+ if text:
+   API.SysMsg(text)
+
+ # Force English regardless of client language setting
+ text = API.GetClilocString(1020000, englishOnly=True)
+ ```
+
+
+**Parameters:**
+
+| Name | Type | Optional | Description |
+| --- | --- | --- | --- |
+| `cliloc` | `int` | ❌ No | The cliloc number |
+| `englishOnly` | `bool` | ✅ Yes | True to always return the English string, ignoring the client language setting |
+
+**Return Type:** `string`
+
+---
+
+### GetClientBounds
+
+ Get the bounds of the client game window.
+ This covers the entire window, including all UI and the game world.
+ Coordinates are in screen pixels.
+ Example:
+ ```py
+ bounds = API.GetClientBounds()
+ API.SysMsg(f"Window is {bounds.Width}x{bounds.Height} at {bounds.X},{bounds.Y}")
+ ```
+
+
+**Return Type:** `Rectangle`
+
+---
+
+### GetViewportBounds
+
+ Get the bounds of the game world viewport.
+ This is the area where the game world is rendered, in screen pixel coordinates.
+ Example:
+ ```py
+ vp = API.GetViewportBounds()
+ API.SysMsg(f"Viewport at {vp.X},{vp.Y} size {vp.Width}x{vp.Height}")
+ ```
+
+
+**Return Type:** `Rectangle`
 
 ---
 

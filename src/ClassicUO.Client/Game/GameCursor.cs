@@ -19,7 +19,7 @@ namespace ClassicUO.Game
 {
     public sealed class GameCursor
     {
-        private static readonly ushort[,] _cursorData = new ushort[3, 16]
+        private static readonly ushort[,] _cursorData = new ushort[2, 16]
         {
             {
                 0x206A,
@@ -56,35 +56,18 @@ namespace ClassicUO.Game
                 0x2060,
                 0x2061,
                 0x2062
-            },
-            {
-                0x206A,
-                0x206B,
-                0x206C,
-                0x206D,
-                0x206E,
-                0x206F,
-                0x2070,
-                0x2071,
-                0x2072,
-                0x2073,
-                0x2074,
-                0x2075,
-                0x2076,
-                0x2077,
-                0x2078,
-                0x2079
             }
         };
 
         private readonly Aura _aura;
         private readonly List<CustomBuildObject> _componentsList = new ();
         private readonly int[,] _cursorOffset = new int[2, 16];
-        private readonly IntPtr[,] _cursors_ptr = new IntPtr[3, 16];
+        private readonly IntPtr[,] _cursors_ptr = new IntPtr[2, 16];
         private ushort _graphic = 0x2073;
         private bool _needGraphicUpdate = true;
         private readonly List<Multi> _temp = new List<Multi>();
         private readonly Tooltip _tooltip;
+        private readonly DebugHoverTooltip _debugHover;
         private readonly World _world;
 
         /// <summary>
@@ -97,9 +80,10 @@ namespace ClassicUO.Game
         {
             _world = world;
             _tooltip = new Tooltip(world);
+            _debugHover = new DebugHoverTooltip(world);
             _aura = new Aura(30);
 
-            for (int i = 0; i < 3; i++)
+            for (int i = 0; i < 2; i++)
             {
                 for (int j = 0; j < 16; j++)
                 {
@@ -107,7 +91,7 @@ namespace ClassicUO.Game
 
                     nint surface = Client.Game.UO.Arts.CreateCursorSurfacePtr(
                         id,
-                        (ushort)(i == 2 ? 0x0033 : 0),
+                        0,
                         out int hotX,
                         out int hotY
                     );
@@ -209,12 +193,7 @@ namespace ClassicUO.Game
                         id -= 0x206A;
                     }
 
-                    int war =
-                        _world.InGame && _world.Player.InWarMode
-                            ? 1
-                            : _world.InGame && _world.MapIndex != 0
-                                ? 2
-                                : 0;
+                    int war = _world.InGame && _world.Player.InWarMode ? 1 : 0;
 
                     ref IntPtr ptrCursor = ref _cursors_ptr[war, id];
 
@@ -387,9 +366,7 @@ namespace ClassicUO.Game
                             break;
                     }
 
-                    float scale = Client.Game.RenderScale;
-
-                    _aura.Draw(sb, (int)(Mouse.Position.X * scale), (int)(Mouse.Position.Y * scale), hue, 0f);
+                    _aura.Draw(sb, Mouse.Position.X, Mouse.Position.Y, hue, 0f);
                 }
 
                 if (ProfileManager.CurrentProfile.ShowTargetRangeIndicator)
@@ -482,6 +459,7 @@ namespace ClassicUO.Game
             }
 
             DrawToolTip(sb, Mouse.Position);
+            _debugHover.Draw(sb);
 
             if (!Settings.GlobalSettings.RunMouseInASeparateThread)
             {
@@ -501,16 +479,7 @@ namespace ClassicUO.Game
                 int offX = _cursorOffset[0, graphic];
                 int offY = _cursorOffset[1, graphic];
 
-                Vector3 hueVec;
-
-                if (_world.InGame && _world.MapIndex != 0 && !_world.Player.InWarMode)
-                {
-                    hueVec = ShaderHueTranslator.GetHueVector(0x0033);
-                }
-                else
-                {
-                    hueVec = ShaderHueTranslator.GetHueVector(0);
-                }
+                Vector3 hueVec = ShaderHueTranslator.GetHueVector(0);
 
                 ref readonly SpriteInfo artInfo = ref Client.Game.UO.Arts.GetArt(Graphic);
 
@@ -564,6 +533,9 @@ namespace ClassicUO.Game
 
         private void DrawToolTip(UltimaBatcher2D batcher, Point position)
         {
+            // A control may prepend a line (e.g. a counter cell's keybind) to whatever tooltip it shows.
+            _tooltip.Prefix = (UIManager.MouseOverControl as Control)?.TooltipPrefix;
+
             if (Client.Game.Scene is GameScene gs)
             {
                 if (
@@ -602,7 +574,7 @@ namespace ClassicUO.Game
                             _tooltip.SetGameObject(item);
                         }
 
-                        _tooltip.Draw(batcher, position.X, position.Y + 24);
+                        _tooltip.Draw(batcher, position.X, position.Y);
 
                         return;
                     }
@@ -619,7 +591,7 @@ namespace ClassicUO.Game
                                 _tooltip.SetGameObject(serial);
                             }
 
-                            _tooltip.Draw(batcher, position.X, position.Y + 24);
+                            _tooltip.Draw(batcher, position.X, position.Y);
 
                             return;
                         }
@@ -646,7 +618,7 @@ namespace ClassicUO.Game
                         _tooltip.SetText(text);
                     }
 
-                    _tooltip.Draw(batcher, position.X, position.Y + 24);
+                    _tooltip.Draw(batcher, position.X, position.Y);
                 }
                 else if (UIManager.MouseOverControl.Tooltip is Control c)
                 {

@@ -6,7 +6,6 @@ using System.IO;
 using System.Text;
 using System.Xml;
 using ClassicUO.Configuration;
-using ClassicUO.Resources;
 using ClassicUO.Utility.Logging;
 
 namespace ClassicUO.Game.Managers
@@ -77,7 +76,6 @@ namespace ClassicUO.Game.Managers
             catch (Exception ex)
             {
                 Log.Error(ex.ToString());
-
                 return;
             }
 
@@ -85,12 +83,19 @@ namespace ClassicUO.Game.Managers
 
             XmlElement root = doc["infos"];
 
-            if (root != null)
+            if (root == null)
+                return;
+
+            foreach (XmlElement xml in root.GetElementsByTagName("info"))
             {
-                foreach (XmlElement xml in root.GetElementsByTagName("info"))
+                try
                 {
                     var item = new InfoBarItem(xml);
                     infoBarItems.Add(item);
+                }
+                catch (Exception ex)
+                {
+                    Log.Error($"Failed to construct an Info-Bar item - {ex}");
                 }
             }
         }
@@ -100,10 +105,10 @@ namespace ClassicUO.Game.Managers
             infoBarItems.Clear();
 
             infoBarItems.Add(new InfoBarItem("", InfoBarVars.NameNotoriety, 0x3D2));
-            infoBarItems.Add(new InfoBarItem(ResGeneral.Hits, InfoBarVars.HP, 0x1B6));
-            infoBarItems.Add(new InfoBarItem(ResGeneral.Mana, InfoBarVars.Mana, 0x1ED));
-            infoBarItems.Add(new InfoBarItem(ResGeneral.Stam, InfoBarVars.Stamina, 0x22E));
-            infoBarItems.Add(new InfoBarItem(ResGeneral.Weight, InfoBarVars.Weight, 0x3D2));
+            infoBarItems.Add(new InfoBarItem(TazLang.Get("hits"), InfoBarVars.HP, 0x1B6));
+            infoBarItems.Add(new InfoBarItem(TazLang.Get("mana"), InfoBarVars.Mana, 0x1ED));
+            infoBarItems.Add(new InfoBarItem(TazLang.Get("stam"), InfoBarVars.Stamina, 0x22E));
+            infoBarItems.Add(new InfoBarItem(TazLang.Get("weight"), InfoBarVars.Weight, 0x3D2));
         }
     }
 

@@ -34,6 +34,129 @@ ClassicUO.sln
 - **IronPython**: Python scripting integration
 - **Discord SDK**: Discord rich presence integration
 
+
+## Code Style Rules
+
+Applies to new code. Don't refactor existing code to match unless asked.
+Indent/charset/EOL come from `.editorconfig`; this section covers what it can't express.
+
+### Structure
+- DRY. Single responsibility.
+- Funcs ~40 lines ideal; exceed only if split costs more than saves.
+- Params max 4-6; else bundle into struct/class.
+- Files ~500 lines guideline, not a cap; 700 is fine.
+- One public class per file, loosely - 1-2 extra small related ones fine; unrelated or large → split.
+- OOP where it genuinely fits.
+
+### Naming
+- Names informative, no single-letter (`op` ok, `o` not), easily cognizable (`selection` ok, `sel`
+  not); well-known shorthand ok (`num`, `i`/`j` loop counters).
+
+### Formatting
+- Lines ~120 ideal, 150 max (logger calls exempt).
+- Multi-param call over limit → one param/line:
+  ```csharp
+  Something(
+      a,
+      b
+  );
+  ```
+- No decorative comment banners.
+- Explicitly specify access modifier.
+- Class composition order, each section in its own `#region` when more than a couple of items:
+  ```
+  Public events
+  Public accessors
+
+  Private events
+  Private members
+  Protected members
+
+  Ctor
+
+  Public methods
+
+  Protected methods
+      Self protected methods
+      Interface protected methods
+
+  Private methods
+  ```
+
+### Comments/Docs
+- XMLDocs: public/internal always, with `<param>`/`<returns>`/`<exception>`. Private/protected when
+  non-trivial. Inline comments welcome on non-trivial code.
+- Missing `<summary>` (or `<returns>`/`<exception>` where applicable) = undocumented, not partial.
+- Content: the why, the pitfall, the constraint. Restating the name is noise. Must stand alone.
+- Class docs: purpose + what a consumer needs to use it safely (ownership, lifetime, threading).
+  Nothing else; don't restate the declaration.
+- Method docs: serve the caller. Impl rationale goes on the private member it constrains, or inline.
+- `<remarks>` holds what the summary shouldn't, within the limits above — not an escape hatch.
+- **No meta-references, ever** — "per discussion", review rounds, chat deltas, "as requested".
+- History back-references ("used to be", "ported from") age into noise. Avoid as a rule; keep only
+  where the history explains a still-live constraint.
+- Length scales with the code. Inline 1-2 lines, XMLDoc `<summary>` 1-2; a 10-liner is occasionally
+  warranted, ~95% of the time not. Boilerplate → one-liner, no rationale essay. Say it once.
+- A genuinely tangled mechanism (re-entrancy, ordering, multi-hop flow) earns extra elaboration —
+  code block, remarks, diagram, whatever actually clarifies.
+- Acronyms use standard casing in prose — `ID`, `UO`, `JSON`. Code identifiers keep theirs.
+- Docs for LLM consumption (design refs, system overviews): as terse as possible, never at the cost
+  of correctness or load-bearing context.
+
+### Readability
+- Brevity yes, not at cost of clarity — dense one-liners that hurt reading → normal loop/block.
+
+### Config Structs
+- 3+ related options (e.g. one feature's toggles) → nested sub-struct, not flat fields on the parent.
+
+### Constants/Enums
+- Magic values → const.
+- Multiple related values (now/future) → enum
+- Many unrelated-shape consts → dedicated constants file
+
+### Interfaces/Types
+- Interface only for multiple real/expected impls; else concrete class/struct. Keep small.
+
+### Shared Logic
+- Logic used by 2+ consumers → dedicated struct/class, not copy-pasted (e.g. temp file IO).
+
+### Serialization
+- All JSON serialize/deserialize needs a generated `JsonSerializerContext`.
+- Regexes invoked more than once → compiled/source-generated, not built per call.
+
+### Performance
+- Rendering / per-tick / per-frame code → perf imperative. Watch allocs (GC pressure), avoid
+  LINQ/boxing/closures in hot loops, hoist cacheable work out of the loop.
+- Profile or reason through cost before committing to an approach.
+- No frame budget exists — never argue a cost is fine because it fits one. Assume weak hardware:
+  make per-frame work cheap, or measure it.
+
+### UI
+- Keep layout responsive: `WrapPanel`, no fixed `Width`/`Height` boxes. Resizable windows already
+  provide scrollers. A vertical `WrapPanel` answers an over-tall child by starting a second column,
+  so a fixed vertical sequence wants a `StackPanel`.
+- User-facing strings live in `Configuration/language.ini`, read via `TazLang.Get(key)`. Fallback param not necessary
+  Keys should have a meaningful prefix (e.g. `options_video_tab_`).
+
+#### Options tabs
+- Build from `Option.*` / `OptionsUi.*` fragments in `Options/Tabs`; don't hand-build widgets.
+- Every entry gets `SearchMetadata` (label + keywords); groups get `.WithSearch(...)`.
+- A toggle that gates other options → `OptionsUi.CheckBoxGroup`, nested for sub-systems.
+  Never a bare checkbox governing settings elsewhere in the panel.
+- Bind with the expression form where it suffices: `new Accessor<T>(() => obj.Prop)`. Write the
+  get/set pair only for a real side effect (e.g. poking a manager that doesn't watch the config).
+- Fractional sliders need `decimalPlaces` - the default rounds to whole numbers, leaving a 0-1
+  range with only its two ends.
+- Persistence belongs to the config owner, `Profile.Save` for side-file configs. Save eagerly
+  only on structural edits (add/delete/rename), never per keystroke or slider tick.
+
+### Files
+- No license header on new files.
+- Use `#nullable enable` for new files unless it significantly complicates code.
+
+### Cross-Platform
+- Decision hurts cross-platform compat → stop, ask user first.
+
 ## Core Features
 
 ### Python Scripting System
@@ -198,6 +321,10 @@ dotnet build -c Debug
 ```bash
 dotnet test tests/ClassicUO.UnitTests/
 ```
+
+### Code Review
+- When CR requested, emit results like
+    [Bug#] [BugType] [FixComplexity] [ShortDesc] [File:Ln] - [Desc] | [Suggested fix]
 
 ### Documentation Generation
 The scripting API documentation is automatically generated during build via the `APIToMarkdown` project.

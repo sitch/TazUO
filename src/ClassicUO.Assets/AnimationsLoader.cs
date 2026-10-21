@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: BSD-2-Clause
+// SPDX-License-Identifier: BSD-2-Clause
 
 using ClassicUO.IO;
 using ClassicUO.Utility;
@@ -54,6 +54,9 @@ namespace ClassicUO.Assets
         private readonly Dictionary<int, BodyConvInfo> _bodyConvInfos = new Dictionary<int, BodyConvInfo>();
         private readonly Dictionary<int, UopInfo> _uopInfos = new Dictionary<int, UopInfo>();
 
+        // verdata.mul FileID 6 patches (anim.mul), indexed by block number; rebuilt on every Load()
+        private Dictionary<uint, UOFileIndex5D> _verdataAnimationBlocks;
+
 
         public AnimationsLoader(UOFileManager fileManager) : base(fileManager)
         {
@@ -72,6 +75,9 @@ namespace ClassicUO.Assets
 
         public override void Load()
         {
+            // the verdata.mul patch map (FileID 6) is rebuilt on every file load
+            _verdataAnimationBlocks = null;
+
             void LoadAnimFromUOPath(int animIndex)
             {
                 string pathmul = FileManager.GetUOFilePath("anim" + (animIndex == 0 ? string.Empty : (animIndex + 1).ToString()) + ".mul");
@@ -165,14 +171,20 @@ namespace ClassicUO.Assets
 
                             if (commentIdx > 0)
                             {
-                                parts[2] = parts[2].Substring(0, commentIdx - 1);
+                                parts[2] = parts[2].Substring(0, commentIdx - 1).Trim();
                             }
                             else if (commentIdx == 0)
                             {
                                 continue;
                             }
 
-                            uint number = uint.Parse(parts[2], NumberStyles.HexNumber);
+                            //uint number = uint.Parse(parts[2], NumberStyles.HexNumber);
+
+                            if (!uint.TryParse(parts[2].Trim(), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out uint number))
+                            {
+                                Log.Error("Failed to parse expected number.");
+                                continue;
+                            }
 
                             for (int i = 0; i < 5; i++)
                             {
@@ -391,7 +403,97 @@ namespace ClassicUO.Assets
             }
 
             ArrayPool<AnimIdxBlock>.Shared.Return(indicesBuf);
+
+            // verdata.mul patches (FileID 6) are applied to anim.mul only: the other
+            // animation files have their own block numbering.
+            if (fileIndex == 0)
+            {
+                ApplyVerdataPatches(directions, offsetAddress / sizeof(AnimIdxBlock));
+            }
+
             return directions;
+        }
+
+        /// <summary>
+        /// Patches of verdata.mul for anim.mul (FileID 6), indexed by block number. Built lazily.
+        /// </summary>
+        private Dictionary<uint, UOFileIndex5D> VerdataAnimationBlocks
+        {
+            get
+            {
+                if (_verdataAnimationBlocks == null)
+                {
+                    _verdataAnimationBlocks = new Dictionary<uint, UOFileIndex5D>();
+
+                    var verdata = FileManager.Verdata;
+
+                    if (verdata?.File != null)
+                    {
+                        for (var i = 0; i < verdata.Patches.Length; ++i)
+                        {
+                            ref readonly var patch = ref verdata.Patches[i];
+
+                            if (patch.FileID == 6)
+                            {
+                                _verdataAnimationBlocks[patch.BlockID] = patch;
+                            }
+                        }
+                    }
+                }
+
+                return _verdataAnimationBlocks;
+            }
+        }
+
+        /// <summary>
+        /// Applies verdata.mul patches to animation indices. FileID 6 is anim.mul: a patch replaces one
+        /// block (body + action + direction) with data stored in verdata.mul. Without this, an animation
+        /// that lives only in verdata (custom mounts, creatures and similar on free shards) is not drawn,
+        /// because anim*.mul has no bytes for those blocks. FileID 5 (patches of anim.idx itself) is not
+        /// handled here.
+        /// </summary>
+        private void ApplyVerdataPatches(AnimationDirection[] directions, long firstBlockIndex)
+        {
+            var patches = VerdataAnimationBlocks;
+
+            if (patches.Count == 0)
+            {
+                return;
+            }
+
+            for (var i = 0; i < directions.Length; ++i)
+            {
+                var blockIndex = firstBlockIndex + i;
+
+                if (blockIndex < 0 || blockIndex > uint.MaxValue)
+                {
+                    continue;
+                }
+
+                if (!patches.TryGetValue((uint)blockIndex, out var patch))
+                {
+                    continue;
+                }
+
+                ref var dir = ref directions[i];
+
+                if (patch.Length == 0)
+                {
+                    // "delete block" marker: no data at all
+                    dir.Position = 0;
+                    dir.Size = 0;
+                    dir.UncompressedSize = 0;
+                }
+                else
+                {
+                    dir.Position = patch.Position;
+                    dir.Size = patch.Length;
+                    dir.UncompressedSize = 0;
+                }
+
+                dir.CompressionType = CompressionType.None;
+                dir.IsVerdata = true;
+            }
         }
 
         private long CalculateOffset(
@@ -890,7 +992,7 @@ namespace ClassicUO.Assets
                         uint frameCount = reader.ReadUInt32LE();
                         int newGroup = reader.ReadInt32LE();
 
-                        if (frameCount == 0)
+                        if (frameCount == 0 && oldGroup >= 0 && oldGroup < MAX_ACTIONS)
                         {
                             uopInfo.ReplacedAnimations[oldGroup] = newGroup;
                         }
@@ -1243,20 +1345,30 @@ namespace ClassicUO.Assets
             var reader = new StackDataReader(buf);
 
             byte[] dbuf = null;
+            // dbufPooled tracks the array we actually rented from the pool. dbuf may be
+            // reassigned to a non-pooled array by BwtDecompress, so we must never return
+            // dbuf itself to the pool (that throws ArgumentException_BufferNotFromPool).
+            byte[] dbufPooled = null;
             if (index.CompressionType >= CompressionType.Zlib)
             {
-                dbuf = ArrayPool<byte>.Shared.Rent((int)index.UncompressedSize); //new byte[(int)index.UncompressedSize];
-                ZLib.ZLibError result = ZLib.Decompress(buf, dbuf);
+                dbufPooled = ArrayPool<byte>.Shared.Rent((int)index.UncompressedSize); //new byte[(int)index.UncompressedSize];
+                dbuf = dbufPooled;
+                ZLib.ZLibError result = ZLib.Decompress(
+                    buf.AsSpan(0, (int)index.Size),
+                    dbufPooled.AsSpan(0, (int)index.UncompressedSize));
                 if (result != ZLib.ZLibError.Ok)
                 {
                     Log.Error($"error reading uop animation. AnimID: {animID} | Group: {animGroup} | Dir: {direction} | FileIndex: {fileIndex}");
+
+                    ArrayPool<byte>.Shared.Return(buf);
+                    ArrayPool<byte>.Shared.Return(dbufPooled);
 
                     return Span<FrameInfo>.Empty;
                 }
 
                 if (index.CompressionType == CompressionType.ZlibBwt)
                 {
-                    dbuf = BwtDecompress.Decompress(dbuf);
+                    dbuf = BwtDecompress.Decompress(dbufPooled);
                 }
 
                 reader = new StackDataReader(dbuf);
@@ -1384,14 +1496,14 @@ namespace ClassicUO.Assets
             {
                 ArrayPool<UOPFrameData>.Shared.Return(sharedBuffer);
                 ArrayPool<byte>.Shared.Return(buf);
-                if(dbuf != null)
-                    ArrayPool<byte>.Shared.Return(dbuf);
+                if(dbufPooled != null)
+                    ArrayPool<byte>.Shared.Return(dbufPooled);
             }
         }
 
-        public Span<FrameInfo> ReadMULAnimationFrames(int fileIndex, AnimationDirection index)
+        public Span<FrameInfo> ReadMULAnimationFrames(int fileIndex, AnimationDirection index, bool isVerdata = false)
         {
-            if (fileIndex < 0 || fileIndex >= _files.Length)
+            if (!isVerdata && (fileIndex < 0 || fileIndex >= _files.Length))
             {
                 return Span<FrameInfo>.Empty;
             }
@@ -1406,42 +1518,52 @@ namespace ClassicUO.Assets
                 return Span<FrameInfo>.Empty;
             }
 
-            UOFileMul file = _files[fileIndex];
+            // Blocks that came from a verdata.mul patch are read from verdata.mul itself:
+            // anim*.mul contains no bytes for them at all.
+            UOFileMul file = isVerdata ? FileManager.Verdata?.File : _files[fileIndex];
 
-            if (index.Position + index.Size > file.Length)
+            if (file == null || index.Position + index.Size > file.Length)
             {
                 return Span<FrameInfo>.Empty;
             }
 
             // TODO: check if UOFileIndex works
             file.Seek(index.Position, SeekOrigin.Begin);
-            byte[] buf = new byte[index.Size];
-            file.Read(buf);
+            byte[] buf = ArrayPool<byte>.Shared.Rent((int)index.Size);
 
-            var reader = new StackDataReader(buf);
-            ReadOnlySpan<ushort> palette = MemoryMarshal.Cast<byte, ushort>(reader.Buffer.Slice(reader.Position, 512));
-            reader.Skip(512);
-
-            long dataStart = reader.Position;
-            uint frameCount = reader.ReadUInt32LE();
-            var frameOffset = new ReadOnlySpan<uint>((uint*)reader.PositionAddress, (int)frameCount);
-
-            if (_frames == null || frameCount > _frames.Length)
+            try
             {
-                _frames = new FrameInfo[frameCount];
+                file.Read(buf.AsSpan(0, (int)index.Size));
+
+                var reader = new StackDataReader(buf);
+                ReadOnlySpan<ushort> palette = MemoryMarshal.Cast<byte, ushort>(reader.Buffer.Slice(reader.Position, 512));
+                reader.Skip(512);
+
+                long dataStart = reader.Position;
+                uint frameCount = reader.ReadUInt32LE();
+                var frameOffset = new ReadOnlySpan<uint>((uint*)reader.PositionAddress, (int)frameCount);
+
+                if (_frames == null || frameCount > _frames.Length)
+                {
+                    _frames = new FrameInfo[frameCount];
+                }
+
+                Span<FrameInfo> frames = _frames.AsSpan(0, (int)frameCount);
+
+                for (int i = 0; i < frameCount; i++)
+                {
+                    reader.Seek(dataStart + frameOffset[i]);
+
+                    frames[i].Num = i;
+                    ReadSpriteData(ref reader, palette, ref frames[i], false);
+                }
+
+                return frames;
             }
-
-            Span<FrameInfo> frames = _frames.AsSpan(0, (int)frameCount);
-
-            for (int i = 0; i < frameCount; i++)
+            finally
             {
-                reader.Seek(dataStart + frameOffset[i]);
-
-                frames[i].Num = i;
-                ReadSpriteData(ref reader, palette, ref frames[i], false);
+                ArrayPool<byte>.Shared.Return(buf);
             }
-
-            return frames;
         }
 
         private void ReadSpriteData(
@@ -1576,6 +1698,11 @@ namespace ClassicUO.Assets
             public uint Size;
             public uint UncompressedSize;
             public CompressionType CompressionType;
+
+            /// <summary>
+            /// The block comes from a verdata.mul patch (FileID 6) and is not inside anim*.mul.
+            /// </summary>
+            public bool IsVerdata;
         }
 
         [StructLayout(LayoutKind.Sequential, Pack = 1)]

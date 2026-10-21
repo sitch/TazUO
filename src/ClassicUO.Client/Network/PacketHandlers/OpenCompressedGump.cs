@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Text;
 using ClassicUO.Game;
 using ClassicUO.IO;
@@ -15,7 +16,18 @@ internal static class OpenCompressedGump
         uint gumpID = p.ReadUInt32BE();
         uint x = p.ReadUInt32BE();
         uint y = p.ReadUInt32BE();
-        uint layoutCompressedLen = p.ReadUInt32BE() - 4;
+
+        uint layoutCompressedRaw = p.ReadUInt32BE();
+
+        // The wire value includes the 4 bytes of the decompressed-length field that follows.
+        // A value below 4 would underflow to a huge length, so treat it as a bad packet.
+        if (layoutCompressedRaw < 4)
+        {
+            Log.Error("[Initial]A bad compressed gump packet was received. Unable to process.");
+            return;
+        }
+
+        uint layoutCompressedLen = layoutCompressedRaw - 4;
         int layoutDecompressedLen = (int)p.ReadUInt32BE();
 
         if (layoutDecompressedLen < 1)
@@ -24,15 +36,19 @@ internal static class OpenCompressedGump
             return;
         }
 
-        byte[]
-            layoutBuffer =
-                new byte[layoutDecompressedLen]; //System.Buffers.ArrayPool<byte>.Shared.Rent(layoutDecompressedLen);
         string layout = null;
+        byte[] layoutBuffer = ArrayPool<byte>.Shared.Rent(layoutDecompressedLen);
 
         try
         {
-            ZLib.Decompress(p.Buffer.Slice(p.Position, (int)layoutCompressedLen),
-                layoutBuffer.AsSpan(0, layoutDecompressedLen));
+            ZLib.ZLibError res = ZLib.Decompress(p.Buffer.Slice(p.Position, (int)layoutCompressedLen),
+                    layoutBuffer.AsSpan(0, layoutDecompressedLen));
+            if (res != ZLib.ZLibError.Ok && res != ZLib.ZLibError.BufferError)
+            {
+                Log.Error("Failed to decompress gump layout.");
+                return;
+            }
+
             layout = Encoding.UTF8.GetString(layoutBuffer.AsSpan(0, layoutDecompressedLen));
         }
         catch (Exception ex)
@@ -40,21 +56,30 @@ internal static class OpenCompressedGump
             Log.Error($"Failed to decompress or decode gump layout: {ex.Message}");
             return;
         }
-        // finally
-        // {
-        //     System.Buffers.ArrayPool<byte>.Shared.Return(layoutBuffer);
-        // }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(layoutBuffer);
+        }
 
         p.Skip((int)layoutCompressedLen);
 
-        uint linesNum = p.ReadUInt32BE();
-        string[] lines = new string[linesNum];
+        string[] lines = Array.Empty<string>();
 
         try
         {
+            uint linesNum = p.ReadUInt32BE();
+
             if (linesNum != 0)
             {
-                uint linesCompressedLen = p.ReadUInt32BE() - 4;
+                uint linesCompressedRaw = p.ReadUInt32BE();
+
+                if (linesCompressedRaw < 4)
+                {
+                    Log.Error("A bad compressed gump packet was received. Unable to process.");
+                    return;
+                }
+
+                uint linesCompressedLen = linesCompressedRaw - 4;
                 int linesDecompressedLen = (int)p.ReadUInt32BE();
 
                 if (linesDecompressedLen < 1)
@@ -63,39 +88,56 @@ internal static class OpenCompressedGump
                     return;
                 }
 
-                byte[]
-                    linesBuffer =
-                        new byte[linesDecompressedLen]; //System.Buffers.ArrayPool<byte>.Shared.Rent(linesDecompressedLen);
-
-                ZLib.Decompress(p.Buffer.Slice(p.Position, (int)linesCompressedLen),
-                    linesBuffer.AsSpan(0, linesDecompressedLen));
-                p.Skip((int)linesCompressedLen);
-
-                var reader = new StackDataReader(linesBuffer.AsSpan(0, linesDecompressedLen));
-
-                for (int i = 0; i < linesNum; ++i)
+                // Each line occupies at least a 2-byte length prefix in the decompressed buffer,
+                // so the reported line count can never legitimately exceed half the decompressed
+                // size. Without this guard a corrupt/garbage line count would throw an
+                // OverflowException (or OutOfMemoryException) on the array allocation below and
+                // crash the client.
+                if (linesNum > (uint)(linesDecompressedLen / 2))
                 {
-                    int remaining = reader.Remaining;
+                    Log.Error("A bad compressed gump packet was received (invalid line count). Unable to process.");
+                    return;
+                }
 
-                    if (remaining >= 2)
+                lines = new string[linesNum];
+                byte[] linesBuffer = ArrayPool<byte>.Shared.Rent(linesDecompressedLen);
+
+                try
+                {
+                    if (ZLib.Decompress(p.Buffer.Slice(p.Position, (int)linesCompressedLen),
+                            linesBuffer.AsSpan(0, linesDecompressedLen)) != ZLib.ZLibError.Ok)
                     {
-                        int length = reader.ReadUInt16BE();
+                        Log.Error("Failed to decompress gump lines.");
+                        return;
+                    }
 
-                        if (length > 0)
-                            lines[i] = reader.ReadUnicodeBE(length);
+                    p.Skip((int)linesCompressedLen);
+
+                    var reader = new StackDataReader(linesBuffer.AsSpan(0, linesDecompressedLen));
+
+                    for (int i = 0; i < linesNum; ++i)
+                    {
+                        int remaining = reader.Remaining;
+
+                        if (remaining >= 2)
+                        {
+                            int length = reader.ReadUInt16BE();
+
+                            if (length > 0)
+                                lines[i] = reader.ReadUnicodeBEFixed(length);
+                            else
+                                lines[i] = string.Empty;
+                        }
                         else
                             lines[i] = string.Empty;
                     }
-                    else
-                        lines[i] = string.Empty;
+
+                    reader.Release();
                 }
-
-                reader.Release();
-
-                // finally
-                // {
-                //     System.Buffers.ArrayPool<byte>.Shared.Return(linesBuffer);
-                // }
+                finally
+                {
+                    ArrayPool<byte>.Shared.Return(linesBuffer);
+                }
             }
 
             if (string.IsNullOrEmpty(layout))

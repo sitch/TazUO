@@ -1,6 +1,7 @@
 ﻿// SPDX-License-Identifier: BSD-2-Clause
 
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Runtime.CompilerServices;
@@ -203,6 +204,71 @@ namespace ClassicUO.Utility
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static bool IsSafeChar(int c) => c >= 0x20 && c < 0xFFFE;
 
+        /// <summary>
+        /// Removes unpaired UTF-16 surrogate characters from a string.
+        /// A lone high surrogate (one not followed by a low surrogate) makes
+        /// FontStashSharp read past the end of its internal buffer and throws an
+        /// <see cref="IndexOutOfRangeException"/> while measuring text, so any
+        /// surrogate that is not part of a valid pair must be stripped before the
+        /// text reaches the renderer. Well-formed surrogate pairs are preserved.
+        /// </summary>
+        public static string RemoveUnpairedSurrogates(string str)
+        {
+            if (string.IsNullOrEmpty(str))
+                return str;
+
+            ReadOnlySpan<char> span = str.AsSpan();
+
+            //Fast path: vectorized scan for the first surrogate. If there are none, keep the original reference.
+            int firstSurrogate = span.IndexOfAnyInRange('\uD800', '\uDFFF');
+
+            if (firstSurrogate < 0)
+                return str;
+
+            //Output can never be longer than the input. Stackalloc for small strings, rent for larger ones.
+            char[] rented = null;
+            Span<char> destination = str.Length <= 512
+                ? stackalloc char[512]
+                : (rented = ArrayPool<char>.Shared.Rent(str.Length));
+
+            try
+            {
+                //Bulk copy the clean prefix up to the first surrogate, then process the remainder char by char.
+                span.Slice(0, firstSurrogate).CopyTo(destination);
+                int d = firstSurrogate;
+
+                for (int i = firstSurrogate; i < span.Length; i++)
+                {
+                    char c = span[i];
+
+                    if (char.IsHighSurrogate(c))
+                    {
+                        if (i + 1 < span.Length && char.IsLowSurrogate(span[i + 1]))
+                        {
+                            destination[d++] = c;
+                            destination[d++] = span[i + 1];
+                            i++;
+                        }
+                        //else: unpaired high surrogate -> drop it
+                    }
+                    else if (!char.IsLowSurrogate(c)) //Drop unpaired low surrogates, keep everything else
+                    {
+                        destination[d++] = c;
+                    }
+                }
+
+                if (d == str.Length) //Every surrogate was part of a valid pair; nothing removed
+                    return str;
+
+                return new string(destination.Slice(0, d));
+            }
+            finally
+            {
+                if (rented != null)
+                    ArrayPool<char>.Shared.Return(rented);
+            }
+        }
+
         public static void AddSpaceBeforeCapital(string[] str, bool checkAcronyms = true)
         {
             for (int i = 0; i < str.Length; i++)
@@ -266,6 +332,33 @@ namespace ClassicUO.Utility
             return ss;
         }
 
+        /// <summary>
+        /// Builds a short label from a name using its capital letters (e.g. "Last Object Macro" -> "LOM").
+        /// Falls back to the first letter of each whitespace/underscore/dash separated word when the
+        /// name has no capitals, and to the upper-cased name itself when neither applies.
+        /// </summary>
+        public static string AbbreviateToInitials(string name)
+        {
+            if (string.IsNullOrEmpty(name))
+                return string.Empty;
+
+            var sb = new ValueStringBuilder(stackalloc char[name.Length]);
+
+            foreach (char c in name)
+                if (char.IsUpper(c))
+                    sb.Append(c);
+
+            if (sb.Length == 0)
+                foreach (string part in name.Split(new[] { ' ', '_', '-' }, StringSplitOptions.RemoveEmptyEntries))
+                    sb.Append(char.ToUpperInvariant(part[0]));
+
+            string result = sb.Length > 0 ? sb.ToString() : name.ToUpperInvariant();
+
+            sb.Dispose();
+
+            return result;
+        }
+
         public static string IntToAbbreviatedString(int num)
         {
             if (num > 999999)
@@ -308,6 +401,11 @@ namespace ClassicUO.Utility
 
         public static string GetPluralAdjustedString(string str, bool plural = false)
         {
+            if (string.IsNullOrEmpty(str))
+            {
+                return str;
+            }
+
             if (str.Contains("%"))
             {
                 string[] parts = str.Split(new[] { '%' }, System.StringSplitOptions.RemoveEmptyEntries);

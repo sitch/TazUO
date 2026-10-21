@@ -2,12 +2,13 @@
 
 using System;
 using System.Linq;
+using ClassicUO.Configuration;
 using ClassicUO.Game.Managers;
 using ClassicUO.Game.UI.Gumps;
+using ClassicUO.Game.UI.MyraWindows;
 using ClassicUO.Input;
 using ClassicUO.Assets;
 using ClassicUO.Common.Enums;
-using ClassicUO.Resources;
 using SDL3;
 using Microsoft.Xna.Framework;
 using ClassicUO.Renderer.Gumps;
@@ -21,6 +22,7 @@ namespace ClassicUO.Game.UI.Controls
         private readonly DataBox _databox;
         private readonly HotkeyBox _hotkeyBox;
         private readonly Gumps.Gump _gump;
+        private InputField _journalTriggersInput;
 
         private enum buttonsOption
         {
@@ -37,7 +39,7 @@ namespace ClassicUO.Game.UI.Controls
             Label _keyBinding;
             Add(_keyBinding = new Label
                 (
-                    "HotKey:",
+                    TazLang.Get("macrocontrol_hotkey", "HotKey:"),
                     true,
                     0xFFFF,
                     60,
@@ -53,16 +55,49 @@ namespace ClassicUO.Game.UI.Controls
 
             Add(_hotkeyBox);
 
+            // Journal triggers row (skipped in the compact fast-assign popup)
+            int jtOffset = 0;
+
+            if (!isFastAssign)
+            {
+                jtOffset = 50;
+
+                Add(new Label
+                    (
+                        TazLang.Get("macrocontrol_journaltriggers", "Journal triggers (separate with ;):"),
+                        true,
+                        0xFFFF,
+                        320,
+                        0xFF,
+                        FontStyle.BlackBorder | FontStyle.Cropped
+                    )
+                    { X = 0, Y = _hotkeyBox.Height + 3 });
+
+                _journalTriggersInput = new InputField
+                (
+                    0x0BB8,
+                    0xFF,
+                    0xFFFF,
+                    true,
+                    300,
+                    26,
+                    300
+                )
+                { X = 0, Y = _hotkeyBox.Height + 22 };
+
+                Add(_journalTriggersInput);
+            }
+
             Add
             (
                 new NiceButton
                 (
                     0,
-                    _hotkeyBox.Height + 3,
+                    _hotkeyBox.Height + 3 + jtOffset,
                     150,
                     25,
                     ButtonAction.Activate,
-                    ResGumps.CreateMacroButton,
+                    TazLang.Get("create_macro_button"),
                     0,
                     TEXT_ALIGN_TYPE.TS_CENTER
                 ) { ButtonParameter = (int)buttonsOption.CreateNewMacro, IsSelectable = true, IsSelected = true }
@@ -72,11 +107,11 @@ namespace ClassicUO.Game.UI.Controls
                 new NiceButton
                 (
                     170,
-                    _hotkeyBox.Height + 3,
+                    _hotkeyBox.Height + 3 + jtOffset,
                     150,
                     25,
                     ButtonAction.Activate,
-                    ResGumps.MacroButtonEditor,
+                    TazLang.Get("macro_button_editor"),
                     0,
                     TEXT_ALIGN_TYPE.TS_CENTER
                 )
@@ -88,7 +123,7 @@ namespace ClassicUO.Game.UI.Controls
                 new Line
                 (
                     0,
-                    _hotkeyBox.Height + 30,
+                    _hotkeyBox.Height + 30 + jtOffset,
                     325,
                     1,
                     Color.Gray.PackedValue
@@ -102,11 +137,11 @@ namespace ClassicUO.Game.UI.Controls
                     new NiceButton
                     (
                         0,
-                        _hotkeyBox.Height + 35,
+                        _hotkeyBox.Height + 35 + jtOffset,
                         50,
                         25,
                         ButtonAction.Activate,
-                        ResGumps.Add
+                        TazLang.Get("add")
                     )
                     { ButtonParameter = (int)buttonsOption.AddBtn, IsSelectable = false }
                 );
@@ -117,23 +152,23 @@ namespace ClassicUO.Game.UI.Controls
                     new NiceButton
                     (
                         0,
-                        _hotkeyBox.Height + 30,
+                        _hotkeyBox.Height + 30 + jtOffset,
                         170,
                         25,
                         ButtonAction.Activate,
-                        ResGumps.OpenMacroSettings
+                        TazLang.Get("open_macro_settings")
                     )
                     { ButtonParameter = (int)buttonsOption.OpenMacroOptions, IsSelectable = false }
                 );
             }
 
-            int scrollAreaH = isFastAssign ? 80 : 280;
+            int scrollAreaH = isFastAssign ? 80 : 230;
             int scrollAreaW = 280;
 
             var area = new ScrollArea
             (
                 10,
-                _hotkeyBox.Bounds.Bottom + 70,
+                _hotkeyBox.Bounds.Bottom + 70 + jtOffset,
                 scrollAreaW,
                 scrollAreaH,
                 true
@@ -149,6 +184,12 @@ namespace ClassicUO.Game.UI.Controls
 
 
             Macro = _gump.World.Macros.FindMacro(name) ?? Macro.CreateEmptyMacro(name);
+
+            if (_journalTriggersInput != null)
+            {
+                _journalTriggersInput.SetText(Macro.JournalTriggers ?? string.Empty);
+                _journalTriggersInput.TextChanged += (sender, e) => Macro.JournalTriggers = _journalTriggersInput.Text;
+            }
 
             SetupKeyByDefault();
             SetupMacroUI();
@@ -298,7 +339,7 @@ namespace ClassicUO.Game.UI.Controls
                     }
 
                     SetupKeyByDefault();
-                    UIManager.Add(new MessageBoxGump(_gump.World, 250, 150, string.Format(ResGumps.ThisKeyCombinationAlreadyExists, macro.Name), null));
+                    UIManager.Add(new MessageBoxGump(_gump.World, 250, 150, string.Format(TazLang.Get("this_key_combination_already_exists"), macro.Name), null));
 
                     return;
                 }
@@ -315,7 +356,7 @@ namespace ClassicUO.Game.UI.Controls
                     }
 
                     SetupKeyByDefault();
-                    UIManager.Add(new MessageBoxGump(_gump.World, 250, 150, string.Format(ResGumps.ThisKeyCombinationAlreadyExists, macro.Name), null));
+                    UIManager.Add(new MessageBoxGump(_gump.World, 250, 150, string.Format(TazLang.Get("this_key_combination_already_exists"), macro.Name), null));
 
                     return;
                 }
@@ -332,7 +373,7 @@ namespace ClassicUO.Game.UI.Controls
                     }
 
                     SetupKeyByDefault();
-                    UIManager.Add(new MessageBoxGump(_gump.World, 250, 150, string.Format(ResGumps.ThisKeyCombinationAlreadyExists, macro.Name), null));
+                    UIManager.Add(new MessageBoxGump(_gump.World, 250, 150, string.Format(TazLang.Get("this_key_combination_already_exists"), macro.Name), null));
 
                     return;
                 }
@@ -393,30 +434,9 @@ namespace ClassicUO.Game.UI.Controls
                     GameActions.OpenSettings(_gump.World, 4);
                     break;
                 case (int)buttonsOption.OpenButtonEditor:
-                    UIManager.Gumps.OfType<MacroButtonEditorGump>().FirstOrDefault()?.Dispose();
-                    OpenMacroButtonEditor(Macro, null);
+                    MacroButtonEditorWindow.Show(Macro);
                     break;
             }
-        }
-
-        private void OpenMacroButtonEditor(Macro macro, Vector2? position = null)
-        {
-            MacroButtonEditorGump btnEditorGump = UIManager.GetGump<MacroButtonEditorGump>();
-
-            if (btnEditorGump == null)
-            {
-                int posX = (Client.Game.Window.ClientBounds.Width >> 1) - 300;
-                int posY = (Client.Game.Window.ClientBounds.Height >> 1) - 250;
-                if (position.HasValue)
-                {
-                    posX = (int)position.Value.X;
-                    posY = (int)position.Value.Y;
-                }
-                btnEditorGump = new MacroButtonEditorGump(_gump.World, macro, posX, posY);
-                UIManager.Add(btnEditorGump);
-            }
-            btnEditorGump.SetInScreen();
-            btnEditorGump.BringOnTop();
         }
 
         private class MacroEntry : Control
@@ -458,7 +478,7 @@ namespace ClassicUO.Game.UI.Controls
                         50,
                         25,
                         ButtonAction.Activate,
-                        ResGumps.Remove,
+                        TazLang.Get("remove"),
                         0,
                         TEXT_ALIGN_TYPE.TS_CENTER
                     )

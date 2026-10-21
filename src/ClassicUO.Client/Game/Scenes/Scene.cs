@@ -29,9 +29,16 @@ namespace ClassicUO.Game.Scenes
             IsDestroyed = true;
         }
 
-        public virtual void Update() => Camera.Update(true, Time.Delta, Mouse.Position);
+        public virtual void Update() => Camera.Update(false, Time.Delta, Mouse.Position);
 
         public virtual bool Draw(UltimaBatcher2D batcher) => true;
+
+        /// <summary>
+        /// When true, GameController skips its own window-background draw because this scene renders
+        /// the background itself (needed by scenes that swap render targets and would otherwise
+        /// discard a background drawn before the scene). See <see cref="GameController.DrawWindowBackground"/>.
+        /// </summary>
+        public virtual bool DrawsOwnBackground => false;
 
 
         public virtual void Load() => IsLoaded = true;

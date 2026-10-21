@@ -1,31 +1,87 @@
 #nullable enable
+
 using System;
-using Myra.Graphics2D.UI;
+using System.Collections.Generic;
+using FontStashSharp;
+using Myra.Events;
 using Myra.Graphics2D;
+using Myra.Graphics2D.UI;
 
 namespace ClassicUO.Game.UI.MyraWindows.Widgets;
 
 public class MyraButton : Button
 {
-    private readonly Action? _onClick;
+    public Action? OnClick { get; set; }
 
-    public string Text { get; }
+    private string _text = "";
 
-    public MyraButton(string text, Action? onClick = null)
+    public string Text
     {
-        _onClick = onClick;
-        Text = text;
+        get => _text;
+        set => SetField(ref _text, value);
+    }
+
+    private SpriteFontBase? _labelFont;
+
+    public SpriteFontBase? LabelFont
+    {
+        get => _labelFont;
+        set => SetField(ref _labelFont, value);
+    }
+
+    private MyraLabel.TextStyle _labelStyle;
+
+    public MyraLabel.TextStyle LabelStyle
+    {
+        get => _labelStyle;
+        set => SetField(ref _labelStyle, value);
+    }
+
+    public MyraButton(
+        string text,
+        Action? onClick = null,
+        MyraLabel.TextStyle style = MyraLabel.TextStyle.P,
+        SpriteFontBase? labelFont = null
+    )
+    {
+        if (!string.IsNullOrEmpty(text))
+            _text = text;
+
+        _labelStyle = style;
+        _labelFont = labelFont;
+
+        OnClick = onClick;
         Margin = new Thickness(2);
+        DisabledBackground = Background;
         VerticalAlignment = VerticalAlignment.Center;
 
         Build();
     }
 
-    public override void OnTouchDown()
+    public override void OnTouchDown(TouchEventArgs args)
     {
-        base.OnTouchDown();
-        _onClick?.Invoke();
+        base.OnTouchDown(args);
+
+        if (Enabled)
+            OnClick?.Invoke();
     }
 
-    private void Build() => Content = new MyraLabel(Text, MyraLabel.TextStyle.P);
+    private void Build()
+    {
+        var content = new MyraLabel(Text, LabelStyle);
+
+        if (LabelFont != null)
+            content.Font = LabelFont;
+
+        Content = content;
+    }
+
+    protected void SetField<T>(ref T field, T value)
+    {
+        if (EqualityComparer<T>.Default.Equals(field, value))
+            return;
+
+        field = value;
+        Build();
+    }
 }

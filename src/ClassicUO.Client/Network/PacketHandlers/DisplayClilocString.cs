@@ -4,6 +4,7 @@ using ClassicUO.Game;
 using ClassicUO.Game.Data;
 using ClassicUO.Game.GameObjects;
 using ClassicUO.Game.Managers;
+using ClassicUO.Game.Managers.SpellVisualRange;
 using ClassicUO.Game.UI;
 using ClassicUO.Game.UI.Gumps;
 using ClassicUO.IO;
@@ -71,6 +72,12 @@ internal static class DisplayClilocString
 
         if ((flags & AffixType.System) != 0)
             type = MessageType.System;
+        else if (type != MessageType.Spell && SpellDefinition.WordToTargettype.ContainsKey(text))
+        {
+            // Chivalry mantras arrive as localized cliloc messages typed Regular instead of
+            // Spell, so the overhead spell format/hue handling in MessageManager would skip them.
+            type = MessageType.Spell;
+        }
 
         if (!Client.Game.UO.FileManager.Fonts.UnicodeFontExists((byte)font))
             font = 0;

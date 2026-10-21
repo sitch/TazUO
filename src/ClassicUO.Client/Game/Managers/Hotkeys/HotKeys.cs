@@ -1,0 +1,349 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Threading;
+using ClassicUO.Configuration;
+using ClassicUO.Game.UI.Gumps;
+using ClassicUO.Input;
+using SDL3;
+
+namespace ClassicUO.Game.Managers.Hotkeys
+{
+    /// <summary>
+    /// Central, per-profile hotkey registry. Code registers named hotkeys at startup with
+    /// <see cref="Register"/> and queries them with <c>HotKeys.Get(id).IsPressed(...)</c>.
+    /// Bindings persist to <c>hotkeys.json</c> in the current profile folder. Keyboard bindings
+    /// dispatch through <see cref="HandleKeyDown"/>; mouse-button and controller-button bindings are
+    /// dispatched here too (from the raw button-down events), so an entry's OnPressed fires for every
+    /// binding kind it supports and consumers never need their own button plumbing.
+    ///
+    /// Registered entries live for the lifetime of the process (they are code registrations);
+    /// <see cref="Load"/> re-applies the active profile's saved bindings onto them, and
+    /// <see cref="Save"/> writes out only the entries that are currently registered — so any
+    /// saved entry whose owner no longer registers it is pruned on exit.
+    /// </summary>
+    public static class HotKeys
+    {
+        private static readonly Dictionary<string, HotKeyEntry> _entries = new();
+        private static readonly Dictionary<string, HotkeyEntryDto> _saved = new();
+        private static readonly HashSet<SDL.SDL_Keycode> _heldKeys = new();
+        private static bool _subscribed;
+
+        // Refcount of active temporary suppressions (e.g. in-progress hotkey captures). Multiple
+        // suppressors can overlap, so this counts rather than using a shared bool that whichever
+        // suppressor finishes first would clear out from under the others.
+        private static int _suppressCount;
+
+        public static string FilePath => Path.Combine(ProfileManager.ProfilePath, "hotkeys.json");
+
+        /// <summary>
+        /// True when all hotkeys are globally disabled: either the persistent shutoff flag
+        /// (<see cref="Profile.PersistentDisableHotkeys"/>) is set, or one or more temporary
+        /// suppressions are active (see <see cref="RequestDisableHotkeys"/>). Entries flagged
+        /// <see cref="HotKeyEntry.IgnoresGlobalDisable"/> ignore this.
+        /// </summary>
+        public static bool GloballyDisabled =>
+            Volatile.Read(ref _suppressCount) > 0 || (ProfileManager.CurrentProfile?.PersistentDisableHotkeys ?? false);
+
+        /// <summary>
+        /// Temporarily suppress all hotkey dispatch until a matching <see cref="ReleaseDisableHotkeys"/>.
+        /// Refcounted and thread-safe, so overlapping suppressors compose correctly. Every call must be
+        /// balanced by exactly one release.
+        /// </summary>
+        public static void RequestDisableHotkeys() => Interlocked.Increment(ref _suppressCount);
+
+        /// <summary>
+        /// Release one suppression acquired via <see cref="RequestDisableHotkeys"/>. Never drops below zero.
+        /// </summary>
+        public static void ReleaseDisableHotkeys()
+        {
+            // Clamp defensively so an unbalanced release can't drive the count negative and wedge hotkeys permanently on.
+            //
+            // To clarify, this is a CAS loop; It basically forces the updater to retry the decrement until it, and it alone, succeeds.
+            // Honestly, very much an overkill for this particular use case.
+            int updated;
+            do
+            {
+                int current = Volatile.Read(ref _suppressCount);
+                if (current == 0)
+                    return;
+                updated = current - 1;
+            }
+            while (Interlocked.CompareExchange(ref _suppressCount, updated, updated + 1) != updated + 1);
+        }
+
+        /// <summary>
+        /// Load the active profile's saved bindings and re-apply them to any already-registered
+        /// entries. Call this before consumers register (so first-time registration can adopt a
+        /// saved binding) and again whenever the active profile changes.
+        /// </summary>
+        public static void Load()
+        {
+            if (!_subscribed)
+            {
+                Keyboard.KeyDownEvent += OnRawKeyDown;
+                Keyboard.KeyUpEvent += OnRawKeyUp;
+                Mouse.ButtonDownEvent += OnRawMouseButtonDown;
+                Controller.ButtonDownEvent += OnRawControllerButtonDown;
+                _subscribed = true;
+            }
+
+            _heldKeys.Clear();
+            _saved.Clear();
+
+            HotkeysFile file = ConfigurationResolver.Load<HotkeysFile>(FilePath, HotkeysJsonContext.Default.HotkeysFile);
+            if (file?.Entries != null)
+            {
+                foreach (HotkeyEntryDto dto in file.Entries)
+                {
+                    if (!string.IsNullOrEmpty(dto.Id))
+                        _saved[dto.Id] = dto;
+                }
+            }
+
+            // Re-apply the freshly loaded profile onto entries that are already registered.
+            foreach (HotKeyEntry entry in _entries.Values)
+                ApplySaved(entry);
+        }
+
+        /// <summary>
+        /// Register a hotkey. If a saved binding exists for <paramref name="id"/> it is adopted,
+        /// otherwise <paramref name="defaults"/> is used. Returns the (possibly pre-existing) entry.
+        /// </summary>
+        public static HotKeyEntry Register(string id, string name, HotkeyBinding defaults, string category = null, Action onPressed = null, bool checkConflicts = true)
+        {
+            if (string.IsNullOrEmpty(id))
+                throw new ArgumentException("Hotkey id cannot be null or empty", nameof(id));
+
+            if (!_entries.TryGetValue(id, out HotKeyEntry entry))
+            {
+                entry = new HotKeyEntry(id, name, defaults, category);
+                _entries[id] = entry;
+            }
+            else
+            {
+                // Re-registration (e.g. after a profile switch): refresh display info and the
+                // fallback default so a different profile's legacy import is honoured.
+                entry.Name = name;
+                entry.Category = category;
+                entry.SetDefault(defaults);
+            }
+
+            entry.OnPressed = onPressed;
+            entry.CheckConflicts = checkConflicts;
+            entry.Registered = true;
+            ApplySaved(entry);
+            return entry;
+        }
+
+        /// <summary>Returns the registered entry for <paramref name="id"/>, or null.</summary>
+        public static HotKeyEntry Get(string id)
+        {
+            _entries.TryGetValue(id, out HotKeyEntry entry);
+            return entry;
+        }
+
+        /// <summary>
+        /// Remove a hotkey entry entirely. Used when a consumer permanently drops a binding (e.g. a
+        /// script hotkey is cleared), so it disappears from the registry immediately and is not
+        /// written back on the next <see cref="Save"/>.
+        /// </summary>
+        public static void Unregister(string id)
+        {
+            if (!string.IsNullOrEmpty(id))
+                _entries.Remove(id);
+        }
+
+        /// <summary>
+        /// Convenience poll: true when the hotkey <paramref name="id"/> is registered and currently
+        /// pressed. Honors the entry's Enabled flag and the global disable. Unknown ids return false.
+        /// </summary>
+        public static bool IsPressed(string id, bool allowAdditionalModifiers = true)
+            => _entries.TryGetValue(id, out HotKeyEntry entry) && entry.IsPressed(allowAdditionalModifiers);
+
+        /// <summary>All entries currently registered this session.</summary>
+        public static IEnumerable<HotKeyEntry> AllRegistered() => _entries.Values.Where(e => e.Registered);
+
+        /// <summary>
+        /// Other registered hotkeys whose binding would be triggered by the same input as
+        /// <paramref name="binding"/>. Pass <paramref name="excludeId"/> to skip the entry being edited.
+        /// </summary>
+        public static List<HotKeyEntry> FindConflicts(HotkeyBinding binding, string excludeId = null)
+        {
+            var result = new List<HotKeyEntry>();
+            if (binding == null || binding.IsEmpty)
+                return result;
+
+            foreach (HotKeyEntry entry in AllRegistered())
+            {
+                if (entry.Id == excludeId || !entry.CheckConflicts)
+                    continue;
+                if (entry.Binding != null && entry.Binding.Matches(binding))
+                    result.Add(entry);
+            }
+            return result;
+        }
+
+        public static List<HotKeyEntry> FindConflicts(HotKeyEntry entry)
+            => entry == null ? new List<HotKeyEntry>() : FindConflicts(entry.Binding, entry.Id);
+
+        /// <summary>Write the currently-registered entries to disk, pruning any stale saved ids.</summary>
+        public static void Save()
+        {
+            var file = new HotkeysFile();
+
+            foreach (HotKeyEntry entry in _entries.Values)
+            {
+                if (!entry.Registered)
+                    continue;
+                file.Entries.Add(ToDto(entry));
+            }
+
+            ConfigurationResolver.Save(file, FilePath, HotkeysJsonContext.Default.HotkeysFile);
+        }
+
+        /// <summary>
+        /// Edge-triggered dispatch for action hotkeys. Called from the game scene input handler
+        /// (already focus-gated and DisableHotkeys-gated). Hold-style consumers do not use this.
+        /// </summary>
+        public static void HandleKeyDown(SDL.SDL_Keycode key, SDL.SDL_Keymod mod, bool repeat)
+        {
+            if (repeat || key == SDL.SDL_Keycode.SDLK_UNKNOWN)
+                return;
+
+            SDL.SDL_Keymod n = HotkeyUtil.NormalizeMods(mod);
+
+            // Snapshot so an OnPressed callback that (re)registers a hotkey can't invalidate the enumerator.
+            foreach (HotKeyEntry entry in _entries.Values.ToArray())
+            {
+                if (!entry.Registered || !entry.Enabled || entry.OnPressed == null)
+                    continue;
+
+                if (GloballyDisabled && !entry.IgnoresGlobalDisable)
+                    continue;
+
+                HotkeyBinding b = entry.Binding;
+                if (b == null || !b.HasKey || b.HasMouseButton || b.HasController || b.WheelScroll)
+                    continue;
+
+                if (b.Key == key && b.Mod == n)
+                    entry.OnPressed.Invoke();
+            }
+        }
+
+        // Mouse and controller button bindings have no keyboard dispatch, so route their raw
+        // button-down events through the same OnPressed callback. This is what lets consumers
+        // (bar cells, scripts, …) register a binding once and get every binding kind.
+        private static void OnRawMouseButtonDown(MouseButtonType button)
+            => DispatchButton(b => b.HasMouseButton && b.MouseButton == button);
+
+        private static void OnRawControllerButtonDown(SDL.SDL_GamepadButton button)
+            => DispatchButton(b => b.HasController && b.ControllerButtons != null && Array.IndexOf(b.ControllerButtons, button) >= 0);
+
+        /// <summary>
+        /// Fires <see cref="HotKeyEntry.OnPressed"/> for every entry whose binding matches the button
+        /// that just went down. Gated the same way as the keyboard path (world must own input; globally
+        /// suppressed entries skipped) so a button can't fire while it is being bound in the capture box
+        /// or while a window/textbox has focus.
+        /// </summary>
+        private static void DispatchButton(Func<HotkeyBinding, bool> isKind)
+        {
+            if (!WorldHasInputFocus())
+                return;
+
+            // Snapshot so an OnPressed callback that (un)registers a hotkey can't invalidate the enumerator.
+            foreach (HotKeyEntry entry in _entries.Values.ToArray())
+            {
+                if (!entry.Registered || !entry.Enabled || entry.OnPressed == null)
+                    continue;
+
+                // Same exemption as the keyboard path: an IgnoresGlobalDisable entry keeps firing when
+                // hotkeys are globally suppressed, the rest are skipped.
+                if (GloballyDisabled && !entry.IgnoresGlobalDisable)
+                    continue;
+
+                HotkeyBinding b = entry.Binding;
+                if (b == null || !isKind(b))
+                    continue;
+
+                // Exact modifier match (like HandleKeyDown) so a no-modifier button binding doesn't
+                // also fire while modifiers are held.
+                if (entry.IsPressed(allowAdditionalModifiers: false))
+                    entry.OnPressed.Invoke();
+            }
+        }
+
+        // Equivalent to GameSceneInputHandler.CanExecuteMacro: input belongs to the world (the system
+        // chat box holds focus and isn't mid-compose), not to a gump/window such as the capture box.
+        private static bool WorldHasInputFocus()
+        {
+            SystemChatControl chat = UIManager.SystemChat;
+            return chat != null
+                   && UIManager.KeyboardFocusControl == chat.TextBoxControl
+                   && chat.Mode >= ChatMode.Default;
+        }
+
+        internal static bool IsKeyHeld(SDL.SDL_Keycode key) => _heldKeys.Contains(key);
+
+        /// <summary>Clear tracked key state (e.g. on focus loss) to avoid keys appearing stuck.</summary>
+        public static void ClearHeldKeys() => _heldKeys.Clear();
+
+        private static void OnRawKeyDown(string hotkey)
+        {
+            if (HotkeyUtil.TryParseKeycode(hotkey, out SDL.SDL_Keycode key))
+                _heldKeys.Add(key);
+        }
+
+        private static void OnRawKeyUp(string hotkey)
+        {
+            if (HotkeyUtil.TryParseKeycode(hotkey, out SDL.SDL_Keycode key))
+                _heldKeys.Remove(key);
+        }
+
+        private static void ApplySaved(HotKeyEntry entry)
+        {
+            if (_saved.TryGetValue(entry.Id, out HotkeyEntryDto dto))
+            {
+                entry.Binding = FromDto(dto);
+                entry.Enabled = dto.Enabled;
+            }
+            else
+            {
+                // No saved override for this profile: fall back to the registered default.
+                entry.ResetToDefault();
+                entry.Enabled = true;
+            }
+        }
+
+        private static HotkeyEntryDto ToDto(HotKeyEntry entry)
+        {
+            HotkeyBinding b = entry.Binding ?? new HotkeyBinding();
+            return new HotkeyEntryDto
+            {
+                Id = entry.Id,
+                Key = (int)b.Key,
+                Ctrl = b.Ctrl,
+                Shift = b.Shift,
+                Alt = b.Alt,
+                MouseButton = (int)b.MouseButton,
+                WheelScroll = b.WheelScroll,
+                WheelUp = b.WheelUp,
+                ControllerButtons = b.ControllerButtons == null ? null : b.ControllerButtons.Select(x => (int)x).ToArray(),
+                Enabled = entry.Enabled
+            };
+        }
+
+        private static HotkeyBinding FromDto(HotkeyEntryDto dto) => new()
+        {
+            Key = (SDL.SDL_Keycode)dto.Key,
+            Ctrl = dto.Ctrl,
+            Shift = dto.Shift,
+            Alt = dto.Alt,
+            MouseButton = (MouseButtonType)dto.MouseButton,
+            WheelScroll = dto.WheelScroll,
+            WheelUp = dto.WheelUp,
+            ControllerButtons = dto.ControllerButtons == null ? null : dto.ControllerButtons.Select(x => (SDL.SDL_GamepadButton)x).ToArray()
+        };
+    }
+}

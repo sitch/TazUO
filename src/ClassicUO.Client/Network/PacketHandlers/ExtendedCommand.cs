@@ -10,9 +10,9 @@ using ClassicUO.Game.UI.Controls;
 using ClassicUO.Game.UI.Gumps;
 using ClassicUO.IO;
 using ClassicUO.Network.PacketHandlers.Helpers;
-using ClassicUO.Resources;
 using ClassicUO.Utility;
 using ClassicUO.Utility.Logging;
+using ClassicUO.Configuration;
 
 namespace ClassicUO.Network.PacketHandlers;
 
@@ -137,7 +137,7 @@ internal static class ExtendedCommand
 
                     if (crafterNameLen > 0)
                     {
-                        strBuffer.Append(ResGeneral.CraftedBy);
+                        strBuffer.Append(TazLang.Get("crafted_by"));
                         strBuffer.Append(p.ReadASCII(crafterNameLen));
                     }
                 }
@@ -321,7 +321,7 @@ internal static class ExtendedCommand
 
                     case 2:
 
-                        if (serial == world.Player)
+                        if (world.Player != null && serial == world.Player)
                         {
                             byte updategump = p.ReadUInt8();
                             byte state = p.ReadUInt8();
@@ -510,6 +510,13 @@ internal static class ExtendedCommand
                 ushort spell = p.ReadUInt16BE();
                 bool active = p.ReadBool();
 
+                // Update the source of truth unconditionally so consumers (spell bar, spellbook) reflect the toggle
+                // even when no floating spell button for this ability is on screen.
+                if (active)
+                    world.ActiveSpellIcons.Add(spell);
+                else
+                    world.ActiveSpellIcons.Remove(spell);
+
                 for (LinkedListNode<IGui> last = UIManager.Gumps.Last; last != null; last = last.Previous)
                 {
                     IGui c = last.Value;
@@ -518,16 +525,7 @@ internal static class ExtendedCommand
 
                     if (c is not UseSpellButtonGump spellButton || spellButton.SpellID != spell) continue;
 
-                    if (active)
-                    {
-                        spellButton.Hue = 38;
-                        world.ActiveSpellIcons.Add(spell);
-                    }
-                    else
-                    {
-                        spellButton.Hue = 0;
-                        world.ActiveSpellIcons.Remove(spell);
-                    }
+                    spellButton.Hue = (ushort)(active ? 38 : 0);
 
                     break;
                 }

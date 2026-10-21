@@ -129,6 +129,10 @@ namespace ClassicUO.Game.Map
                     {
                         if (sb.Color != 0 && sb.Color != 0xFFFF)
                         {
+                            // This loop can run on the async chunk worker, so only queue the index here;
+                            // Art.WarmQueued decodes and uploads it on the main thread.
+                            Client.Game.UO.Arts.EnqueueWarm((uint)(sb.Color + 0x4000));
+
                             int pos = (sb.Y << 3) + sb.X;
 
                             if (pos >= 64)
@@ -492,7 +496,7 @@ namespace ClassicUO.Game.Map
                 }
             }
 
-            if (Node.Next != null || Node.Previous != null)
+            if (Node != null && (Node.Next != null || Node.Previous != null))
             {
                 Node.List?.Remove(Node);
             }
@@ -534,12 +538,57 @@ namespace ClassicUO.Game.Map
                 }
             }
 
-            if (Node.Next != null || Node.Previous != null)
+            if (Node != null && (Node.Next != null || Node.Previous != null))
             {
                 Node.List?.Remove(Node);
             }
 
             IsDestroyed = true;
+        }
+
+        /// <summary>
+        /// Clears the chunk's tile objects for an in-place reload (UltimaLive block
+        /// update) WITHOUT destroying or unlinking the chunk itself. The chunk stays
+        /// owned by the map: its <see cref="Map.Map._terrainChunks"/> slot and
+        /// <see cref="Node"/> are left intact and <see cref="IsDestroyed"/> stays false.
+        /// Using <see cref="Clear"/>/<see cref="Destroy"/> here would remove
+        /// <see cref="Node"/> from the map's used-indices list while the slot still
+        /// references this chunk; the reloaded chunk would then no longer be tracked
+        /// for cleanup (it could never be garbage collected by ClearUnusedBlocks and
+        /// would stay loaded until relog).
+        /// </summary>
+        public void ClearForReload()
+        {
+            for (int i = 0; i < 8; i++)
+            {
+                for (int j = 0; j < 8; j++)
+                {
+                    GameObject obj = Tiles[i, j];
+
+                    if (obj == null)
+                    {
+                        continue;
+                    }
+
+                    GameObject first = GetHeadObject(i, j);
+
+                    while (first != null)
+                    {
+                        GameObject next = first.TNext;
+
+                        if (!ReferenceEquals(first, _world.Player))
+                        {
+                            first.Destroy();
+                        }
+
+                        first.TPrevious = null;
+                        first.TNext = null;
+                        first = next;
+                    }
+
+                    Tiles[i, j] = null;
+                }
+            }
         }
 
         public bool HasNoExternalData()

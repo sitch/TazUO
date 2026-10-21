@@ -4,7 +4,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
-public static class GenDoc
+public static partial class GenDoc
 {
     private static bool isMainAPI = false;
 
@@ -57,14 +57,6 @@ public static class GenDoc
         sb.AppendLf(":::");
         sb.AppendLf();
 
-        sb.AppendLf(":::tip[API.py File]");
-        sb.AppendLf("If you download the [API.py](https://github.com/PlayTazUO/TazUO/blob/dev/src/ClassicUO.Client/LegionScripting/docs/API.py) file, put it in the same folder as your python scripts and add `import API` to your script, that will enable some mild form of autocomplete in an editor like VS Code.  ");
-        sb.AppendLf();
-        sb.AppendLf("You can now type `-updateapi` in game to download the latest API.py file.");
-        sb.AppendLf(":::");
-        sb.AppendLf();
-
-        sb.AppendLf("[Additional notes](../notes/)  ");
         sb.AppendLf();
         // Deliberately no generation date. GenerateDocs runs on every build, so a
         // date stamp rewrote this file the first time anyone built on a new day —
@@ -342,33 +334,24 @@ public static class GenDoc
             .OfType<DocumentationCommentTriviaSyntax>()
             .FirstOrDefault();
 
-        if (trivia != null)
-        {
-            XmlElementSyntax? summary = trivia.Content
-                .OfType<XmlElementSyntax>()
-                .FirstOrDefault(e => e.StartTag.Name.LocalName.Text == "summary");
+        XmlElementSyntax? summary = trivia?.Content
+            .OfType<XmlElementSyntax>()
+            .FirstOrDefault(e => e.StartTag.Name.LocalName.Text == "summary");
 
-            if (summary != null)
-            {
-                string rawText = string.Join(" ", summary.Content.Select(c => c.ToString().Trim()));
+        if (summary == null)
+            return string.Empty;
 
-                // 2. Remove any potential leftover XML comment markers and trim ends
-                //rawText = rawText.Replace("///", "").Trim();
+        string rawText = string.Join(" ", summary.Content.Select(c => c.ToString().Trim()));
 
-                // 3. Split by space, remove empty results, join with single space
-                //string cleanedText = string.Join(" ", rawText.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries));
-                string cleanedDocumentation = Regex.Replace(
-                    rawText,
-                    @"^\s*(///.*)$", // The pattern to find
-                    "$1", // The replacement string (content of group 1)
-                    RegexOptions.Multiline // Treat ^ and $ as start/end of LINE
-                );
+        // 2. Remove any potential leftover XML comment markers and trim ends
+        //rawText = rawText.Replace("///", "").Trim();
 
-                return cleanedDocumentation.Replace("///", "");
-            }
-        }
+        // 3. Split by space, remove empty results, join with single space
+        //string cleanedText = string.Join(" ", rawText.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries));
+        string cleanedDocumentation = XmlDocPrefixRx().Replace(rawText, "$1");
+        cleanedDocumentation = CodeBlockRx().Replace(cleanedDocumentation, "`$1`");
+        return cleanedDocumentation.Replace("///", "");
 
-        return string.Empty;
     }
 
     private static void GenReturnType(TypeSyntax returnType, ref StringBuilder sb)
@@ -411,24 +394,24 @@ public static class GenDoc
             .OfType<DocumentationCommentTriviaSyntax>()
             .FirstOrDefault();
 
-        if (trivia != null)
-        {
-            XmlElementSyntax? paramElement = trivia.Content
-                .OfType<XmlElementSyntax>()
-                .FirstOrDefault(e => e.StartTag.Name.LocalName.Text == "param" &&
-                                     e.StartTag.Attributes.OfType<XmlNameAttributeSyntax>()
-                                         .Any(a => a.Identifier.Identifier.Text == paramName));
+        XmlElementSyntax? paramElement = trivia?.Content
+            .OfType<XmlElementSyntax>()
+            .FirstOrDefault(e =>
+                e.StartTag.Name.LocalName.Text == "param" &&
+                e.StartTag.Attributes.OfType<XmlNameAttributeSyntax>()
+                    .Any(a => a.Identifier.Identifier.Text == paramName)
+            );
 
-            if (paramElement != null)
-            {
-                string r = string.Join(" ", paramElement.Content.Select(c => c.ToString().Trim()));
-                r = r.Replace("///", "").Trim()
-                    .Replace("\n", "  \n");
-                return r;
-            }
-        }
+        if (paramElement == null)
+            return string.Empty;
 
-        return string.Empty;
+        string r = string.Join(" ", paramElement.Content.Select(c => c.ToString().Trim()));
+        Regex codeBlockReplacer = CodeBlockRx();
+        r = codeBlockReplacer.Replace(r, "`$1`")
+            .Replace("///", "")
+            .Trim()
+            .Replace("\n", "<br>");
+        return r;
     }
 
     private static void GenParametersParenthesis(SeparatedSyntaxList<ParameterSyntax> parameters, ref StringBuilder sb)
@@ -478,8 +461,11 @@ public static class GenDoc
     {
         defaultValue = defaultValue.Replace("=", "").Trim();
 
-        if (defaultValue != "false")
-            defaultValue = defaultValue.Replace("f", ""); //Remove f suffix from float literals
+        // Remove the 'f' suffix from float literals (e.g. "2f"), but leave every other 'f' intact.
+        if (defaultValue.Length > 1 &&
+            (defaultValue[^1] == 'f' || defaultValue[^1] == 'F') &&
+            char.IsDigit(defaultValue[^2]))
+            defaultValue = defaultValue[..^1];
 
         // Map C# default values to Python
         return defaultValue.Trim() switch
@@ -601,6 +587,8 @@ public static class GenDoc
             // "BuffIconType" => "BuffIconType",
             "ScanType" => "ScanType",
             "Notoriety" => "Notoriety",
+            "EffectType" => "EffectType",
+            "EffectBlendMode" => "EffectBlendMode",
             "GameObject" or "ApiGameObject" => "ApiGameObject",
             "ApiUserProfile" => "ApiUserProfile",
             "ApiUiControlDropDown" => "ApiUiControlDropDown",
@@ -619,6 +607,7 @@ public static class GenDoc
             "ApiUiTtfTextInputField" => "ApiUiTtfTextInputField",
             "ApiUiTextBox" => "ApiUiTextBox",
             "ApiUiSimpleProgressBar" => "ApiUiSimpleProgressBar",
+            "ApiUiSlider" => "ApiUiSlider",
             "ApiUiGumpPic" => "ApiUiGumpPic",
             "ApiUiNineSliceGump" => "ApiUiNineSliceGump",
             "ApiUiCheckbox" => "ApiUiCheckbox",
@@ -639,6 +628,13 @@ public static class GenDoc
             _ => noMatch
         };
     }
+
+    [GeneratedRegex(@"<c(?:ode)?\>\s*(.*?)\s*<\/c(?:ode)?>", RegexOptions.Singleline)]
+    private static partial Regex CodeBlockRx();
+
+    [GeneratedRegex(@"^\s*(///.*)$", RegexOptions.Multiline // Treat ^ and $ as start/end of LINE
+    )]
+    private static partial Regex XmlDocPrefixRx();
 }
 
 class Program

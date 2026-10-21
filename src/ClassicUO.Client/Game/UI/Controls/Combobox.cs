@@ -112,15 +112,15 @@ namespace ClassicUO.Game.UI.Controls
                 return;
             }
 
-            int comboY = ScreenCoordinateY + Offset.Y;
+            int comboY = ScreenCoordinateY + Offset.Y + 25;
 
             if (comboY < 0)
             {
                 comboY = 0;
             }
-            else if (comboY + _maxHeight > Client.Game.Window.ClientBounds.Height)
+            else if (comboY + _maxHeight > ScaleHelper.LogicalWindowHeight)
             {
-                comboY = Client.Game.Window.ClientBounds.Height - _maxHeight;
+                comboY = Math.Max(0, ScaleHelper.LogicalWindowHeight - _maxHeight);
             }
 
             UIManager.Add
@@ -216,8 +216,18 @@ namespace ClassicUO.Game.UI.Controls
                     labels[i] = label;
                 }
 
-                int totalHeight = Math.Min(maxHeight, labels.Max(o => o.Y + o.Height));
-                int maxWidth = Math.Max(width, labels.Max(o => o.X + o.Width));
+                int totalHeight, maxWidth;
+                if (labels.Length > 0)
+                {
+                    totalHeight = Math.Min(maxHeight, labels.Max(o => o.Y + o.Height));
+                    maxWidth = Math.Max(width, labels.Max(o => o.X + o.Width));
+                }
+                else
+                {
+                    // Render a small empty card so user knows the component is working, if empty
+                    totalHeight = Math.Min(45, maxHeight);
+                    maxWidth = width;
+                }
 
                 var area = new ScrollArea
                 (

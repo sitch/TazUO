@@ -90,9 +90,9 @@ public enum MacroType
     ShowNearbyItems,
     ToggleNearbyLootGump,
     ToggleLegionScripting,
-    SetSpellBarRow,
-    SpellBarRowUp,
-    SpellBarRowDown,
+    REMOVED,
+    REMOVED2,
+    REMOVED3,
     Dismount,
     ToggleHouses,
     ToggleHudVisible,
@@ -110,5 +110,14 @@ public enum MacroType
     ToggleAutoLoot,
     ToggleVoiceRecognition,
     SetLastTarget,
-    ToggleAutoWalk
+    ToggleAutoWalk,
+    ToggleBandageAgent,
+    SetOrganizerSource,
+    LoopContainer,
+    ToggleBuyAgent,
+    ToggleSellAgent,
+    SetZoomLevel,
+    LootHoveredItem,
+    PrivateSay,
+    ToggleScavenging
 }

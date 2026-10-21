@@ -8,8 +8,8 @@ using ClassicUO.Input;
 using ClassicUO.Assets;
 using ClassicUO.Network;
 using ClassicUO.Renderer;
-using ClassicUO.Resources;
 using ClassicUO.Utility;
+using ClassicUO.Configuration;
 
 namespace ClassicUO.Game.UI.Gumps
 {
@@ -60,7 +60,7 @@ namespace ClassicUO.Game.UI.Gumps
                         0,
                         World.Player.Name,
                         string.Empty,
-                        ResGumps.DateTime,
+                        TazLang.Get("date_time"),
                         string.Empty,
                         0
                     ) { X = 400, Y = 335 }
@@ -87,14 +87,6 @@ namespace ClassicUO.Game.UI.Gumps
 
 
             // TODO: buuttons
-        }
-
-
-        public override void Dispose()
-        {
-            UIManager.ForEach<BulletinBoardGump>(g => g.Dispose()); //Not 100% certain closing all bulletin board gumps is intentional..
-
-            base.Dispose();
         }
 
         public void RemoveBulletinObject(uint serial)
@@ -197,7 +189,7 @@ namespace ClassicUO.Game.UI.Gumps
                 textColor = 0;
             }
 
-            var text = new Label(ResGumps.Author, useUnicode, textColor, font: useUnicode ? unicodeFontIndex : (byte) 6)
+            var text = new Label(TazLang.Get("author"), useUnicode, textColor, font: useUnicode ? unicodeFontIndex : (byte) 6)
             {
                 X = 30,
                 Y = 40
@@ -214,7 +206,7 @@ namespace ClassicUO.Game.UI.Gumps
             Add(text);
 
 
-            text = new Label(ResGumps.Date, useUnicode, textColor, font: useUnicode ? unicodeFontIndex : (byte) 6)
+            text = new Label(TazLang.Get("date"), useUnicode, textColor, font: useUnicode ? unicodeFontIndex : (byte) 6)
             {
                 X = 30,
                 Y = 58
@@ -230,7 +222,7 @@ namespace ClassicUO.Game.UI.Gumps
 
             Add(text);
 
-            text = new Label(ResGumps.Title, useUnicode, textColor, font: useUnicode ? unicodeFontIndex : (byte) 6)
+            text = new Label(TazLang.Get("title"), useUnicode, textColor, font: useUnicode ? unicodeFontIndex : (byte) 6)
             {
                 X = 30,
                 Y = 77
@@ -428,7 +420,7 @@ namespace ClassicUO.Game.UI.Gumps
                             LocalSerial,
                             _msgSerial,
                             World.Player.Name,
-                            ResGumps.RE + _subjectTextbox.Text,
+                            TazLang.Get("re") + _subjectTextbox.Text,
                             _datatime,
                             string.Empty,
                             0

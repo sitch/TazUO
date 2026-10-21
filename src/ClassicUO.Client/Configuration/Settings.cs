@@ -1,12 +1,9 @@
-﻿// SPDX-License-Identifier: BSD-2-Clause
-
-using System;
+﻿using System;
 using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using ClassicUO.Assets;
 using ClassicUO.Configuration.Json;
-using ClassicUO.Game;
 using Microsoft.Xna.Framework;
 
 namespace ClassicUO.Configuration
@@ -57,6 +54,25 @@ namespace ClassicUO.Configuration
 
         [JsonPropertyName("ultimaonlinedirectory")] public string UltimaOnlineDirectory { get; set; } = "";
 
+        /// <summary>
+        ///     Gets <see cref="UltimaOnlineDirectory"/> as an absolute path, resolving a relative value against
+        ///     <see cref="CUOEnviroment.ExecutablePath"/> rather than the process working directory so file lookups
+        ///     behave the same however the client was launched. The raw value is left untouched for serialization.
+        /// </summary>
+        [JsonIgnore]
+        public string ResolvedUltimaOnlineDirectory
+        {
+            get
+            {
+                if (string.IsNullOrWhiteSpace(UltimaOnlineDirectory))
+                    return CUOEnviroment.ExecutablePath;
+
+                return Path.IsPathRooted(UltimaOnlineDirectory)
+                    ? UltimaOnlineDirectory
+                    : Path.Combine(CUOEnviroment.ExecutablePath, UltimaOnlineDirectory);
+            }
+        }
+
         [JsonPropertyName("profilespath")] public string ProfilesPath { get; set; } = string.Empty;
 
         [JsonPropertyName("clientversion")] public string ClientVersion { get; set; } = string.Empty;
@@ -84,7 +100,7 @@ namespace ClassicUO.Configuration
 
         [JsonPropertyName("login_music")] public bool LoginMusic { get; set; } = true;
 
-        [JsonPropertyName("login_music_volume")] public int LoginMusicVolume { get; set; } = 70;
+        [JsonPropertyName("login_music_volume")] public int LoginMusicVolume { get; set; } = 50;
 
         [JsonPropertyName("fixed_time_step")] public bool FixedTimeStep { get; set; } = true;
 
@@ -101,19 +117,46 @@ namespace ClassicUO.Configuration
 
         [JsonPropertyName("plugins")] public string[] Plugins { get; set; } = { "" };
 
+        /// <summary>
+        /// Uses the campfire/Diablo-style character selection screen instead of the classic list.
+        /// Backed by <see cref="GlobalSettingsSave.UseCampfireCharacterSelect"/> (Global scope) rather than
+        /// this JSON file so it can be read/written at the character-selection screen before any profile
+        /// is loaded.
+        /// </summary>
+        [JsonIgnore]
+        public bool UseCampfireCharacterSelect
+        {
+            get => ProfileManager.GlobalSettings?.UseCampfireCharacterSelect ?? false;
+            set
+            {
+                if (ProfileManager.GlobalSettings != null)
+                    ProfileManager.GlobalSettings.UseCampfireCharacterSelect = value;
+            }
+        }
+
+        /// <summary>
+        /// UI language code used for TazLang strings, backed by <see cref="GlobalSettingsSave.UILanguage"/>.
+        /// Defaults to <c>"EN"</c> when no value is stored.
+        /// </summary>
+        [JsonIgnore]
+        public string UILanguage
+        {
+            get => ProfileManager.GlobalSettings?.UILanguage ?? "EN";
+            set
+            {
+                if (ProfileManager.GlobalSettings != null)
+                    ProfileManager.GlobalSettings.UILanguage = value;
+            }
+        }
+
         public static string GetSettingsFilepath()
         {
-            if (CustomSettingsFilepath != null)
-            {
-                if (Path.IsPathRooted(CustomSettingsFilepath))
-                {
-                    return CustomSettingsFilepath;
-                }
+            if (CustomSettingsFilepath == null)
+                return Path.Combine(CUOEnviroment.ExecutablePath, SETTINGS_FILENAME);
 
-                return Path.Combine(CUOEnviroment.ExecutablePath, CustomSettingsFilepath);
-            }
-
-            return Path.Combine(CUOEnviroment.ExecutablePath, SETTINGS_FILENAME);
+            return Path.IsPathRooted(CustomSettingsFilepath)
+                ? CustomSettingsFilepath
+                : Path.Combine(CUOEnviroment.ExecutablePath, CustomSettingsFilepath);
         }
 
         public void Save()
@@ -144,7 +187,7 @@ namespace ClassicUO.Configuration
             if (_eventineIPs.Contains(IP))
             {
                 CustomServer = CustomServers.Eventine;
-                CustomServerSettings.GetCustomAnimPath = () => Path.Combine(Path.GetFullPath(UltimaOnlineDirectory), "Anims" );
+                CustomServerSettings.GetCustomAnimPath = () => Path.Combine(ResolvedUltimaOnlineDirectory, "Anims" );
                 return;
             }
         }

@@ -121,7 +121,7 @@ description: EventSinkApiDeclaration class documentation
 
 ### ClilocMessageReceived
 `(callback)`
-  Not currently used. May be removed later or put into use, not sure right now
+ Invoked when a cliloc message is received from the server
 
 
 **Parameters:**
@@ -246,6 +246,20 @@ description: EventSinkApiDeclaration class documentation
  Invoked when a container is opened.
  The event's 'sender' is the Item, the event's argument is the item's serial
 
+
+**Parameters:**
+
+| Name | Type | Optional | Description |
+| --- | --- | --- | --- |
+| `callback` | `object` | ❌ No |  |
+
+**Return Type:** `void` *(Does not return anything)*
+
+---
+
+### ObjectUsed
+`(callback)`
+Invoked when the client sends a double-click (use) request for an object's serial.
 
 **Parameters:**
 

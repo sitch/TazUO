@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: BSD-2-Clause
 
+using System;
 using System.Collections.Generic;
 using ClassicUO.Assets;
 using ClassicUO.Configuration;
@@ -17,7 +18,7 @@ namespace ClassicUO.Game.UI.Controls
     public class PaperDollInteractable : Control
     {
         private static readonly Layer[] _layerOrder =
-        {
+        [
             Layer.Cloak,
             Layer.Shirt,
             Layer.Pants,
@@ -33,7 +34,7 @@ namespace ClassicUO.Game.UI.Controls
             Layer.Skirt,
             Layer.Robe,
             Layer.Waist,
-            Layer.Necklace,
+            Layer.Neck,
             Layer.Hair,
             Layer.Beard,
             Layer.Earrings,
@@ -41,10 +42,10 @@ namespace ClassicUO.Game.UI.Controls
             Layer.OneHanded,
             Layer.TwoHanded,
             Layer.Talisman
-        };
+        ];
 
-        private static readonly Layer[] _layerOrder_quiver_fix =
-        {
+        private static readonly Layer[] _layerOrderQuiverFix =
+        [
             Layer.Shirt,
             Layer.Pants,
             Layer.Shoes,
@@ -60,7 +61,7 @@ namespace ClassicUO.Game.UI.Controls
             Layer.Robe,
             Layer.Cloak,
             Layer.Waist,
-            Layer.Necklace,
+            Layer.Neck,
             Layer.Hair,
             Layer.Beard,
             Layer.Earrings,
@@ -68,10 +69,10 @@ namespace ClassicUO.Game.UI.Controls
             Layer.OneHanded,
             Layer.TwoHanded,
             Layer.Talisman
-        };
+        ];
 
-        private static readonly Layer[] _layerOrder_parrot_fix =
-        {
+        private static readonly Layer[] _layerOrderParrotFix =
+        [
             Layer.Shirt,
             Layer.Pants,
             Layer.Shoes,
@@ -86,7 +87,7 @@ namespace ClassicUO.Game.UI.Controls
             Layer.Gloves,
             Layer.Skirt,
             Layer.Waist,
-            Layer.Necklace,
+            Layer.Neck,
             Layer.Hair,
             Layer.Beard,
             Layer.Earrings,
@@ -95,11 +96,11 @@ namespace ClassicUO.Game.UI.Controls
             Layer.TwoHanded,
             Layer.Talisman,
             Layer.Robe
-        };
+        ];
 
         private readonly PaperDollGump _paperDollGump;
 
-        private bool _updateUI;
+        private bool _updateUi;
 
         public PaperDollInteractable(int x, int y, uint serial, PaperDollGump paperDollGump, double scale = 1f)
         {
@@ -108,7 +109,7 @@ namespace ClassicUO.Game.UI.Controls
             _paperDollGump = paperDollGump;
             AcceptMouseInput = false;
             LocalSerial = serial;
-            _updateUI = true;
+            _updateUi = true;
 
             // Only set Scale/InternalScale for non-ScalableGump parents
             // ScalableGump.Add() will handle scaling automatically
@@ -121,11 +122,11 @@ namespace ClassicUO.Game.UI.Controls
         {
             base.Update();
 
-            if (_updateUI)
+            if (_updateUi)
             {
                 UpdateUI();
 
-                _updateUI = false;
+                _updateUi = false;
             }
         }
 
@@ -133,7 +134,7 @@ namespace ClassicUO.Game.UI.Controls
         {
             // Only trigger update when ENABLING fake item, not when disabling
             // Disabling should be followed by an explicit RequestUpdate() call
-            _updateUI = !HasFakeItem && value;
+            _updateUi = !HasFakeItem && value;
             HasFakeItem = value;
         }
 
@@ -212,15 +213,12 @@ namespace ClassicUO.Game.UI.Controls
             }
 
             // equipment
-            Item equipItem = mobile.FindItemByLayer(Layer.Cloak);
             Item arms = mobile.FindItemByLayer(Layer.Arms);
-            Item robe = mobile.FindItemByLayer(Layer.Robe);
-
-            bool switch_arms_with_torso = false;
+            bool switchArmsWithTorso = false;
 
             if (arms != null)
             {
-                switch_arms_with_torso = arms.Graphic == 0x1410 || arms.Graphic == 0x1417;
+                switchArmsWithTorso = arms.Graphic is 0x1410 or 0x1417;
             }
             else if (
                 HasFakeItem
@@ -229,48 +227,20 @@ namespace ClassicUO.Game.UI.Controls
                 && (byte)Layer.Arms == Client.Game.UO.GameCursor.ItemHold.ItemData.Layer
             )
             {
-                switch_arms_with_torso =
+                switchArmsWithTorso =
                     Client.Game.UO.GameCursor.ItemHold.Graphic == 0x1410
                     || Client.Game.UO.GameCursor.ItemHold.Graphic == 0x1417;
             }
 
-            Layer[] layers;
+            // Gets the paperdoll layers in the correct order.
+            Layer[] layers = GetOrderedLayers(mobile);
 
-            if (equipItem != null)
-            {
-                if (robe != null && (robe.Graphic == 0xA2CB || robe.Graphic == 0xA2CA)) // parrot
-                {
-                    layers = _layerOrder_parrot_fix;
-                }
-                else
-                {
-                    layers = equipItem.ItemData.IsContainer ? _layerOrder_quiver_fix : _layerOrder;
-
-                    if(Settings.GlobalSettings.CustomServer == Settings.CustomServers.Eventine)
-                        layers = equipItem.ItemData.IsContainer ? _layerOrder_quiver_fix : equipItem.Graphic == 0xA413 ? _layerOrder_quiver_fix : _layerOrder;
-                }
-            }
-            else if (
-                HasFakeItem
-                && Client.Game.UO.GameCursor.ItemHold.Enabled
-                && !Client.Game.UO.GameCursor.ItemHold.IsFixedPosition
-                && (byte)Layer.Cloak == Client.Game.UO.GameCursor.ItemHold.ItemData.Layer
-            )
-            {
-                layers = Client.Game.UO.GameCursor.ItemHold.ItemData.IsContainer
-                    ? _layerOrder_quiver_fix
-                    : _layerOrder;
-            }
-            else
-            {
-                layers = _layerOrder;
-            }
-
+            Item equipItem;
             for (int i = 0; i < layers.Length; i++)
             {
                 Layer layer = layers[i];
 
-                if (switch_arms_with_torso)
+                if (switchArmsWithTorso)
                 {
                     if (layer == Layer.Arms)
                     {
@@ -399,12 +369,11 @@ namespace ClassicUO.Game.UI.Controls
                     }
                 }
 
-                int bx = 0;
-
+                // The backpack is shifted slightly left
+                // to accomodate for the wider-than-normal sidebar we have
+                int bx = 8;
                 if (_paperDollGump.World.ClientFeatures.PaperdollBooks)
-                {
-                    bx = 6;
-                }
+                    bx += 6;
 
                 Add(
                     new GumpPicEquipment(
@@ -423,7 +392,119 @@ namespace ClassicUO.Game.UI.Controls
             }
         }
 
-        public void RequestUpdate() => _updateUI = true;
+        /// <summary>
+        ///     Gets the paperdoll layers in the correct order.
+        /// </summary>
+        /// <param name="mob">The mobile whose's paperdoll is being rendered</param>
+        /// <returns>An ordered array of layers. Note that this is a <b>copy</b> of the static member</returns>
+        private Layer[] GetOrderedLayers(Mobile mob) => GetOrderedLayersCopy(GetLayers(mob), mob);
+
+        /// <summary>
+        ///     Gets the paperdoll layers in the standard order
+        /// </summary>
+        /// <param name="mob">The mobile whose's paperdoll is being rendered</param>
+        /// <returns>A <b>reference</b> to the relevant static layers order member</returns>
+        private Layer[] GetLayers(Mobile mob)
+        {
+            const int CLOAK_GRAPHIC = 0xA413;
+
+            Item cloak = mob.FindItemByLayer(Layer.Cloak);
+            Item robe = mob.FindItemByLayer(Layer.Robe);
+
+            if (cloak != null)
+            {
+                if (robe != null && robe.Graphic is 0xA2CA or 0xA2CB) // parrot
+                    return _layerOrderParrotFix;
+
+                if (cloak.ItemData.IsContainer ||
+                    (Settings.GlobalSettings.CustomServer == Settings.CustomServers.Eventine &&
+                     cloak.Graphic == CLOAK_GRAPHIC)
+                   )
+                    return _layerOrderQuiverFix;
+
+                return _layerOrder;
+            }
+
+            if (!HasFakeItem
+                || !Client.Game.UO.GameCursor.ItemHold.Enabled
+                || Client.Game.UO.GameCursor.ItemHold.IsFixedPosition
+                || (byte)Layer.Cloak != Client.Game.UO.GameCursor.ItemHold.ItemData.Layer)
+                return _layerOrder;
+
+
+            bool isEventineCloak = Settings.GlobalSettings.CustomServer == Settings.CustomServers.Eventine
+                                   && Client.Game.UO.GameCursor.ItemHold.Graphic == CLOAK_GRAPHIC;
+
+            return Client.Game.UO.GameCursor.ItemHold.ItemData.IsContainer || isEventineCloak
+                ? _layerOrderQuiverFix
+                : _layerOrder;
+        }
+
+        /// <summary>
+        /// Returns an ordered copy of the given layer array
+        /// This allows for customizations for servers like Eventine where layers may deviate from the standard order.
+        /// </summary>
+        /// <remarks>
+        /// The overhead for the copy here should be imperceptible, but if necessary, the hot flow
+        /// can be optimized back to using references to the static members instead
+        /// </remarks>
+        /// <param name="layers">The layer array to return a sorted copy of</param>
+        private static Layer[] GetOrderedLayersCopy(Layer[] layers, Mobile mobile)
+        {
+            var copy = (Layer[])layers?.Clone();
+
+            Item torso = mobile.FindItemByLayer(Layer.Torso);
+			
+			// Female Leather Armor (0x1C06), Female Studded Armor (0x1C02)
+			// and Female Plate Armor (0x1C04) are expected to render beneath
+			// pants on the paperdoll, matching the behavior observed in other
+			// Ultima Online clients.            
+			if (torso != null && torso.Graphic is 0x1C06 or 0x1C02 or 0x1C04)
+            {
+                int pantsLayerIdx = copy.IndexOf(Layer.Pants);
+                int torsoLayerIdx = copy.IndexOf(Layer.Torso);
+
+                if (pantsLayerIdx >= 0 && torsoLayerIdx >= 0 && pantsLayerIdx < torsoLayerIdx)
+                {
+                    Array.Copy(copy, pantsLayerIdx, copy, pantsLayerIdx + 1, torsoLayerIdx - pantsLayerIdx);
+                    copy[pantsLayerIdx] = Layer.Torso;
+                }
+            }
+
+			Item arms = mobile.FindItemByLayer(Layer.Arms);
+
+			// Leather Sleeves (0x13CD), Studded Sleeves (0x13DC)
+			// and Ringmail Arms (0x13EF) are expected to render above
+			// chainmail on the paperdoll, matching the behavior observed
+			// in other Ultima Online clients.
+			if (arms != null && arms.Graphic is 0x13CD or 0x13DC or 0x13EE)
+			{
+				int armsLayerIdx = copy.IndexOf(Layer.Arms);
+				int torsoLayerIdx = copy.IndexOf(Layer.Torso);
+
+				if (armsLayerIdx >= 0 && torsoLayerIdx >= 0 && armsLayerIdx < torsoLayerIdx)
+				{
+					Array.Copy(copy, armsLayerIdx + 1, copy, armsLayerIdx, torsoLayerIdx - armsLayerIdx);
+					copy[torsoLayerIdx] = Layer.Arms;
+				}
+			}
+
+            // When dealing with Eventine, the 'legs' layer is always the first one.
+            // Other server-specific ordering quirks can be added here later as necessary.
+            if (Settings.GlobalSettings.CustomServer != Settings.CustomServers.Eventine || !(layers?.Length > 2))
+                return copy;
+
+            int legsLayerIdx = copy.IndexOf(Layer.Legs);
+            if (legsLayerIdx <= 0)
+                return copy;
+
+            Array.Copy(copy, 0, copy, 1, legsLayerIdx);
+            copy[0] = Layer.Legs;
+
+            return copy;
+        }
+
+        public void RequestUpdate() => _updateUi = true;
 
         protected static ushort GetAnimID(ushort mobileGraphic, ushort itemGraphic, ushort animID, bool isfemale)
         {

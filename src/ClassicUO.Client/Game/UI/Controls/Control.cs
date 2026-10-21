@@ -113,6 +113,9 @@ namespace ClassicUO.Game.UI.Controls
 
     public object Tooltip { get; private set; }
 
+    /// <summary>Optional line drawn above <see cref="Tooltip"/>, e.g. a counter cell's keybind. Ignored when there is no tooltip.</summary>
+    public string TooltipPrefix { get; set; }
+
     public bool HasTooltip => /*World.ClientFlags.TooltipsEnabled &&*/ Tooltip != null;
 
     public virtual bool AcceptKeyboardInput
@@ -150,6 +153,14 @@ namespace ClassicUO.Game.UI.Controls
         get;
         set
         {
+            // The Children list is not thread-safe; scripts can reach this setter from a
+            // background thread via raw gump objects, so marshal any off-thread reparenting.
+            if (!MainThreadQueue.IsMainThread)
+            {
+                MainThreadQueue.EnqueueAction(() => Parent = value);
+                return;
+            }
+
             if (value == null)
             {
                 field?.Children.Remove(this);
@@ -256,6 +267,18 @@ namespace ClassicUO.Game.UI.Controls
                 c.UpdateOffset(x, y);
             }
         }
+    }
+
+    /// <summary>
+    /// Sets this control's own hit-test offset without propagating it to children,
+    /// unlike <see cref="UpdateOffset"/>. Used by controls (e.g. context menus) whose
+    /// sub-content is drawn outside the normal bounds rectangle and would otherwise be
+    /// unreachable by the mouse.
+    /// </summary>
+    protected void SetHitTestOffset(int x, int y)
+    {
+        _offset.X = x;
+        _offset.Y = y;
     }
 
     public virtual bool Draw(UltimaBatcher2D batcher, int x, int y)
@@ -483,32 +506,24 @@ namespace ClassicUO.Game.UI.Controls
         }
     }
 
+    /// <summary>
+    /// Removes disposed children from this control.
+    /// The children list can be mutated from other threads (e.g. script threads racing with
+    /// the UI thread), so children are removed by reference from a snapshot. Index-based
+    /// removal can throw ArgumentOutOfRangeException if the list shrinks mid-iteration;
+    /// removing by reference is a no-op when the element is already gone.
+    /// </summary>
     internal void CleanUpDisposedChildren()
     {
-        // Snapshot the children before iterating so we're immune to a race where
-        // accessing IsDisposed / removing a child triggers a callback that further
-        // mutates the Children list mid-loop. Without the snapshot, the index
-        // computed from the original Count can become invalid and RemoveAt throws
-        // ArgumentOutOfRangeException at boot when login-screen gumps churn fast.
-        ClassicUO.Game.UI.IGui[] snapshot;
-        try
-        {
-            snapshot = Children.ToArray();
-        }
-        catch (ArgumentException)
-        {
-            // List mutated mid-copy — try again next frame; nothing to clean now.
-            return;
-        }
-
         bool childRemoved = false;
-        for (int i = snapshot.Length - 1; i >= 0; i--)
+
+        foreach (IGui child in Children.ToArray())
         {
-            ClassicUO.Game.UI.IGui child = snapshot[i];
-            if (child == null || !child.IsDisposed) continue;
-            // Remove by reference instead of index — survives any mid-loop shifts.
-            if (Children.Remove(child))
+            if (child?.IsDisposed == true)
+            {
+                Children.Remove(child);
                 childRemoved = true;
+            }
         }
 
         if (childRemoved)
@@ -535,7 +550,7 @@ namespace ClassicUO.Game.UI.Controls
 
     public void BringOnTop() => UIManager.MakeTopMostGump(this);
 
-    public void SetTooltip(string text, int maxWidth = 0) //TODO: Remove maxWidth param
+    public void SetTooltip(string text)
     {
         ClearTooltip();
 
@@ -652,6 +667,13 @@ namespace ClassicUO.Game.UI.Controls
 
     public virtual T Add<T>(T c, int page = 0) where T : IGui
     {
+        // Children is not thread-safe; scripts can add children from a background thread.
+        if (!MainThreadQueue.IsMainThread)
+        {
+            MainThreadQueue.EnqueueAction(() => Add(c, page));
+            return c;
+        }
+
         c.Page = page;
         c.Parent = this;
         OnChildAdded();
@@ -661,6 +683,12 @@ namespace ClassicUO.Game.UI.Controls
 
     public void Insert(int index, IGui c, int page = 0)
     {
+        if (!MainThreadQueue.IsMainThread)
+        {
+            MainThreadQueue.EnqueueAction(() => Insert(index, c, page));
+            return;
+        }
+
         c.Page = 0;
 
         c.Parent?.Children.Remove(c);
@@ -679,6 +707,12 @@ namespace ClassicUO.Game.UI.Controls
             return;
         }
 
+        if (!MainThreadQueue.IsMainThread)
+        {
+            MainThreadQueue.EnqueueAction(() => Remove(c));
+            return;
+        }
+
         c.Parent = null;
         Children.Remove(c);
         OnChildRemoved();
@@ -686,6 +720,12 @@ namespace ClassicUO.Game.UI.Controls
 
     public virtual void Clear()
     {
+        if (!MainThreadQueue.IsMainThread)
+        {
+            MainThreadQueue.EnqueueAction(Clear);
+            return;
+        }
+
         foreach (IGui c in Children)
         {
             c.Dispose();
@@ -713,12 +753,10 @@ namespace ClassicUO.Game.UI.Controls
         MouseUp.Raise(new MouseEventArgs(x, y, button), this);
     }
 
-    public void InvokeMouseCloseGumpWithRClick()
+    public virtual void InvokeMouseCloseGumpWithRClick()
     {
         if (CanCloseWithRightClick)
-        {
             CloseWithRightClick();
-        }
     }
 
     public void InvokeMouseOver(Point position)
@@ -962,6 +1000,15 @@ namespace ClassicUO.Game.UI.Controls
     {
         if (IsDisposed)
         {
+            return;
+        }
+
+        // Children is not thread-safe; scripts can dispose raw gump objects from a background
+        // thread, which would race the UI thread's PreDraw cleanup. Re-run disposal on the main
+        // thread; re-invoking the virtual method also runs any override's logic there.
+        if (!MainThreadQueue.IsMainThread)
+        {
+            MainThreadQueue.EnqueueAction(Dispose);
             return;
         }
 

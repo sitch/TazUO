@@ -4,6 +4,7 @@ using ClassicUO.IO;
 using ClassicUO.Utility;
 using ClassicUO.Utility.Logging;
 using ClassicUO.Utility.Platforms;
+using Microsoft.Xna.Framework.Graphics;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -50,6 +51,7 @@ namespace ClassicUO.Assets
         public ClientVersion Version { get; }
         public string BasePath { get; }
         public bool IsUOPInstallation { get; private set; }
+        public TimeSpan LoadTime { get; private set; }
 
         public AnimationsLoader Animations { get; }
         public AnimDataLoader AnimData { get; }
@@ -135,7 +137,7 @@ namespace ClassicUO.Assets
             return uoFilePath;
         }
 
-        public void Load(bool useVerdata, string lang, string mapsLayouts = "")
+        public void Load(bool useVerdata, string lang, GraphicsDevice graphicsDevice, string mapsLayouts = "")
         {
             var stopwatch = Stopwatch.StartNew();
 
@@ -145,17 +147,25 @@ namespace ClassicUO.Assets
 
             Maps.MapsLayouts = mapsLayouts;
 
+            Task clilocsLoadingTask = Task.Factory.StartNew(() => Clilocs.Load(lang));
+
+            Task[] asyncedLoading =
+            [
+                Task.Factory.StartNew(TrueTypeLoader.Instance.Load),
+                clilocsLoadingTask
+            ];
+
             Animations.Load();
             AnimData.Load();
             Arts.Load();
             Maps.Load();
-            Clilocs.Load(lang);
             Gumps.Load();
             Fonts.Load();
             Hues.Load();
             TileData.Load();
             Multis.Load();
             Skills.Load();
+            Task.WaitAll(clilocsLoadingTask); // Professions.Load() needs clilocs to be loaded
             Professions.Load();
             Texmaps.Load();
             Speeches.Load();
@@ -165,18 +175,15 @@ namespace ClassicUO.Assets
             TileArt.Load();
             StringDictionary.Load();
 
-            PNGLoader.Instance.Load();
-            TrueTypeLoader.Instance.Load();
+            ExternalImageLoader.Instance.Load(BasePath);
+            //TrueTypeLoader.Instance.Load();
 
             ReadArtDefFile();
 
             UOFileMul verdata = Verdata.File;
             bool forceVerdata = Version < ClientVersion.CV_500A || verdata != null && verdata.Length != 0 && Verdata.Patches.Length != 0;
 
-            if (!useVerdata && forceVerdata)
-            {
-                useVerdata = true;
-            }
+            if (!useVerdata && forceVerdata) useVerdata = true;
 
             Log.Trace($"Use verdata.mul: {(useVerdata ? "Yes" : "No")}");
 
@@ -358,9 +365,12 @@ namespace ClassicUO.Assets
                 }
             }
 
+            Task.WaitAll(asyncedLoading);
+            TrueTypeLoader.Instance.SetImageResolver(Arts, graphicsDevice);
 
-            Log.Trace($"Files loaded in: {stopwatch.ElapsedMilliseconds} ms!");
             stopwatch.Stop();
+            LoadTime = stopwatch.Elapsed;
+            Log.Trace($"Files loaded in: {LoadTime.TotalMilliseconds:F0} ms!");
         }
 
         private void ReadArtDefFile()

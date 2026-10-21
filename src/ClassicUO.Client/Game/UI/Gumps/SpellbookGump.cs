@@ -1,16 +1,13 @@
 ﻿// SPDX-License-Identifier: BSD-2-Clause
 
 
-using ClassicUO.Assets;
 using ClassicUO.Configuration;
 using ClassicUO.Game.Data;
 using ClassicUO.Game.GameObjects;
 using ClassicUO.Game.Managers;
-using ClassicUO.Game.Scenes;
 using ClassicUO.Game.UI.Controls;
 using ClassicUO.Input;
 using ClassicUO.Renderer;
-using ClassicUO.Resources;
 using Microsoft.Xna.Framework;
 using System;
 using System.Collections.Generic;
@@ -200,6 +197,11 @@ namespace ClassicUO.Game.UI.Gumps
                 return;
             }
 
+            // From ClassicUO
+            // Ensure the book's property list is requested; it carries the active mastery,
+            // and its arrival triggers a rebuild that fills the right "Abilities" page.
+            World.OPL.Contains(LocalSerial);
+
             for (LinkedObject i = item.Items; i != null; i = i.Next)
             {
                 var spell = (Item)i;
@@ -315,8 +317,15 @@ namespace ClassicUO.Game.UI.Gumps
                             ? _spellBookType == SpellBookType.Chivalry || _spellBookType == SpellBookType.Cleric
                             : _spellBookType == SpellBookType.Chivalry))
                     {
+                        var tithingStr = Client.Game.UO.FileManager.Clilocs?.GetString(1062102);
+                        var availStr = Client.Game.UO.FileManager.Clilocs?.GetString(1062103);
+                        string tithingLabel;
+                        if (!string.IsNullOrEmpty(tithingStr) && !string.IsNullOrEmpty(availStr))
+                            tithingLabel = $"{tithingStr}\n{availStr}";
+                        else
+                            tithingLabel = TazLang.Get("tithing_points_available");
                         var label = new Label(
-                            ResGumps.TithingPointsAvailable + World.Player.TithingPoints,
+                            $"{tithingLabel} {World.Player.TithingPoints}",
                             false,
                             0x0288,
                             font: 6
@@ -339,7 +348,7 @@ namespace ClassicUO.Game.UI.Gumps
                         dataX = 225;
                     }
 
-                    var text = new Label(ResGumps.Index, false, 0x0288, font: 6)
+                    var text = new Label(TazLang.Get("index"), false, 0x0288, font: 6)
                     {
                         X = indexX,
                         Y = 10
@@ -349,7 +358,7 @@ namespace ClassicUO.Game.UI.Gumps
 
                     if (_spellBookType == SpellBookType.Mastery && j >= 1)
                     {
-                        text = new Label(ResGumps.Abilities, false, 0x0288, font: 6)
+                        text = new Label(TazLang.Get("abilities"), false, 0x0288, font: 6)
                         {
                             X = dataX,
                             Y = 30
@@ -357,91 +366,52 @@ namespace ClassicUO.Game.UI.Gumps
 
                         _dataBox.Add(text, page);
 
-                        if (
-                            World.OPL.TryGetNameAndData(
-                                LocalSerial,
-                                out string name,
-                                out string data
-                            )
-                        )
+                        int[] activeAbilities = SpellsMastery.GetActiveMasteryAbilities(
+                            World.OPL.GetClilocs(LocalSerial)
+                        );
+
+                        if (activeAbilities != null)
                         {
-                            data = data.ToLower();
-                            string[] buff = data.Split(
-                                new[] { '\n' },
-                                StringSplitOptions.RemoveEmptyEntries
-                            );
-
-                            for (int i = 0; i < buff.Length; i++)
+                            for (int k = 0; k < activeAbilities.Length; k++)
                             {
-                                if (buff[i] != null)
+                                int id = activeAbilities[k];
+
+                                SpellDefinition spell = SpellsMastery.GetSpell(id);
+
+                                if (spell.ID == 0)
                                 {
-                                    int index = buff[i].IndexOf(
-                                        "mastery",
-                                        StringComparison.InvariantCulture
-                                    );
+                                    continue;
+                                }
 
-                                    if (--index < 0)
-                                    {
-                                        continue;
-                                    }
+                                int iconMY = 55 + 44 * k;
 
-                                    string skillName = buff[i].Substring(0, index);
+                                var icon = new GumpPic(225, iconMY, (ushort)spell.GumpIconID, 0)
+                                {
+                                    LocalSerial = (uint)(id - 1)
+                                };
 
-                                    if (!string.IsNullOrEmpty(skillName))
-                                    {
-                                        List<int> activedSpells =
-                                            SpellsMastery.GetSpellListByGroupName(skillName);
+                                _dataBox.Add(icon, page);
+                                icon.MouseDoubleClick += OnIconDoubleClick;
+                                icon.DragBegin += OnIconDragBegin;
 
-                                        for (int k = 0; k < activedSpells.Count; k++)
-                                        {
-                                            int id = activedSpells[k];
+                                text = new Label(spell.GetLocalizedName(), false, 0x0288, 80, 6)
+                                {
+                                    X = 225 + 44 + 4,
+                                    Y = iconMY + 2
+                                };
 
-                                            SpellDefinition spell = SpellsMastery.GetSpell(id);
+                                _dataBox.Add(text, page);
 
-                                            if (spell != null)
-                                            {
-                                                ushort iconGraphic = (ushort)spell.GumpIconID;
-                                                int toolTipCliloc =
-                                                    id >= 0 && id < 6 ? 1115689 : 1155938 - 6;
+                                int toolTipCliloc = SpellsMastery.GetSpellTooltipCliloc(id);
 
-                                                int iconMY = 55 + 44 * k;
+                                if (toolTipCliloc > 0)
+                                {
+                                    string tooltip =
+                                        Client.Game.UO.FileManager.Clilocs.GetString(
+                                            toolTipCliloc
+                                        );
 
-                                                var icon = new GumpPic(
-                                                    225,
-                                                    iconMY,
-                                                    iconGraphic,
-                                                    0
-                                                )
-                                                {
-                                                    LocalSerial = (uint)(id - 1)
-                                                };
-
-                                                _dataBox.Add(icon, page);
-                                                icon.MouseDoubleClick += OnIconDoubleClick;
-                                                icon.DragBegin += OnIconDragBegin;
-
-                                                text = new Label(spell.Name, false, 0x0288, 80, 6)
-                                                {
-                                                    X = 225 + 44 + 4,
-                                                    Y = iconMY + 2
-                                                };
-
-                                                _dataBox.Add(text, page);
-
-                                                if (toolTipCliloc > 0)
-                                                {
-                                                    string tooltip =
-                                                        Client.Game.UO.FileManager.Clilocs.GetString(
-                                                            toolTipCliloc + id
-                                                        );
-
-                                                    icon.SetTooltip(tooltip, 250);
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    break;
+                                    icon.SetTooltip(tooltip);
                                 }
                             }
                         }
@@ -467,7 +437,7 @@ namespace ClassicUO.Game.UI.Gumps
                     else if (_spellBookType == SpellBookType.Mastery)
                     {
                         text = new Label(
-                            page == pagesToFill ? ResGumps.Passive : ResGumps.Activated,
+                            page == pagesToFill ? TazLang.Get("passive") : TazLang.Get("activated"),
                             false,
                             0x0288,
                             font: 6
@@ -758,7 +728,7 @@ namespace ClassicUO.Game.UI.Gumps
                 if (toolTipCliloc > 0)
                 {
                     string tooltip = Client.Game.UO.FileManager.Clilocs.GetString(toolTipCliloc + i);
-                    icon.SetTooltip(tooltip, 250);
+                    icon.SetTooltip(tooltip);
                 }
 
                 icon.MouseDoubleClick += OnIconDoubleClick;
@@ -773,7 +743,8 @@ namespace ClassicUO.Game.UI.Gumps
                         _dataBox.Add(new GumpPicTiled(iconX, 88, 120, 5, 0x0835), page1);
                     }
 
-                    var text = new Label(ResGumps.Reagents, false, 0x0288, font: 6)
+                    var reagentsLabel = Client.Game.UO.FileManager.Clilocs?.GetString(3001017) ?? TazLang.Get("reagents");
+                    var text = new Label(reagentsLabel, false, 0x0288, font: 6)
                     {
                         X = iconX,
                         Y = 92
@@ -885,63 +856,100 @@ namespace ClassicUO.Game.UI.Gumps
             return GetSpellDefinition(idx);
         }
 
-        private SpellDefinition GetSpellDefinition(int idx)
-        {
-            SpellDefinition def = null;
+        private SpellDefinition GetSpellDefinition(int idx) => GetSpellDefinition(_spellBookType, idx);
 
-            switch (_spellBookType)
+        private static SpellDefinition GetSpellDefinition(SpellBookType type, int idx)
+        {
+            switch (type)
             {
                 case SpellBookType.Magery:
-                    def = SpellsMagery.GetSpell(idx);
-
-                    break;
+                    return SpellsMagery.GetSpell(idx);
 
                 case SpellBookType.Necromancy:
-                    def = SpellsNecromancy.GetSpell(idx);
-
-                    break;
+                    return SpellsNecromancy.GetSpell(idx);
 
                 case SpellBookType.Chivalry:
-                    def = SpellsChivalry.GetSpell(idx);
-
-                    break;
+                    return SpellsChivalry.GetSpell(idx);
 
                 case SpellBookType.Bushido:
-                    def = SpellsBushido.GetSpell(idx);
-
-                    break;
+                    return SpellsBushido.GetSpell(idx);
 
                 case SpellBookType.Ninjitsu:
-                    def = SpellsNinjitsu.GetSpell(idx);
-
-                    break;
+                    return SpellsNinjitsu.GetSpell(idx);
 
                 case SpellBookType.Spellweaving:
-                    def = SpellsSpellweaving.GetSpell(idx);
-
-                    break;
+                    return SpellsSpellweaving.GetSpell(idx);
 
                 case SpellBookType.Mysticism:
-                    def = SpellsMysticism.GetSpell(idx);
-
-                    break;
+                    return SpellsMysticism.GetSpell(idx);
 
                 case SpellBookType.Mastery:
-                    def = SpellsMastery.GetSpell(idx);
-
-                    break;
+                    return SpellsMastery.GetSpell(idx);
 
                 case SpellBookType.Druidic when Settings.GlobalSettings.CustomServer == Settings.CustomServers.Eventine:
-                    def = SpellsDruid.GetSpell(idx);
+                    return SpellsDruid.GetSpell(idx);
 
-                    break;
                 case SpellBookType.Cleric when Settings.GlobalSettings.CustomServer == Settings.CustomServers.Eventine:
-                    def = SpellsCleric.GetSpell(idx);
+                    return SpellsCleric.GetSpell(idx);
 
-                    break;
+                default:
+                    return null;
+            }
+        }
+
+        /// <summary>
+        /// Returns the spell definitions contained in a spellbook item, in the order
+        /// they appear in the book. Only spells actually scribed into the book are included.
+        /// </summary>
+        /// <param name="spellbook">The spellbook item to read spells from.</param>
+        /// <returns>An empty list when the item is null or not a known spellbook.</returns>
+        public static List<SpellDefinition> GetSpellDefinitions(Item spellbook)
+        {
+            var result = new List<SpellDefinition>();
+
+            if (spellbook == null)
+            {
+                return result;
             }
 
-            return def;
+            SpellBookType type = GetSpellBookType(spellbook.World, spellbook);
+
+            if (type == SpellBookType.Unknown)
+            {
+                return result;
+            }
+
+            GetBookInfo(type, out _, out _, out _, out int maxSpellsCount, out _, out _);
+
+            var contained = new bool[maxSpellsCount];
+
+            for (LinkedObject i = spellbook.Items; i != null; i = i.Next)
+            {
+                var spell = (Item)i;
+                int count = spell.Amount;
+
+                if (count > 0 && count <= maxSpellsCount)
+                {
+                    contained[count - 1] = true;
+                }
+            }
+
+            for (int i = 0; i < contained.Length; i++)
+            {
+                if (!contained[i])
+                {
+                    continue;
+                }
+
+                SpellDefinition def = GetSpellDefinition(type, i + 1);
+
+                if (def != null && def.ID != 0)
+                {
+                    result.Add(def);
+                }
+            }
+
+            return result;
         }
 
         private static void GetBookInfo(
@@ -1118,7 +1126,7 @@ namespace ClassicUO.Game.UI.Gumps
                 default:
                 case SpellBookType.Magery:
                     SpellDefinition def = SpellsMagery.GetSpell(offset + 1);
-                    name = def.Name;
+                    name = def.GetLocalizedName();
                     abbreviature = SpellsMagery.SpecialReagentsChars[offset];
                     reagents = def.CreateReagentListString("\n");
 
@@ -1126,7 +1134,7 @@ namespace ClassicUO.Game.UI.Gumps
 
                 case SpellBookType.Necromancy:
                     def = SpellsNecromancy.GetSpell(offset + 1);
-                    name = def.Name;
+                    name = def.GetLocalizedName();
                     abbreviature = def.PowerWords;
                     reagents = def.CreateReagentListString("\n");
 
@@ -1134,7 +1142,7 @@ namespace ClassicUO.Game.UI.Gumps
 
                 case SpellBookType.Chivalry:
                     def = SpellsChivalry.GetSpell(offset + 1);
-                    name = def.Name;
+                    name = def.GetLocalizedName();
                     abbreviature = def.PowerWords;
                     reagents = string.Empty;
 
@@ -1142,7 +1150,7 @@ namespace ClassicUO.Game.UI.Gumps
 
                 case SpellBookType.Bushido:
                     def = SpellsBushido.GetSpell(offset + 1);
-                    name = def.Name;
+                    name = def.GetLocalizedName();
                     abbreviature = def.PowerWords;
                     reagents = string.Empty;
 
@@ -1150,7 +1158,7 @@ namespace ClassicUO.Game.UI.Gumps
 
                 case SpellBookType.Ninjitsu:
                     def = SpellsNinjitsu.GetSpell(offset + 1);
-                    name = def.Name;
+                    name = def.GetLocalizedName();
                     abbreviature = def.PowerWords;
                     reagents = string.Empty;
 
@@ -1158,7 +1166,7 @@ namespace ClassicUO.Game.UI.Gumps
 
                 case SpellBookType.Spellweaving:
                     def = SpellsSpellweaving.GetSpell(offset + 1);
-                    name = def.Name;
+                    name = def.GetLocalizedName();
                     abbreviature = def.PowerWords;
                     reagents = string.Empty;
 
@@ -1166,7 +1174,7 @@ namespace ClassicUO.Game.UI.Gumps
 
                 case SpellBookType.Mysticism:
                     def = SpellsMysticism.GetSpell(offset + 1);
-                    name = def.Name;
+                    name = def.GetLocalizedName();
                     abbreviature = def.PowerWords;
                     reagents = def.CreateReagentListString("\n");
 
@@ -1174,7 +1182,7 @@ namespace ClassicUO.Game.UI.Gumps
 
                 case SpellBookType.Mastery:
                     def = SpellsMastery.GetSpell(offset + 1);
-                    name = def.Name;
+                    name = def.GetLocalizedName();
                     abbreviature = def.PowerWords;
                     reagents = def.CreateReagentListString("\n");
 
@@ -1182,7 +1190,7 @@ namespace ClassicUO.Game.UI.Gumps
 
                 case SpellBookType.Druidic when Settings.GlobalSettings.CustomServer == Settings.CustomServers.Eventine:
                     def = SpellsDruid.GetSpell(offset + 1);
-                    name = def.Name;
+                    name = def.GetLocalizedName();
                     abbreviature = def.PowerWords;
                     reagents = def.CreateReagentListString("\n");
 
@@ -1190,7 +1198,7 @@ namespace ClassicUO.Game.UI.Gumps
 
                 case SpellBookType.Cleric when Settings.GlobalSettings.CustomServer == Settings.CustomServers.Eventine:
                     def = SpellsCleric.GetSpell(offset + 1);
-                    name = def.Name;
+                    name = def.GetLocalizedName();
                     abbreviature = def.PowerWords;
                     reagents = string.Empty;
 
@@ -1277,7 +1285,7 @@ namespace ClassicUO.Game.UI.Gumps
                     {
                         y = 148;
                         text = string.Format(
-                            ResGumps.Upkeep0Mana1MinSkill2,
+                            TazLang.Get("upkeep0_mana1_min_skill2"),
                             def.TithingCost,
                             manaCost,
                             minSkill
@@ -1285,7 +1293,7 @@ namespace ClassicUO.Game.UI.Gumps
                     }
                     else
                     {
-                        text = string.Format(ResGumps.ManaCost0MinSkill1, manaCost, minSkill);
+                        text = string.Format(TazLang.Get("mana_cost0_min_skill1"), manaCost, minSkill);
                     }
 
                     return;
@@ -1305,7 +1313,7 @@ namespace ClassicUO.Game.UI.Gumps
                     break;
             }
 
-            text = string.Format(ResGumps.ManaCost0MinSkill1, manaCost, minSkill);
+            text = string.Format(TazLang.Get("mana_cost0_min_skill1"), manaCost, minSkill);
         }
 
         private void SetActivePage(int page)
@@ -1387,66 +1395,64 @@ namespace ClassicUO.Game.UI.Gumps
 
         private void AssignGraphic(Item item)
         {
+            SpellBookType type = GetSpellBookType(World, item);
+
+            if (type != SpellBookType.Unknown)
+            {
+                _spellBookType = type;
+            }
+        }
+
+        private static SpellBookType GetSpellBookType(World world, Item item)
+        {
             switch (item.Graphic)
             {
                 default:
                 case 0x0EFA:
-                    _spellBookType = SpellBookType.Magery;
-
-                    break;
+                    return SpellBookType.Magery;
 
                 case 0x2253:
-                    _spellBookType = SpellBookType.Necromancy;
-
-                    break;
+                    return SpellBookType.Necromancy;
 
                 case 0x2252:
-                    _spellBookType = SpellBookType.Chivalry;
-
-                    break;
+                    return SpellBookType.Chivalry;
 
                 case 0x238C:
 
-                    if ((World.ClientFeatures.Flags & CharacterListFlags.CLF_SAMURAI_NINJA) != 0)
+                    if ((world.ClientFeatures.Flags & CharacterListFlags.CLF_SAMURAI_NINJA) != 0)
                     {
-                        _spellBookType = SpellBookType.Bushido;
+                        return SpellBookType.Bushido;
                     }
 
                     break;
 
                 case 0x23A0:
 
-                    if ((World.ClientFeatures.Flags & CharacterListFlags.CLF_SAMURAI_NINJA) != 0)
+                    if ((world.ClientFeatures.Flags & CharacterListFlags.CLF_SAMURAI_NINJA) != 0)
                     {
-                        _spellBookType = SpellBookType.Ninjitsu;
+                        return SpellBookType.Ninjitsu;
                     }
 
                     break;
 
                 case 0x2D50:
-                    _spellBookType = SpellBookType.Spellweaving;
-
-                    break;
+                    return SpellBookType.Spellweaving;
 
                 case 0x2D9D:
-                    _spellBookType = SpellBookType.Mysticism;
-
-                    break;
+                    return SpellBookType.Mysticism;
 
                 case 0x225A:
                 case 0x225B:
-                    _spellBookType = SpellBookType.Mastery;
+                    return SpellBookType.Mastery;
 
-                    break;
                 case 0xCE3A when Settings.GlobalSettings.CustomServer == Settings.CustomServers.Eventine:
-                    _spellBookType = SpellBookType.Druidic;
+                    return SpellBookType.Druidic;
 
-                    break;
                 case 0xCE3B when Settings.GlobalSettings.CustomServer == Settings.CustomServers.Eventine:
-                    _spellBookType = SpellBookType.Cleric;
-
-                    break;
+                    return SpellBookType.Cleric;
             }
+
+            return SpellBookType.Unknown;
         }
 
         private void PageCornerOnMouseClick(object sender, MouseEventArgs e)

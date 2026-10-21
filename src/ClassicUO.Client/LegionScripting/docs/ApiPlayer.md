@@ -254,7 +254,7 @@ description:  Represents a Python-accessible player character with full stat and
 **Type:** `string`
 
  The Python-visible class name of this object.
- Accessible in Python as <c>obj.__class__</c> .
+ Accessible in Python as `obj.__class__` .
 
 
 

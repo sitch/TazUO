@@ -24,7 +24,6 @@ namespace ClassicUO.Game.UI.Gumps
         private int _eyeCorspeOffset;
         private GumpPic _eyeGumpPic;
         private GumpPicContainer _gumpPicContainer;
-        private readonly bool _hideIfEmpty;
         private readonly bool showGridToggle = false;
         private HitBox _hitBox;
         private bool _isMinimized;
@@ -97,15 +96,6 @@ namespace ClassicUO.Game.UI.Gumps
                 if (world.Player.ManualOpenedCorpses.Contains(LocalSerial))
                 {
                     world.Player.ManualOpenedCorpses.Remove(LocalSerial);
-                }
-                else if (
-                    world.Player.AutoOpenedCorpses.Contains(LocalSerial)
-                    && ProfileManager.CurrentProfile != null
-                    && ProfileManager.CurrentProfile.SkipEmptyCorpse
-                )
-                {
-                    IsVisible = false;
-                    _hideIfEmpty = true;
                 }
             }
 
@@ -489,6 +479,41 @@ namespace ClassicUO.Game.UI.Gumps
             }
         }
 
+        public override void AddText(TextObject msg)
+        {
+            // The overhead text position carried on the message comes from the shared
+            // DelayedObjectClickManager, whose coordinates can be a stale absolute (world)
+            // position for a direct item click - the container renderer then adds this gump's
+            // ScreenCoordinateX on top, pushing the text far off to the side. Re-anchor the
+            // text over the item's actual slot (already in scaled, container-local space) so it
+            // renders above the item regardless of container scale.
+            if (msg?.Owner is Entity owner)
+            {
+                ItemGump slot = FindItemGump(owner.Serial);
+
+                if (slot != null)
+                {
+                    msg.X = slot.X + (slot.Width >> 1);
+                    msg.Y = slot.Y;
+                }
+            }
+
+            base.AddText(msg);
+        }
+
+        private ItemGump FindItemGump(uint serial)
+        {
+            foreach (Control c in Children)
+            {
+                if (c is ItemGump itemGump && itemGump.LocalSerial == serial)
+                {
+                    return itemGump;
+                }
+            }
+
+            return null;
+        }
+
         public override void Update()
         {
             base.Update();
@@ -571,7 +596,7 @@ namespace ClassicUO.Game.UI.Gumps
 
             bool is_corpse = container.Graphic == 0x2006;
 
-            if (!container.IsEmpty && _hideIfEmpty && !IsVisible)
+            if (!container.IsEmpty && !IsVisible)
             {
                 IsVisible = true;
             }

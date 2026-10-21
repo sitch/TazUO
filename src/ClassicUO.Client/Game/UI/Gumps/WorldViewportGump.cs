@@ -3,7 +3,6 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Net;
 using System.Threading.Tasks;
 using System.Timers;
 using ClassicUO.Configuration;
@@ -11,12 +10,9 @@ using ClassicUO.Game.Managers;
 using ClassicUO.Game.Scenes;
 using ClassicUO.Game.UI.Controls;
 using ClassicUO.Input;
-using ClassicUO.LegionScripting;
-using ClassicUO.Network;
+using ClassicUO.IO.Persistency;
 using ClassicUO.Renderer;
-using ClassicUO.Resources;
 using ClassicUO.Utility;
-using ClassicUO.Utility.Logging;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 
@@ -34,7 +30,7 @@ namespace ClassicUO.Game.UI.Gumps
             _savedSize;
         private readonly GameScene _scene;
         private readonly SystemChatControl _systemChatControl;
-        private List<(string, ushort)>? _userNotifications = null;
+        private List<(string, ushort)> _userNotifications = null;
 
         private static Texture2D damageWindowOutline = SolidColorTextureCache.GetTexture(Color.White);
         public static Vector3 DamageWindowOutlineHue = ShaderHueTranslator.GetHueVector(32);
@@ -91,7 +87,7 @@ namespace ClassicUO.Game.UI.Gumps
             _button.MouseExit += (sender, e) => _button.Alpha = 0.3f;
             _button.Alpha = 0.3f;
 
-            _button.SetTooltip(ResGumps.ResizeGameWindow);
+            _button.SetTooltip(TazLang.Get("resize_game_window"));
             Width = scene.Camera.Bounds.Width + borderOffset;
             Height = scene.Camera.Bounds.Height + borderOffset;
 
@@ -125,31 +121,108 @@ namespace ClassicUO.Game.UI.Gumps
                                         $"To update this type -syncfps", Constants.HUE_ERROR));
             }
 
-            if (Settings.GlobalSettings.UltimaOnlineDirectory.StartsWith(CUOEnviroment.ExecutablePath))
+            if (FileSystemHelper.IsPathWithin(Settings.GlobalSettings.ResolvedUltimaOnlineDirectory, CUOEnviroment.ExecutablePath))
             {
-                _userNotifications ??= new();
+                _userNotifications ??= [];
                 _userNotifications.Add(("Warning: It looks like your UO folder is stored inside TazUO, this is discouraged as you may accidentally have your UO files deleted.", Constants.HUE_ERROR));
             }
+
+            SetCorruptFileWarnings();
+
+            // Community poll reminder is fetched asynchronously; kick it off before starting the flush
+            // timer so a fast result lands in the same batch as the notifications above.
+            QueueUnvotedPollsNotification();
 
             if (_userNotifications != null) //Why is this here? This ensures the user is in-game and can see the world viewport before sending them messages
             {
                 var timer = new Timer(TimeSpan.FromSeconds(5));
                 timer.Elapsed += (sender, args) =>
                 {
-                    if (World.Instance != null)
-                        _userNotifications.ForEach((s) =>
-                        {
-                            (string item1, ushort item2) = s;
-                            GameActions.Print(item1, item2);
-                        });
-
-                    _userNotifications.Clear();
-                    _userNotifications = null;
+                    // Flush on the main thread so the list is only ever touched from one thread
+                    // (the async poll fetch also appends to it from the main thread).
+                    MainThreadQueue.InvokeOnMainThread(FlushUserNotifications);
                     timer?.Stop();
                 };
                 timer.Start();
             }
         }
+
+        private void SetCorruptFileWarnings()
+        {
+            while (CorruptFileManager.Files.TryDequeue(out CorruptConfigFile corruptFile))
+            {
+                string outcome = DescribeCorruptConfigFallback(corruptFile);
+
+                _userNotifications ??= [];
+                _userNotifications.Add((
+                    TazLang.Get("corruptconfig_warning", [corruptFile.Name, outcome]),
+                    Constants.HUE_ERROR
+                ));
+            }
+        }
+
+        /// <summary>What answered for a config file that could not be loaded, in the user's language.</summary>
+        /// <param name="corruptFile">The reported file.</param>
+        /// <returns>The sentence following the warning itself.</returns>
+        private static string DescribeCorruptConfigFallback(CorruptConfigFile corruptFile)
+        {
+            switch (corruptFile.Fallback)
+            {
+                case CorruptConfigFallback.Backup:
+                    return corruptFile.BackupPath != null
+                        ? TazLang.Get("corruptconfig_recovered_backedup", [corruptFile.BackupPath])
+                        : TazLang.Get("corruptconfig_recovered", "Your settings were recovered from an earlier backup.");
+
+                case CorruptConfigFallback.Preserved:
+                    return TazLang.Get(
+                        "corruptconfig_preserved",
+                        "It was written by a newer version of TazUO, so it was left untouched. Default settings are in use for this session and will not be saved over it."
+                    );
+
+                default:
+                    return corruptFile.BackupPath != null
+                        ? TazLang.Get("corruptconfig_defaults_backedup", [corruptFile.BackupPath])
+                        : TazLang.Get("corruptconfig_defaults", "Default settings were used, and no backup could be saved.");
+            }
+        }
+
+        /// <summary>Prints and clears any queued in-world user notifications. Main thread only.</summary>
+        private void FlushUserNotifications()
+        {
+            if (_userNotifications == null)
+                return;
+
+            if (World.Instance != null)
+                _userNotifications.ForEach((s) =>
+                {
+                    (string item1, ushort item2) = s;
+                    GameActions.Print(item1, item2);
+                });
+
+            _userNotifications.Clear();
+            _userNotifications = null;
+        }
+
+        /// <summary>
+        /// Fetches the community polls from Firebase and, if the profile has any it hasn't voted on,
+        /// shows a reminder. The fetch is asynchronous, so the message is added to the pending
+        /// notification batch while it is still open, otherwise printed directly once we are in-world.
+        /// </summary>
+        private void QueueUnvotedPollsNotification() => Task.Run(async () =>
+        {
+            string message = await FirebasePollsManager.GetUnvotedNotificationAsync();
+
+            if (string.IsNullOrEmpty(message))
+                return;
+
+            MainThreadQueue.InvokeOnMainThread(() =>
+            {
+                if (_userNotifications != null)
+                    _userNotifications.Add((message, Constants.HUE_WARN));
+                else if (World.Instance != null)
+                    GameActions.Print(message, Constants.HUE_WARN);
+            });
+        });
 
         public override void Update()
         {
@@ -183,8 +256,8 @@ namespace ClassicUO.Game.UI.Gumps
                     }
 
                     // Enforce maximum size based on current position
-                    int maxW = Client.Game.Window.ClientBounds.Width - _scene.Camera.Bounds.X - BORDER_WIDTH;
-                    int maxH = Client.Game.Window.ClientBounds.Height - _scene.Camera.Bounds.Y - BORDER_WIDTH;
+                    int maxW = ScaleHelper.LogicalWindowWidth - _scene.Camera.Bounds.X - BORDER_WIDTH;
+                    int maxH = ScaleHelper.LogicalWindowHeight - _scene.Camera.Bounds.Y - BORDER_WIDTH;
 
                     if (w > maxW)
                     {
@@ -252,8 +325,8 @@ namespace ClassicUO.Game.UI.Gumps
 
         private void ClampViewportToWindowBounds()
         {
-            int windowWidth = Client.Game.Window.ClientBounds.Width;
-            int windowHeight = Client.Game.Window.ClientBounds.Height;
+            int windowWidth = ScaleHelper.LogicalWindowWidth;
+            int windowHeight = ScaleHelper.LogicalWindowHeight;
 
             // Check if we're in full-size mode
             bool isFullSize = ProfileManager.CurrentProfile != null && ProfileManager.CurrentProfile.GameWindowFullSize;
@@ -350,8 +423,8 @@ namespace ClassicUO.Game.UI.Gumps
 
         public Point ResizeGameWindow(Point newSize)
         {
-            int windowWidth = Client.Game.Window.ClientBounds.Width;
-            int windowHeight = Client.Game.Window.ClientBounds.Height;
+            int windowWidth = ScaleHelper.LogicalWindowWidth;
+            int windowHeight = ScaleHelper.LogicalWindowHeight;
 
             // Enforce minimum size
             if (newSize.X < 640)

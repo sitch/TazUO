@@ -23,6 +23,7 @@ namespace ClassicUO.Game.Managers
         private const int PENDING_CUSTOM_NAME_REQUESTS_DELAY_MS = 1000;
         private const int MAX_BATCH_SIZE = 500;
         private const int MAX_SEARCH_LIMIT = 10000;
+        private const int AUTO_PRUNE_MAX_AGE_DAYS = 120;
 
         private static readonly Lazy<ItemDatabaseManager> _instance = new(() => new ItemDatabaseManager());
 
@@ -56,6 +57,9 @@ namespace ClassicUO.Game.Managers
                 _connectionString = $"Data Source={_databasePath}";
                 CreateDatabaseIfNotExists();
                 _initialized = true;
+
+                _ = PruneOldItemsAsync();
+
                 Log.Trace($"ItemDatabaseManager initialized with database at: {_databasePath}");
             }
             catch (Exception ex)
@@ -331,6 +335,19 @@ namespace ClassicUO.Game.Managers
             if (!_initialized || profile == null || !profile.ItemDatabaseEnabled)
                 return;
 
+            await DeleteItemsOlderThanAsync(maxAge);
+        }
+
+        private async Task PruneOldItemsAsync()
+        {
+            if (!_initialized)
+                return;
+
+            await DeleteItemsOlderThanAsync(TimeSpan.FromDays(AUTO_PRUNE_MAX_AGE_DAYS));
+        }
+
+        private async Task DeleteItemsOlderThanAsync(TimeSpan maxAge)
+        {
             await Task.Run(() =>
             {
                 try
@@ -380,8 +397,8 @@ namespace ClassicUO.Game.Managers
                 Serial = item.Serial,
                 Graphic = item.Graphic,
                 Hue = item.Hue,
-                Name = item.Name ?? string.Empty,
-                Properties = string.Empty, // Will be filled by tooltip if available
+                Name = item.GetNormalizedName(false),
+                Properties = item.OPLData, // Will be filled by tooltip if available
                 Container = item.Container,
                 Layer = layer,
                 UpdatedTime = DateTime.Now,
@@ -394,19 +411,6 @@ namespace ClassicUO.Game.Managers
                 CustomName = item.CustomName ?? string.Empty,
             };
 
-            // Try to get properties from OPL
-            if (world.OPL.TryGetNameAndData(item.Serial, out string oplName, out string oplData))
-            {
-                if (!string.IsNullOrEmpty(oplName))
-                {
-                    itemInfo.Name = oplName;
-                }
-                if (!string.IsNullOrEmpty(oplData))
-                {
-                    itemInfo.Properties = oplData;
-                }
-            }
-
             _pendingItems.Enqueue(itemInfo);
 
             lock (_timerLock)
@@ -414,8 +418,11 @@ namespace ClassicUO.Game.Managers
                 if (_pendingItemsTimer != null)
                     return;
 
-                _pendingItemsTimer = new Timer(PENDING_ITEMS_FLUSH_INTERVAL_MS);
-                _pendingItemsTimer.AutoReset = false;
+                _pendingItemsTimer = new Timer(PENDING_ITEMS_FLUSH_INTERVAL_MS)
+                {
+                    AutoReset = false
+                };
+                
                 _pendingItemsTimer.Elapsed += PendingItemsTimerOnElapsed;
                 _pendingItemsTimer.Start();
             }

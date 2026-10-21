@@ -62,7 +62,8 @@ namespace ClassicUO.Game.Managers
             byte font,
             TextType textType,
             bool unicode = false,
-            string lang = null
+            string lang = null,
+            bool skipEventTrigger = false
         )
         {
             if (string.IsNullOrEmpty(text))
@@ -78,18 +79,19 @@ namespace ClassicUO.Game.Managers
                     return;
             }
 
-            EventSink.InvokeRawMessageReceived(parent, new MessageEventArgs
-                (
-                    parent,
-                    text,
-                    name,
-                    hue,
-                    type,
-                    font,
-                    textType,
-                    unicode,
-                    lang
-                ));
+            if(!skipEventTrigger)
+                EventSink.InvokeRawMessageReceived(parent, new MessageEventArgs
+                    (
+                        parent,
+                        text,
+                        name,
+                        hue,
+                        type,
+                        font,
+                        textType,
+                        unicode,
+                        lang
+                    ));
 
             if (currentProfile != null && currentProfile.OverrideAllFonts)
             {
@@ -157,7 +159,7 @@ namespace ClassicUO.Game.Managers
                                 var sb = new ValueStringBuilder(currentProfile.SpellDisplayFormat.AsSpan());
                                 {
                                     sb.Replace("{power}".AsSpan(), spell.PowerWords.AsSpan());
-                                    sb.Replace("{spell}".AsSpan(), spell.Name.AsSpan());
+                                    sb.Replace("{spell}".AsSpan(), spell.GetLocalizedName().AsSpan());
 
                                     text = sb.ToString().Trim();
                                 }
@@ -271,25 +273,29 @@ namespace ClassicUO.Game.Managers
                             }
                         }
 
+                        if (parent is Mobile && MessageTypeFilter.IsEnabled(currentProfile.DisabledOverheadMessageTypes, type))                        
+                            break;                        
+
                         parent.AddMessage(msg);
 
                         break;
                     }
             }
 
-            EventSink.InvokeMessageReceived(parent, new MessageEventArgs
-                (
-                    parent,
-                    text,
-                    name,
-                    hue,
-                    type,
-                    font,
-                    textType,
-                    unicode,
-                    lang
-                )
-            );
+            if(!skipEventTrigger)
+                EventSink.InvokeMessageReceived(parent, new MessageEventArgs
+                    (
+                        parent,
+                        text,
+                        name,
+                        hue,
+                        type,
+                        font,
+                        textType,
+                        unicode,
+                        lang
+                    )
+                );
         }
 
         public void OnLocalizedMessage(Entity entity, MessageEventArgs args) => LocalizedMessageReceived.Raise(args, entity);

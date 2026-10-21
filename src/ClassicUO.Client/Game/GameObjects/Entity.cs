@@ -53,7 +53,16 @@ namespace ClassicUO.Game.GameObjects
         public byte HitsPercentage;
         public bool IsClicked;
         public uint LastStepTime;
-        public string Name;
+        public string Name { get
+            {
+                return field;
+            }
+            set
+            {
+                field = value;
+                NameUpdated();
+            } 
+        }
         public uint Serial;
         public HitsRequestStatus HitsRequest;
         public uint NextHitsUpdate;
@@ -78,6 +87,8 @@ namespace ClassicUO.Game.GameObjects
 
         public RenderedText HitsTexture => _hitsPercText[HitsPercentage % _hitsPercText.Length];
 
+        public virtual void NameUpdated() {}
+        public virtual void OPLUpdated(ItemProperty newProps) {}
 
         public bool Equals(Entity e) => e != null && Serial == e.Serial;
 
@@ -97,6 +108,13 @@ namespace ClassicUO.Game.GameObjects
             else
             {
                 fixedColor = (ushort) (hue & 0x8000);
+            }
+
+            // Don't clobber an active script highlight; refresh its restore baseline instead.
+            if (OriginalHue.HasValue)
+            {
+                OriginalHue = fixedColor;
+                return;
             }
 
             Hue = fixedColor;

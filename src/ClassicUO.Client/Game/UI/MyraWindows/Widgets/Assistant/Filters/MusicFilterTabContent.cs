@@ -71,7 +71,11 @@ public static class MusicFilterTabContent
 
                 var actionsPanel = new HorizontalStackPanel { Spacing = 4 };
                 actionsPanel.Widgets.Add(
-                    new MyraButton("Play", () => Client.Game.Audio.PlayMusic(current[0], false, true))
+                    new MyraButton("Play", () =>
+                    {
+                        Client.Game.Audio.StopMusic();
+                        Client.Game.Audio.PlayMusic(current[0], skipIgnore: true);
+                    })
                     {
                         Tooltip = "Test play this track (bypasses filter)",
                     }
@@ -119,7 +123,10 @@ public static class MusicFilterTabContent
                     BuildFilterList();
                 }) { Tooltip = "Add this track to the filter list" });
                 row.Widgets.Add(new MyraButton("Play Again", () =>
-                    Client.Game.Audio.PlayMusic(id, false, true)) { Tooltip = "Play this track again" });
+                {
+                    Client.Game.Audio.StopMusic();
+                    Client.Game.Audio.PlayMusic(id);
+                }) { Tooltip = "Play this track again" });
                 lastMusicPanel.Widgets.Add(row);
             }
 
@@ -201,7 +208,6 @@ public static class MusicFilterTabContent
                     if (SoundFilterManager.Instance.FilteredMusic.Add(Math.Clamp(id, 0, 149)))
                         added++;
                 }
-                SoundFilterManager.Instance.Save(isMusic: true);
                 BuildFilterList();
                 GameActions.Print($"Added {added} music filter(s) from clipboard", Constants.HUE_SUCCESS);
             }

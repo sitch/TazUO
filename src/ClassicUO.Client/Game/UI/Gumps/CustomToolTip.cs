@@ -3,6 +3,7 @@ using ClassicUO.Game.GameObjects;
 using ClassicUO.Game.Managers;
 using ClassicUO.Game.UI.Controls;
 using ClassicUO.Renderer;
+using ClassicUO.Utility;
 using Microsoft.Xna.Framework;
 using System.Threading.Tasks;
 
@@ -17,6 +18,9 @@ namespace ClassicUO.Game.UI.Gumps
         private readonly Item compareTo;
         private TextBox text;
         private readonly uint hue = 0xFFFF;
+
+        // Border hue requested by a matched tooltip override (-1 = default border).
+        private int borderHueOverride = -1;
 
         public event FinishedLoadingEvent OnOPLLoaded;
 
@@ -61,43 +65,49 @@ namespace ClassicUO.Game.UI.Gumps
                 return;
             }
 
-            if (World.OPL.Contains(item.Serial))
+            string name = item.OPLName;
+            string data = item.OPLData ?? string.Empty;
+
+            if (name.NotNullNotEmpty())
             {
-                if (World.OPL.TryGetNameAndData(item.Serial, out string name, out string data))
+                string finalString = FormatTooltip(name, data);
+                if (SerialHelper.IsItem(item.Serial))
                 {
-                    string finalString = FormatTooltip(name, data);
-                    if (SerialHelper.IsItem(item.Serial))
-                    {
-                        finalString = Managers.ToolTipOverrideData.ProcessTooltipText(World, item.Serial, compareTo == null ? uint.MinValue : compareTo.Serial);
-                        if (finalString == null)
-                            finalString = FormatTooltip(name, data);
-                        finalString = prepend + finalString + append;
-                    }
-
-                    text?.Dispose();
-                    text = TextBox.GetOne(
-                        TextBox.ConvertHtmlToFontStashSharpCommand(finalString).Trim(),
-                        ProfileManager.CurrentProfile.SelectedToolTipFont,
-                        ProfileManager.CurrentProfile.SelectedToolTipFontSize,
-                        (int)hue,
-                        ToolTipOptions
-                        );
-                    text.Width = 600;
-
-                    if (text.MeasuredSize.X + 10 < 600)
-                        text.Width = text.MeasuredSize.X + 10;
-
-                    Height = text.Height;
-                    Width = text.Width;
-                    OnOPLLoaded?.Invoke();
+                    finalString = Managers.ToolTipOverrideData.ProcessTooltipText(World, item.Serial, out borderHueOverride, compareTo == null ? uint.MinValue : compareTo.Serial);
+                    if (finalString == null)
+                        finalString = FormatTooltip(name, data);
+                    finalString = prepend + finalString + append;
                 }
+
+                text?.Dispose();
+                text = TextBox.GetOne(
+                    TextBox.ConvertHtmlToFontStashSharpCommand(finalString).Trim(),
+                    ProfileManager.CurrentProfile.SelectedToolTipFont,
+                    ProfileManager.CurrentProfile.SelectedToolTipFontSize,
+                    (int)hue,
+                    ToolTipOptions
+                    );
+                text.Width = 600;
+
+                if (text.MeasuredSize.X + 10 < 600)
+                    text.Width = text.MeasuredSize.X + 10;
+
+                Height = text.Height;
+                Width = text.Width;
+                OnOPLLoaded?.Invoke();
             }
             else
             {
                 Task.Factory.StartNew(() =>
                 {
                     Task.Delay(1500).Wait();
-                    LoadOPLData(attempt++);
+                    attempt++;
+                    // Re-run on the main thread: once the OPL data arrives, LoadOPLData builds and
+                    // measures a TextBox through FontStashSharp, whose shared font caches are not
+                    // thread-safe. Measuring here (a background task thread) while the main thread
+                    // measures/draws the same fonts corrupts those caches and crashes
+                    // (IndexOutOfRangeException in FontStashSharp's Int32Map).
+                    MainThreadQueue.InvokeOnMainThread(() => LoadOPLData(attempt));
                 });
             }
 
@@ -167,17 +177,33 @@ namespace ClassicUO.Game.UI.Gumps
                 hue_vec
             );
 
-            hue_vec = ShaderHueTranslator.GetHueVector(0, false, alpha);
+            var borderTexture = SolidColorTextureCache.GetTexture(Color.Gray);
 
-            batcher.DrawRectangle
-            (
-                SolidColorTextureCache.GetTexture(Color.Gray),
-                x - 4,
-                y - 2,
-                (int)(Width + 8),
-                (int)(Height + 8),
-                hue_vec
-            );
+            int bgX = x - 4;
+            int bgY = y - 2;
+            int bgWidth = (int)(Width + 8);
+            int bgHeight = (int)(Height + 8);
+
+            // A matched tooltip override draws a colored accent border on the left and top edges only.
+            if (borderHueOverride >= 0)
+            {
+                hue_vec = ShaderHueTranslator.GetHueVector(borderHueOverride, false, alpha);
+                borderTexture = SolidColorTextureCache.GetTexture(Color.White);
+
+                const int leftWidth = 2;
+                int topHeight = Managers.ToolTipOverrideData.BorderWidth;
+
+                // Both edges sit just outside the background so they don't cover the tooltip text.
+                // Top edge spans the width plus the top-left corner.
+                batcher.Draw(borderTexture, new Rectangle(bgX - leftWidth, bgY - topHeight, bgWidth + leftWidth, topHeight), hue_vec);
+                // Left edge.
+                batcher.Draw(borderTexture, new Rectangle(bgX - leftWidth, bgY, leftWidth, bgHeight), hue_vec);
+            }
+            else
+            {
+                hue_vec = ShaderHueTranslator.GetHueVector(0, false, alpha);
+                batcher.DrawRectangle(borderTexture, bgX, bgY, bgWidth, bgHeight, hue_vec);
+            }
 
             text.Draw(batcher, x, y);
 

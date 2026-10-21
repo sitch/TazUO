@@ -5,6 +5,7 @@ using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Threading.Tasks;
 using ClassicUO.Game;
 using ClassicUO.Utility.Logging;
 using IronPython.Hosting;
@@ -33,13 +34,54 @@ public partial class ScriptFile : IDisposable
 
     public bool IsPlaying => ScriptThread != null;
 
+    /// <summary>
+    /// A thread (Python) or run task (C#) that kept executing after the script was detached because
+    /// it could not be interrupted (e.g. a pure CPU loop that never blocks). It is inert - the API is
+    /// disposed and its main-thread calls no-op on the canceled token - and dies with the process.
+    /// While alive it blocks the script from being restarted.
+    /// </summary>
+    public Thread ZombieThread;
+    public Task<ScriptState<object>> CSharpRunTask;
+
+    public bool IsZombie => ZombieThread is { IsAlive: true } || CSharpRunTask is { IsCompleted: false };
+
+    /// <summary>
+    /// Stable, portable identifier: the script's path relative to the LegionScripts root,
+    /// normalized to '/'. Unique across groups/subgroups and zip entries
+    /// (zip form: "<relative-zip>::<entry>"). Used to bind scripts to UI without colliding
+    /// on bare file names.
+    /// </summary>
+    public string RelativePath => ToRelativeId(LegionScripting.ScriptPath, FullPath);
+
+    /// <summary>Computes <see cref="RelativePath"/> from a scripts root and a full path. Pure.</summary>
+    public static string ToRelativeId(string scriptRoot, string fullPath)
+    {
+        if (string.IsNullOrEmpty(fullPath))
+            return string.Empty;
+
+        string full = fullPath.Replace('\\', '/');
+        string root = (scriptRoot ?? string.Empty).Replace('\\', '/').TrimEnd('/');
+
+        // Strip the root only on a path-segment boundary, so a sibling dir that merely shares
+        // the root as a string prefix (e.g. ".../LegionScripts2/...") is not stripped.
+        if (root.Length > 0)
+        {
+            if (full.Equals(root, System.StringComparison.Ordinal))
+                full = string.Empty;
+            else if (full.StartsWith(root + "/", System.StringComparison.Ordinal))
+                full = full.Substring(root.Length);
+        }
+
+        return full.TrimStart('/');
+    }
+
     public enum ScriptType
     {
         Python,
         CSharp
     }
 
-    private World World;
+    protected World World;
     private bool _disposed;
 
     public ScriptFile(World world, string path, string fileName)
@@ -71,7 +113,7 @@ public partial class ScriptFile : IDisposable
             Type = ScriptType.Python;
     }
 
-    public void OverrideFileContents(string contents)
+    public virtual void OverrideFileContents(string contents)
     {
         string temp = System.IO.Path.GetTempFileName();
 
@@ -88,7 +130,7 @@ public partial class ScriptFile : IDisposable
         }
     }
 
-    public string[] ReadFromFile()
+    public virtual string[] ReadFromFile()
     {
         try
         {
@@ -115,14 +157,14 @@ public partial class ScriptFile : IDisposable
         }
     }
 
-    public bool FileExists() => File.Exists(FullPath);
+    public virtual bool FileExists() => File.Exists(FullPath);
 
-    public void SetupPythonEngine()
+    public virtual void SetupPythonEngine()
     {
         if (PythonEngine != null && !LegionScripting.LScriptSettings.DisableModuleCache)
             return;
 
-        PythonEngine = Python.CreateEngine();
+        PythonEngine = Python.CreateEngine(new Dictionary<string, object>() { { "RecursionLimit", 100 } });
 
         string dir = System.IO.Path.GetDirectoryName(FullPath);
         ICollection<string> paths = PythonEngine.GetSearchPaths();
@@ -252,6 +294,11 @@ public partial class ScriptFile : IDisposable
         ScopedApi?.CloseGumps();
         ScopedApi?.Dispose();
         ScopedApi = null;
+
+        // If the run task is still executing (a busy loop the cancellation token can't stop), keep
+        // the reference so the script is recognized as a zombie; otherwise drop it.
+        if (CSharpRunTask is { IsCompleted: true })
+            CSharpRunTask = null;
 
         // Clear compilation cache if module caching disabled
         if (LegionScripting.LScriptSettings.DisableModuleCache)

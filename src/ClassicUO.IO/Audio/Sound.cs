@@ -1,5 +1,6 @@
 ﻿// SPDX-License-Identifier: BSD-2-Clause
 
+using ClassicUO.Utility.Logging;
 using Microsoft.Xna.Framework.Audio;
 using System;
 using static System.String;
@@ -99,12 +100,29 @@ namespace ClassicUO.IO.Audio
 
                 if (!SoundInstance.IsDisposed)
                 {
-                    SoundInstance.Stop();
-                    SoundInstance.Dispose();
+                    try
+                    {
+                        SoundInstance.Stop();
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Warn($"Failed to stop sound instance for '{Name}': {ex.Message}");
+                    }
+
+                    try
+                    {
+                        SoundInstance.Dispose();
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Warn($"Failed to dispose sound instance for '{Name}': {ex.Message}");
+                    }
                 }
 
                 SoundInstance = null;
             }
+
+            AfterStop();
         }
 
         protected DynamicSoundEffectInstance SoundInstance;
@@ -177,6 +195,26 @@ namespace ClassicUO.IO.Audio
             }
 
             AfterStop();
+        }
+
+        /// <summary>
+        /// Submits additional buffers for seamless looping playback.
+        /// Should be called after Play() when looping is desired.
+        /// </summary>
+        /// <param name="bufferCount">Number of additional buffers to submit (recommended: 2-3 for smooth playback)</param>
+        public void SubmitAdditionalBuffers(int bufferCount)
+        {
+            if (SoundInstance != null && !SoundInstance.IsDisposed && SoundInstance.State == SoundState.Playing)
+            {
+                var buffer = GetBuffer();
+                if (buffer.Count > 0)
+                {
+                    for (int i = 0; i < bufferCount; i++)
+                    {
+                        SoundInstance.SubmitBuffer(buffer.Array, buffer.Offset, buffer.Count);
+                    }
+                }
+            }
         }
     }
 }

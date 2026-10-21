@@ -7,10 +7,10 @@ using ClassicUO.Game.UI.Controls;
 using ClassicUO.Assets;
 using ClassicUO.Network;
 using ClassicUO.Renderer;
-using ClassicUO.Resources;
 using ClassicUO.Utility;
 using ClassicUO.Utility.Logging;
 using Microsoft.Xna.Framework;
+using ClassicUO.Configuration;
 using MathHelper = ClassicUO.Utility.MathHelper;
 
 namespace ClassicUO.Game.UI.Gumps.CharCreation
@@ -18,7 +18,14 @@ namespace ClassicUO.Game.UI.Gumps.CharCreation
     public class CreateCharSelectionCityGump : Gump
     {
         private readonly List<CityControl> _cityControls = new List<CityControl>();
-        private readonly string[] _cityNames = { "Felucca", "Trammel", "Ilshenar", "Malas", "Tokuno", "Ter Mur" };
+        private readonly string[] _cityNames = { 
+            Client.Game.UO.FileManager.Clilocs.GetStringOrDefault(1012001, "Felucca"), 
+            Client.Game.UO.FileManager.Clilocs.GetStringOrDefault(1012000, "Trammel"), 
+            Client.Game.UO.FileManager.Clilocs.GetStringOrDefault(1012002, "Ilshenar"), 
+            Client.Game.UO.FileManager.Clilocs.GetStringOrDefault(1060643, "Malas"), 
+            Client.Game.UO.FileManager.Clilocs.GetStringOrDefault(1151078, "Tokuno"), 
+            Client.Game.UO.FileManager.Clilocs.GetStringOrDefault(1112178, "Ter Mur")
+        };
         private readonly Label _facetName;
         private readonly HtmlControl _htmlControl;
         private readonly LoginScene _scene;
@@ -65,7 +72,7 @@ namespace ClassicUO.Game.UI.Gumps.CharCreation
 
             if (city == null)
             {
-                Log.Error(ResGumps.NoCityFound);
+                Log.Error(TazLang.Get("no_city_found"));
                 Dispose();
 
                 return;

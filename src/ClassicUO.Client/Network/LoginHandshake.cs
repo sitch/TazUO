@@ -3,10 +3,10 @@ using System.Net;
 using System.Net.Sockets;
 using System.Numerics;
 using ClassicUO.Configuration;
+using ClassicUO.Game;
 using ClassicUO.Game.Scenes;
 using ClassicUO.IO;
 using ClassicUO.Network.Encryption;
-using ClassicUO.Resources;
 using ClassicUO.Utility;
 using ClassicUO.Utility.Logging;
 
@@ -29,9 +29,16 @@ namespace ClassicUO.Network
             private set;
         }
 
+        // How long (ms) to wait on the server during a handshake stage before giving up.
+        // A reconnect that lands while the server is still starting up can complete the TCP
+        // connect but never receive a reply, leaving us pinned in VerifyingAccount with no way
+        // out. This watchdog forces a fallback so the reconnect loop can retry.
+        private const int HANDSHAKE_TIMEOUT_MS = 8000;
+
         private ushort _retries;
         private int _reconnectTryCounter = 1;
         private long _reconnectTime;
+        private long _handshakeTimeout;
         private bool _isDisposed;
         private uint _pingTime;
 
@@ -42,6 +49,11 @@ namespace ClassicUO.Network
         public CityInfo[] Cities { get; set; }
         public string[] Characters { get; private set; }
         public byte ServerIndex { get; private set; }
+
+        // When the user steps back from character selection while 'Skip Server Select' is enabled,
+        // we need to suppress the auto-skip once so they actually land on the server selection screen
+        // instead of being bounced straight back to character selection.
+        public bool BypassServerSelectSkipOnce { get; set; }
         public static string Account { get; private set; }
         private static string Password { get; set; }
         public static string IP { get; set; }
@@ -67,6 +79,8 @@ namespace ClassicUO.Network
                 return;
             }
 
+            ClassicUO.Network.PacketHandlers.PacketParser.Instance.ClearBuffers();
+
             Account = account;
             Password = password;
             IP = ip;
@@ -76,8 +90,10 @@ namespace ClassicUO.Network
 
             if (!Reconnect)
             {
-                SetLoginStep(LoginSteps.Connecting);
+                _reconnectTryCounter = 1;
             }
+
+            SetLoginStep(LoginSteps.Connecting);
 
             AsyncNetClient.Socket.Connected -= OnNetClientConnected;
             AsyncNetClient.Socket.Disconnected -= OnNetClientDisconnected;
@@ -117,8 +133,19 @@ namespace ClassicUO.Network
                     }
                 }
 
+                // Persist the previously loaded settings while the old server scope is still active,
+                // so switching servers doesn't discard unsaved changes to the previous server/account.
+                ProfileManager.SaveServerSettings();
+                ProfileManager.SaveAccountSettings();
+
+                World.Instance.ServerName = serverName;
                 LastServerNum = (ushort)(1 + ServerIndex);
                 LastServerName = Servers[ServerIndex].Name;
+
+                // Server folder is known now, and the account folder nests under it, so both
+                // scoped settings can be resolved and loaded at this point.
+                ProfileManager.LoadServerSettings();
+                ProfileManager.LoadAccountSettings();
 
                 SetLoginStep(LoginSteps.LoginInToServer);
 
@@ -132,7 +159,12 @@ namespace ClassicUO.Network
         /// <param name="reconnectTime">In ms</param>
         public void HandleReconnect(int reconnectTime)
         {
-            if (Reconnect && (CurrentLoginStep == LoginSteps.PopUpMessage || CurrentLoginStep == LoginSteps.Main) && !AsyncNetClient.Socket.IsConnected)
+            // Note: we intentionally don't gate on IsConnected here. On PopUpMessage/Main with
+            // Reconnect set we're not in a live session by definition, and Socket.Connected only
+            // reflects the last I/O so a timed-out/half-open socket can report a stale 'true' and
+            // wedge the retry loop forever. Connect() tears down and replaces the socket anyway,
+            // and _reconnectTime enforces the delay between attempts.
+            if (Reconnect && (CurrentLoginStep == LoginSteps.PopUpMessage || CurrentLoginStep == LoginSteps.Main))
             {
                 if (_reconnectTime >= Time.Ticks)
                     return;
@@ -171,6 +203,17 @@ namespace ClassicUO.Network
             }
 
             SetLoginStep(LoginSteps.ServerSelection);
+
+            if (BypassServerSelectSkipOnce)
+            {
+                // User explicitly navigated back to server selection, don't auto-skip this time.
+                BypassServerSelectSkipOnce = false;
+            }
+            else if (ProfileManager.GlobalSettings.SkipServerSelection && Servers.Length == 1 && CurrentLoginStep == LoginSteps.ServerSelection) //Double check server selection, the previous call may initiate auto login and already select one
+            {
+                SelectServer((byte)Servers[0].Index, Servers[0].Name);
+                return;
+            }
         }
 
         public event NotifierEventHandler ReceiveCharacterListNotifier;
@@ -247,7 +290,7 @@ namespace ClassicUO.Network
 
             for (int i = 0; i < Servers.Length; i++)
                 if (Servers[i].Name.Equals(name, StringComparison.InvariantCultureIgnoreCase))
-                    return i;
+                    return Servers[i].Index;
 
             return -1;
         }
@@ -268,8 +311,6 @@ namespace ClassicUO.Network
             {
                 AsyncNetClient.Socket.Send_SelectCharacter(index, Characters[index], AsyncNetClient.Socket.LocalIP);
                 SetLoginStep(LoginSteps.EnteringBritania);
-                if(!LastServerName.Contains(Account) && !LastServerName.Contains(Password))
-                    AnonMetrics.TrackLoginFireAndForget(LastServerName);
             }
             else
             {
@@ -303,14 +344,49 @@ namespace ClassicUO.Network
         internal void SetLoginStep(LoginSteps step)
         {
             _pingTime = Time.Ticks + 60000;
+
+            // Arm the handshake watchdog while we're waiting on the server during the initial
+            // handshake, disarm it otherwise. Each step change re-arms the timer, so a stage only
+            // times out if it stalls with no progress. Scoped to Connecting/VerifyingAccount to
+            // avoid interfering with the relay/server-selection flow which has its own retry logic.
+            if (step is LoginSteps.Connecting or LoginSteps.VerifyingAccount)
+                _handshakeTimeout = (long)Time.Ticks + HANDSHAKE_TIMEOUT_MS;
+            else
+                _handshakeTimeout = 0;
+
             Log.TraceDebug($"[HandShake] Set login step to {step}.");
             CurrentLoginStep = step;
             LoginStepChanged?.Invoke(this, step);
+
+            // Returning to Main means we've left the account/server context (e.g. stepping back
+            // from server or character selection), so persist those scoped settings.
+            if (step == LoginSteps.Main)
+            {
+                ProfileManager.SaveServerSettings();
+                ProfileManager.SaveAccountSettings();
+            }
+        }
+
+        /// <summary>
+        /// Call in Update() of the login scene. If a handshake stage stalls (e.g. a reconnect that
+        /// connects to a server which is still restarting and never replies), force a disconnect and
+        /// fall back to the popup so the reconnect loop can retry instead of getting stuck.
+        /// </summary>
+        public void CheckHandshakeTimeout()
+        {
+            if (_handshakeTimeout == 0 || Time.Ticks < _handshakeTimeout)
+                return;
+
+            _handshakeTimeout = 0;
+            Log.Warn($"[HandShake] Handshake timed out at step {CurrentLoginStep}, aborting connection attempt.");
+
+            Disconnect();
+            HandleConnectionFailure(SocketError.TimedOut);
         }
 
         private void OnNetClientConnected(object sender, EventArgs e)
         {
-            Log.Info("[HandShake] Connected!");
+            Log.Info("Connected!");
             SetLoginStep(LoginSteps.VerifyingAccount);
 
             uint address = AsyncNetClient.Socket.LocalIP;
@@ -338,7 +414,7 @@ namespace ClassicUO.Network
 
         private void OnNetClientDisconnected(object sender, SocketError e)
         {
-            Log.Warn("[HandShake] Disconnected");
+            Log.Warn($"Socket disconnected - {e.ToString()}");
 
             if (CurrentLoginStep == LoginSteps.CharacterCreation)
             {
@@ -350,6 +426,11 @@ namespace ClassicUO.Network
                 return;
             }
 
+            HandleConnectionFailure(e);
+        }
+
+        private void HandleConnectionFailure(SocketError e)
+        {
             Characters = null;
             DisposeAllServerEntries();
 
@@ -357,7 +438,7 @@ namespace ClassicUO.Network
             {
                 Reconnect = true;
                 SetError(msg: string.Format(
-                                             ResGeneral.ReconnectPleaseWait01,
+                                             TazLang.Get("reconnect_please_wait01"),
                                              _reconnectTryCounter,
                                              StringHelper.AddSpaceBeforeCapital(e.ToString())
                                          ));
@@ -365,7 +446,7 @@ namespace ClassicUO.Network
             else
             {
                 SetError(msg: string.Format(
-                                                  ResGeneral.ConnectionLost0,
+                                                  TazLang.Get("connection_lost0"),
                                                   StringHelper.AddSpaceBeforeCapital(e.ToString())
                                               ));
             }
@@ -380,6 +461,8 @@ namespace ClassicUO.Network
             AsyncNetClient.Socket.Disconnected -= OnNetClientDisconnected;
             AsyncNetClient.Socket.Disconnect().Wait();
             AsyncNetClient.Socket = new AsyncNetClient();
+
+            ClassicUO.Network.PacketHandlers.PacketParser.Instance.ClearBuffers();
 
             _retries++;
             Log.TraceDebug($"[HandShake] Reconnecting to relay server...");

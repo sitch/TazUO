@@ -1,9 +1,11 @@
+
 #nullable enable
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using ClassicUO.Game.GameObjects;
 using ClassicUO.Game.Managers;
+using ClassicUO.Game.UI.MyraWindows.Widgets.ArtTexture;
 using ClassicUO.Utility;
 using Myra.Graphics2D;
 using Myra.Graphics2D.UI;
@@ -17,6 +19,25 @@ public static class OrganizerAgentTabContent
         OrganizerConfig? selectedConfig = null;
         var leftPanel = new VerticalStackPanel { Spacing = 4 };
         var rightPanel = new VerticalStackPanel { Spacing = 4 };
+
+        bool suppressComboEvent = false;
+        var configCombo = new ComboView();
+        ListView configList = configCombo.ListView;
+        configList.HorizontalAlignment = HorizontalAlignment.Stretch;
+        configList.MinWidth = 50;
+        configList.MaxHeight = 500;
+        configList.SelectedIndexChanged += (_, _) =>
+        {
+            if (suppressComboEvent)
+                return;
+
+            if (configList.SelectedIndex is int idx &&
+                idx >= 0 && idx < OrganizerAgent.Instance.OrganizerConfigs.Count)
+            {
+                selectedConfig = OrganizerAgent.Instance.OrganizerConfigs[idx];
+                BuildConfigDetails();
+            }
+        };
 
         void BuildItemsGrid(VerticalStackPanel itemsPanel)
         {
@@ -85,7 +106,7 @@ public static class OrganizerAgentTabContent
                     destCell.Widgets.Clear();
                     if (captured.DestContSerial != 0)
                     {
-                        var label = new MyraLabel($"{captured.DestContSerial:X}", MyraLabel.TextStyle.P) { Tooltip = "Per-item destination" };
+                        var label = new MyraLabel($"0x{captured.DestContSerial:X4}", MyraLabel.TextStyle.P) { Tooltip = "Per-item destination" };
                         StackPanel.SetProportionType(label, ProportionType.Fill);
                         destCell.Widgets.Add(label);
                         destCell.Widgets.Add(MyraStyle.ApplyButtonDangerStyle(new MyraButton("X", () =>
@@ -107,7 +128,7 @@ public static class OrganizerAgentTabContent
                                 if (destination is Entity destEntity && SerialHelper.IsItem(destEntity))
                                 {
                                     captured.DestContSerial = destEntity.Serial;
-                                    GameActions.Print($"Per-item destination set to {destEntity.Serial:X}", Constants.HUE_SUCCESS);
+                                    GameActions.Print($"Per-item destination set to 0x{destEntity.Serial:X4}", Constants.HUE_SUCCESS);
                                     BuildDestCell();
                                 }
                                 else
@@ -150,17 +171,27 @@ public static class OrganizerAgentTabContent
             }));
             leftPanel.Widgets.Add(new MyraLabel("List", MyraLabel.TextStyle.H3));
 
-            foreach (OrganizerConfig config in OrganizerAgent.Instance.OrganizerConfigs)
+            List<OrganizerConfig> configs = OrganizerAgent.Instance.OrganizerConfigs;
+            suppressComboEvent = true;
+            configList.Widgets.Clear();
+            foreach (OrganizerConfig config in configs)
             {
-                OrganizerConfig capturedConfig = config;
                 int enabledItems = config.ItemConfigs.Count(ic => ic.Enabled);
-                var btn = new MyraButton(config.Name, () =>
+                configList.Widgets.Add(new Myra.Graphics2D.UI.Label
                 {
-                    selectedConfig = capturedConfig;
-                    BuildConfigDetails();
-                }) { Tooltip = $"{enabledItems} enabled items" };
-                leftPanel.Widgets.Add(btn);
+                    Text = config.Name,
+                    Tooltip = $"{enabledItems} enabled items"
+                });
             }
+
+            int selIndex = selectedConfig == null ? -1 : configs.IndexOf(selectedConfig);
+            if (selIndex < 0 && configs.Count > 0)
+                selIndex = 0;
+            selectedConfig = selIndex >= 0 ? configs[selIndex] : null;
+            configList.SelectedIndex = selIndex >= 0 ? selIndex : null;
+            suppressComboEvent = false;
+
+            leftPanel.Widgets.Add(configList);
         }
 
         void BuildConfigDetails()

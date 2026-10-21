@@ -25,6 +25,13 @@ description:  Represents a Python-accessible item in the game world.  Inherits e
 
 **Type:** `uint`
 
+### `CorpseParent`
+
+**Type:** `uint`
+
+ If this item is a corpse, the serial of the parent mobile it belongs to.
+
+
 ### `OnGround`
 
 **Type:** `bool`
@@ -38,7 +45,7 @@ description:  Represents a Python-accessible item in the game world.  Inherits e
 **Type:** `string`
 
  The Python-visible class name of this object.
- Accessible in Python as <c>obj.__class__</c> .
+ Accessible in Python as `obj.__class__` .
 
 
 
@@ -83,7 +90,7 @@ description:  Represents a Python-accessible item in the game world.  Inherits e
 
 ### GetContainerGump
 
- If this item is a container ( item.IsContainer ) and is open, this will return the grid container or container gump for it.
+ If this item is a container ( item.IsContainer ) and is open, this will return the grid container, container gump, or grid loot gump for it.
 
 
 **Return Type:** `ApiUiBaseControl`

@@ -6,9 +6,9 @@ using ClassicUO.Game.Data;
 using ClassicUO.Game.Managers;
 using ClassicUO.Game.UI.Controls;
 using ClassicUO.Input;
-using ClassicUO.Resources;
 using ClassicUO.Utility;
 using Microsoft.Xna.Framework;
+using ClassicUO.Configuration;
 
 namespace ClassicUO.Game.UI.Gumps
 {
@@ -83,7 +83,7 @@ namespace ClassicUO.Game.UI.Gumps
                         spellsOnPage = 4;
                     }
 
-                    var text = new Label(ResGumps.Index, false, 0x0288, font: 6) { X = indexX, Y = 6 };
+                    var text = new Label(TazLang.Get("index"), false, 0x0288, font: 6) { X = indexX, Y = 6 };
                     Add(text, page);
 
                     for (int i = 0; i < spellsOnPage; i++)
@@ -117,7 +117,7 @@ namespace ClassicUO.Game.UI.Gumps
                         };
 
                         Add(text, page);
-                        text.SetTooltip(Client.Game.UO.FileManager.Clilocs.GetString(1061693 + offs), 150);
+                        text.SetTooltip(Client.Game.UO.FileManager.Clilocs.GetString(1061693 + offs));
 
                         y += 15;
                         offs++;
@@ -136,7 +136,7 @@ namespace ClassicUO.Game.UI.Gumps
 
                         text = new Label
                         (
-                            ResGumps.PrimaryAbilityIcon,
+                            TazLang.Get("primary_ability_icon"),
                             false,
                             0x0288,
                             80,
@@ -158,7 +158,7 @@ namespace ClassicUO.Game.UI.Gumps
 
                         text = new Label
                         (
-                            ResGumps.SecondaryAbilityIcon,
+                            TazLang.Get("secondary_ability_icon"),
                             false,
                             0x0288,
                             80,
@@ -186,7 +186,7 @@ namespace ClassicUO.Game.UI.Gumps
 
                 var icon = new GumpPic(62, 40, (ushort) (0x5200 + i), 0);
                 Add(icon, pageW);
-                icon.SetTooltip(Client.Game.UO.FileManager.Clilocs.GetString(1061693 + i), 150);
+                icon.SetTooltip(Client.Game.UO.FileManager.Clilocs.GetString(1061693 + i));
 
                 var text = new Label
                 (

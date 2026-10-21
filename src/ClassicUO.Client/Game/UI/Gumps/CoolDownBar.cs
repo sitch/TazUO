@@ -1,4 +1,5 @@
-﻿using ClassicUO.Configuration;
+﻿using ClassicUO.Assets;
+using ClassicUO.Configuration;
 using ClassicUO.Game.Data;
 using ClassicUO.Game.UI.Controls;
 using ClassicUO.Renderer;
@@ -14,10 +15,11 @@ namespace ClassicUO.Game.UI.Gumps
         public static int DEFAULT_Y => ProfileManager.CurrentProfile.CoolDownY;
 
         private AlphaBlendControl background, foreground;
-        public readonly Label textLabel, cooldownLabel;
+        private readonly Control nameText, timerText;
         private DateTime expire;
         private TimeSpan duration;
         private int startX, startY;
+        public string Name { get; }
         private readonly bool isBuffBar;
 
         private GumpPic gumpPic;
@@ -65,22 +67,27 @@ namespace ClassicUO.Game.UI.Gumps
             }
 
             #region LABELS
+            Name = _name;
             if (_name.Length > 17)
             {
                 _name = _name.Substring(0, 16) + "..";
             }
-            textLabel = new Label(_name, true, _hue, background.Width, style: FontStyle.BlackBorder, align: Assets.TEXT_ALIGN_TYPE.TS_CENTER)
-            {
-                X = background.X
-            };
 
-            cooldownLabel = new Label("------", true, _hue, background.Width, style: FontStyle.BlackBorder, align: Assets.TEXT_ALIGN_TYPE.TS_CENTER)
+            if (isBuffBar)
             {
-                X = background.X,
-                Y = 0
-            };
-            cooldownLabel.Y = COOL_DOWN_HEIGHT - cooldownLabel.Height - 2;
-            cooldownLabel.Text = "";
+                nameText = CreateText(_name, background.Width, _hue);
+                timerText = CreateText("------", background.Width, _hue);
+            }
+            else
+            {
+                nameText = new Label(_name, true, _hue, background.Width, style: FontStyle.BlackBorder, align: Assets.TEXT_ALIGN_TYPE.TS_CENTER);
+                timerText = new Label("------", true, _hue, background.Width, style: FontStyle.BlackBorder, align: Assets.TEXT_ALIGN_TYPE.TS_CENTER);
+            }
+
+            nameText.X = background.X;
+            timerText.X = background.X;
+            timerText.Y = COOL_DOWN_HEIGHT - timerText.Height - 2;
+            SetText(timerText, string.Empty);
             #endregion
 
             #region ADD CONTROLS
@@ -88,14 +95,88 @@ namespace ClassicUO.Game.UI.Gumps
                 Add(gumpPic);
             Add(background);
             Add(foreground);
-            Add(textLabel);
-            Add(cooldownLabel);
+            Add(nameText);
+            Add(timerText);
             #endregion
+        }
+
+        private static TextBox CreateText(string text, int width, ushort hue) =>
+            TextBox.GetOne(text, GetBuffBarFont(), GetBuffBarFontSize(), hue, TextBox.RTLOptions.DefaultCenterStroked(width));
+
+        private static string GetBuffBarFont()
+        {
+            GlobalSettingsSave settings = ProfileManager.GlobalSettings;
+            return string.IsNullOrWhiteSpace(settings?.BuffBarFont) ? EmbeddedFontNames.AVADONIAN : settings.BuffBarFont;
+        }
+
+        private static float GetBuffBarFontSize()
+        {
+            GlobalSettingsSave settings = ProfileManager.GlobalSettings;
+            return settings == null || settings.BuffBarFontSize <= 0 ? 14 : settings.BuffBarFontSize;
+        }
+
+        private static void SetText(Control control, string text)
+        {
+            switch (control)
+            {
+                case Label label:
+                    label.Text = text;
+                    break;
+                case TextBox textBox:
+                    textBox.Text = text;
+                    break;
+            }
+        }
+
+        /// <summary>
+        /// Applies the machine-wide buff bar font to live bars so option changes take effect without
+        /// re-adding buffs.
+        /// </summary>
+        private void SyncBuffBarFont()
+        {
+            if (nameText is not TextBox nameBox || timerText is not TextBox timerBox)
+                return;
+
+            string font = GetBuffBarFont();
+            float size = GetBuffBarFontSize();
+
+            if (nameBox.Font != font)
+            {
+                nameBox.Font = font;
+                timerBox.Font = font;
+            }
+
+            if (nameBox.FontSize != size)
+            {
+                nameBox.FontSize = size;
+                timerBox.FontSize = size;
+            }
+
+            timerText.Y = COOL_DOWN_HEIGHT - timerText.Height - 2;
+        }
+
+        public TimeSpan Remaining => expire - DateTime.Now;
+
+        public void Update(TimeSpan? maxValue = null, TimeSpan? currentValue = null)
+        {
+            if (maxValue.HasValue)
+                duration = maxValue.Value;
+
+            if (currentValue.HasValue)
+                expire = DateTime.Now + currentValue.Value;
+        }
+
+        public void Restart()
+        {
+            expire = DateTime.Now + duration;
         }
 
         public override void Update()
         {
             base.Update();
+
+            if (isBuffBar)
+                SyncBuffBarFont();
 
             if (
                 !isBuffBar &&
@@ -116,7 +197,10 @@ namespace ClassicUO.Game.UI.Gumps
                 return false;
 
             if (DateTime.Now >= expire)
+            {
                 Dispose();
+                return false;
+            }
 
             TimeSpan remaing = expire - DateTime.Now;
 
@@ -125,8 +209,8 @@ namespace ClassicUO.Game.UI.Gumps
                 int offset = 0;
                 if (gumpPic != null)
                     offset = gumpPic.Width;
-                foreground.Width = (int)((remaing.TotalSeconds / duration.TotalSeconds) * (COOL_DOWN_WIDTH - offset));
-                cooldownLabel.Text = ((int)remaing.TotalSeconds).ToString();
+                foreground.Width = Math.Max(0, Math.Min(COOL_DOWN_WIDTH - offset, (int)((remaing.TotalSeconds / duration.TotalSeconds) * (COOL_DOWN_WIDTH - offset))));
+                SetText(timerText, ((int)remaing.TotalSeconds).ToString());
             }
 
             base.Draw(batcher, x, y);
@@ -147,112 +231,6 @@ namespace ClassicUO.Game.UI.Gumps
             );
 
             return true;
-        }
-
-        public class CoolDownConditionData
-        {
-            public ushort hue;
-            public string label;
-            public string trigger;
-            public int cooldown;
-            public int message_type;
-            public bool replace_if_exists;
-
-            private CoolDownConditionData(ushort hue = 42, string label = "Label", string trigger = "Text to trigger", int cooldown = 10, int message_type = (int)MESSAGE_TYPE.ALL, bool replace_if_exists = false)
-            {
-                this.hue = hue;
-                this.label = label;
-                this.trigger = trigger;
-                this.cooldown = cooldown;
-                this.message_type = message_type;
-                this.replace_if_exists = replace_if_exists;
-            }
-
-            public static CoolDownConditionData GetConditionData(int key, bool createIfNotExist)
-            {
-                var data = new CoolDownConditionData();
-                if (ProfileManager.CurrentProfile.CoolDownConditionCount > key)
-                {
-                    data.hue = ProfileManager.CurrentProfile.Condition_Hue[key];
-                    data.label = ProfileManager.CurrentProfile.Condition_Label[key];
-                    data.trigger = ProfileManager.CurrentProfile.Condition_Trigger[key];
-                    data.cooldown = ProfileManager.CurrentProfile.Condition_Duration[key];
-                    data.message_type = ProfileManager.CurrentProfile.Condition_Type[key];
-
-                    if (ProfileManager.CurrentProfile.Condition_ReplaceIfExists.Count > key) //Remove me after a while to prevent index not found
-                        data.replace_if_exists = ProfileManager.CurrentProfile.Condition_ReplaceIfExists[key];
-                    else
-                    {
-                        while (ProfileManager.CurrentProfile.Condition_ReplaceIfExists.Count <= key)
-                        {
-                            ProfileManager.CurrentProfile.Condition_ReplaceIfExists.Add(false);
-                        }
-                    }
-                }
-                else if (createIfNotExist)
-                {
-                    ProfileManager.CurrentProfile.Condition_Hue.Add(data.hue);
-                    ProfileManager.CurrentProfile.Condition_Label.Add(data.label);
-                    ProfileManager.CurrentProfile.Condition_Trigger.Add(data.trigger);
-                    ProfileManager.CurrentProfile.Condition_Duration.Add(data.cooldown);
-                    ProfileManager.CurrentProfile.Condition_Type.Add(data.message_type);
-                    ProfileManager.CurrentProfile.Condition_ReplaceIfExists.Add(data.replace_if_exists);
-                }
-                return data;
-            }
-
-            public static void SaveCondition(int key, ushort hue, string label, string trigger, int cooldown, bool createIfNotExist, int message_type, bool replace_if_exists)
-            {
-                if (ProfileManager.CurrentProfile.CoolDownConditionCount > key)
-                {
-                    ProfileManager.CurrentProfile.Condition_Hue[key] = hue;
-                    ProfileManager.CurrentProfile.Condition_Label[key] = label;
-                    ProfileManager.CurrentProfile.Condition_Trigger[key] = trigger;
-                    ProfileManager.CurrentProfile.Condition_Duration[key] = cooldown;
-                    ProfileManager.CurrentProfile.Condition_Type[key] = message_type;
-
-                    if (ProfileManager.CurrentProfile.Condition_ReplaceIfExists.Count > key) //Remove me after a while to prevent index not found
-                        ProfileManager.CurrentProfile.Condition_ReplaceIfExists[key] = replace_if_exists;
-                    else
-                    {
-                        while (ProfileManager.CurrentProfile.Condition_ReplaceIfExists.Count <= key)
-                        {
-                            ProfileManager.CurrentProfile.Condition_ReplaceIfExists.Add(false);
-                        }
-                        ProfileManager.CurrentProfile.Condition_ReplaceIfExists[key] = replace_if_exists;
-                    }
-                }
-                else if (createIfNotExist)
-                {
-                    ProfileManager.CurrentProfile.Condition_Hue.Add(hue);
-                    ProfileManager.CurrentProfile.Condition_Label.Add(label);
-                    ProfileManager.CurrentProfile.Condition_Trigger.Add(trigger);
-                    ProfileManager.CurrentProfile.Condition_Duration.Add(cooldown);
-                    ProfileManager.CurrentProfile.Condition_Type.Add(message_type);
-                    ProfileManager.CurrentProfile.Condition_ReplaceIfExists.Add(createIfNotExist);
-                }
-            }
-
-            public static void RemoveCondition(int key)
-            {
-                if (ProfileManager.CurrentProfile.CoolDownConditionCount > key)
-                {
-                    ProfileManager.CurrentProfile.Condition_Hue.RemoveAt(key);
-                    ProfileManager.CurrentProfile.Condition_Label.RemoveAt(key);
-                    ProfileManager.CurrentProfile.Condition_Trigger.RemoveAt(key);
-                    ProfileManager.CurrentProfile.Condition_Duration.RemoveAt(key);
-                    ProfileManager.CurrentProfile.Condition_Type.RemoveAt(key);
-                    ProfileManager.CurrentProfile.Condition_ReplaceIfExists.RemoveAt(key);
-                }
-            }
-
-            public enum MESSAGE_TYPE
-            {
-                ALL,
-                SELF,
-                OTHER
-            }
-
         }
     }
 }

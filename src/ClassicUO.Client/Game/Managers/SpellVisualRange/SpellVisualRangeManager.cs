@@ -4,15 +4,15 @@ using ClassicUO.Game.GameObjects;
 using Microsoft.Xna.Framework;
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text.Json;
 using System.Threading.Tasks;
-using ClassicUO.Game.Managers.SpellVisualRange;
 using Timer = System.Timers.Timer;
 
-namespace ClassicUO.Game.Managers
+namespace ClassicUO.Game.Managers.SpellVisualRange
 {
     using Utility.Logging;
 
@@ -24,7 +24,7 @@ namespace ClassicUO.Game.Managers
         public DateTime LastSpellTime { get; private set; } = DateTime.Now;
         public Dictionary<int, SpellRangeInfo> SpellRangeCache => spellRangeCache;
 
-        private string savePath = Path.Combine(CUOEnviroment.ExecutablePath ?? "", "Data", "Profiles", "SpellVisualRange.json");
+        private SpellVisualRangeConfig config;
         private string overridePath = Path.Combine(ProfileManager.ProfilePath ?? "", "SpellVisualRange.json");
 
         private Dictionary<int, SpellRangeInfo> spellRangeCache = new();
@@ -36,6 +36,25 @@ namespace ClassicUO.Game.Managers
 
         private bool isCasting { get; set; } = false;
         private SpellRangeInfo currentSpell { get; set; }
+        private bool frozenBySpell = false;
+
+        // Set once the server's target cursor has been seen for the current cast, so a spell that
+        // expects a cursor can hold its cast state through the packet round trip but still clear once
+        // that cursor closes. Reset on every cast start/end.
+        private bool sawTargetCursor = false;
+
+        /// <summary>
+        /// Monotonic tick of the last time the server reported a cast failure (a <see cref="stopAtClilocs"/>
+        /// message: concentration disturbed, insufficient mana/reagents, frozen, etc.). Consumers can compare
+        /// this against when they issued a cast to know it genuinely failed — vs. a benign casting-flag drop —
+        /// and react immediately instead of waiting out a timeout.
+        /// </summary>
+        public long LastCastFailedTick { get; private set; }
+
+        /// <summary>
+        /// An instance of a cast timer bar. May be null, depending on profile settings
+        /// </summary>
+        private static CastTimerProgressBar _castTimerBar;
 
         //Taken from Dust client
         private static readonly int[] stopAtClilocs = new int[]
@@ -59,19 +78,35 @@ namespace ClassicUO.Game.Managers
             Load();
         }
 
+        // Cast starts and failures mutate the same casting state, so they must be applied in the
+        // order the server sent them: a start handed off to a worker thread (the previous Task.Run)
+        // could land after the failure for that same cast and re-apply its freeze. Both transitions
+        // go through the main-thread FIFO queue, keeping them serialized on the main thread.
+        private static void DispatchCastTransition(Action transition) =>
+            MainThreadQueue.EnqueueAction(transition);
+
         private void OnRawMessageReceived(object sender, MessageEventArgs e) =>
-            Task.Run(() =>
+            DispatchCastTransition(() =>
             {
                 if (loaded && e.Parent != null && ReferenceEquals(e.Parent, World.Player))
                     if (spellRangePowerWordCache.TryGetValue(e.Text.Trim(), out SpellRangeInfo spell))
                         SetCasting(spell);
             });
 
-        public void OnClilocReceived(int cliloc) =>
-            Task.Factory.StartNew(() =>
+        public void OnClilocReceived(int cliloc)
+        {
+            if (!stopAtClilocs.Contains(cliloc))
+                return;
+
+            DispatchCastTransition(() =>
             {
-                if (isCasting && stopAtClilocs.Contains(cliloc)) ClearCasting();
+                // Record the failure regardless of our isCasting flag: a damage packet may have
+                // already cleared isCasting before this disrupt cliloc arrives (packet ordering),
+                // and consumers still need to know the cast just failed.
+                LastCastFailedTick = ClassicUO.Time.Ticks;
+                if (isCasting) ClearCasting();
             });
+        }
 
         private void SetCasting(SpellRangeInfo spell)
         {
@@ -80,8 +115,13 @@ namespace ClassicUO.Game.Managers
             LastSpellTime = DateTime.Now;
             currentSpell = spell;
             isCasting = true;
+            sawTargetCursor = false;
 
-            if (currentSpell != null && currentSpell.FreezeCharacterWhileCasting) World.Player.Flags |= Flags.Frozen;
+            if (currentSpell != null && currentSpell.FreezeCharacterWhileCasting)
+            {
+                frozenBySpell = true;
+                World.Player.Flags |= Flags.Frozen;
+            }
 
             World.Player.IsCasting = true;
             EventSink.InvokeSpellCastBegin(spell.ID);
@@ -92,12 +132,17 @@ namespace ClassicUO.Game.Managers
             isCasting = false;
             currentSpell = null;
             LastSpellTime = DateTime.MinValue;
+            sawTargetCursor = false;
 
             if (World?.Player != null)
             {
-                World.Player.Flags &= ~Flags.Frozen;
+                // Only release the freeze this manager applied: Flags.Frozen also models server-side
+                // paralysis, so clearing it unconditionally silently un-paralyzes the player.
+                if (frozenBySpell) World.Player.Flags &= ~Flags.Frozen;
                 World.Player.IsCasting = false;
             }
+
+            frozenBySpell = false;
 
             EventSink.InvokeSpellCastEnd();
         }
@@ -105,64 +150,152 @@ namespace ClassicUO.Game.Managers
         public SpellRangeInfo GetCurrentSpell() => currentSpell;
 
         #region Load and unload
-        public void OnSceneLoad() => EventSink.RawMessageReceived += OnRawMessageReceived;
+
+        public void OnSceneLoad()
+        {
+            EventSink.RawMessageReceived += OnRawMessageReceived;
+
+            // Register a settings listener so we can dynamically enable/disable the spell progress bar
+            ProfileManager.CurrentProfilePropertyChanged += UpdateSpellProgressBarPresence;
+            UpdateSpellProgressBarPresence(null, new PropertyChangedEventArgs(nameof(Profile.EnableSpellIndicators)));
+        }
 
         public void OnSceneUnload()
         {
             EventSink.RawMessageReceived -= OnRawMessageReceived;
+
+            // Remove settings listener. Leave gump destruction to UI Mgr. disposal.
+            ProfileManager.CurrentProfilePropertyChanged -= UpdateSpellProgressBarPresence;
+
             instance = null;
+
         }
         #endregion
 
+        /// <summary>
+        /// Adds/removes the spell progress bar, depending on current configuration
+        /// </summary>
+        /// <param name="sender">The event's source; Effectivly always null</param>
+        /// <param name="e">The event args. Used to ignore irrelevant updates</param>
+        private void UpdateSpellProgressBarPresence(object sender, PropertyChangedEventArgs e)
+        {
+            if (e.PropertyName != nameof(Profile.EnableSpellIndicators))
+                return;
+
+            if (ProfileManager.CurrentProfile?.EnableSpellIndicators != true)
+            {
+                _castTimerBar?.Dispose();
+                _castTimerBar = null;
+                return;
+            }
+
+            if (_castTimerBar is { IsDisposed: false })
+                return;
+
+            _castTimerBar = new CastTimerProgressBar(World);
+            UIManager.Add(_castTimerBar, false);
+        }
+
         public bool IsTargetingAfterCasting()
         {
-            if (!loaded || currentSpell == null || !isCasting || ProfileManager.CurrentProfile == null || !ProfileManager.CurrentProfile.EnableSpellIndicators) return false;
+            if (!loaded || !isCasting || ProfileManager.CurrentProfile == null || !ProfileManager.CurrentProfile.EnableSpellIndicators) return false;
 
-            if (World.TargetManager.IsTargeting || (currentSpell.ShowCastRangeDuringCasting && IsCastingWithoutTarget()))
-                if (LastSpellTime + TimeSpan.FromSeconds(currentSpell.MaxDuration) > DateTime.Now)
-                    return true;
+            // currentSpell is mutated from background threads (cast begin/end messages), so snapshot it
+            // once: the earlier null-check and the derefs below must not race with ClearCasting.
+            SpellRangeInfo spell = currentSpell;
+            if (spell == null) return false;
+
+            if (World.TargetManager.IsTargeting)
+            {
+                sawTargetCursor = true;
+
+                return LastSpellTime + TimeSpan.FromSeconds(spell.MaxDuration) > DateTime.Now;
+            }
+
+            if (spell.ShowCastRangeDuringCasting && IsCastingWithoutTarget(spell)
+                && LastSpellTime + TimeSpan.FromSeconds(spell.MaxDuration) > DateTime.Now)
+                return true;
 
             return false;
         }
 
+        /// <summary>
+        /// Whether the cursor indicator — the <see cref="SpellRangeInfo.CursorSize" /> area, or the line
+        /// through the cursor for <see cref="SpellRangeInfo.IsLinear" /> spells — should tint this frame.
+        /// It is independent of the range indicator: it shows from the start of the cast until the target
+        /// cursor closes or the cast is cleared, regardless of <see cref="SpellRangeInfo.ShowCastRangeDuringCasting" />.
+        /// </summary>
+        public bool IsCursorIndicatorActive()
+        {
+            if (!loaded || !isCasting || ProfileManager.CurrentProfile == null || !ProfileManager.CurrentProfile.EnableSpellIndicators) return false;
+
+            SpellRangeInfo spell = currentSpell;
+            if (spell == null || spell.CursorSize <= 0) return false;
+
+            if (World.TargetManager.IsTargeting) sawTargetCursor = true;
+
+            return LastSpellTime + TimeSpan.FromSeconds(spell.MaxDuration) > DateTime.Now;
+        }
+
+        /// <summary>
+        /// Whether either indicator is active. Callers use this to skip the per-tile hue work when nothing
+        /// is shown; <see cref="ProcessHueForTile" /> decides which indicator applies to a given tile.
+        /// </summary>
+        public bool ShouldShowSpellIndicators() => IsTargetingAfterCasting() || IsCursorIndicatorActive();
+
         public bool IsCastingWithoutTarget()
         {
-            if (!loaded || currentSpell == null || !isCasting || currentSpell.CastTime <= 0 || World.TargetManager.IsTargeting || ProfileManager.CurrentProfile == null || !ProfileManager.CurrentProfile.EnableSpellIndicators) return false;
+            if (!loaded || !isCasting || World.TargetManager.IsTargeting || ProfileManager.CurrentProfile == null || !ProfileManager.CurrentProfile.EnableSpellIndicators) return false;
 
-            if (LastSpellTime + TimeSpan.FromSeconds(currentSpell.MaxDuration) > DateTime.Now)
-            {
-                if (LastSpellTime + TimeSpan.FromSeconds(currentSpell.CastTime) > DateTime.Now)
-                    return true;
-                else if (currentSpell.FreezeCharacterWhileCasting) World.Player.Flags &= ~Flags.Frozen;
-            }
-            else if (currentSpell.FreezeCharacterWhileCasting) World.Player.Flags &= ~Flags.Frozen;
+            SpellRangeInfo spell = currentSpell;
+            return spell != null && spell.CastTime > 0 && IsCastingWithoutTarget(spell);
+        }
 
+        private bool IsCastingWithoutTarget(SpellRangeInfo spell)
+        {
+            // The server sends the target cursor a round trip after the cast animation ends. Without the
+            // bridge for spells that expect a cursor, this per-frame poll clears the cast during that gap
+            // and the indicator vanishes the instant the cursor arrives. Once the cursor has been seen the
+            // normal cast-time check resumes, so the state still clears when that cursor closes.
+            if (LastSpellTime + TimeSpan.FromSeconds(spell.MaxDuration) > DateTime.Now
+                && (LastSpellTime + TimeSpan.FromSeconds(spell.CastTime) > DateTime.Now
+                    || (spell.ExpectTargetCursor && !sawTargetCursor)))
+                return true;
+
+            // The cast window elapsed and no target cursor is pending. No packet marks a *successful*
+            // cast, so this poll is the only place it ends; ClearCasting also drops
+            // PlayerMobile.IsCasting, which otherwise stayed true until the next cast or HP change.
+            ClearCasting();
             return false;
         }
 
         public ushort ProcessHueForTile(ushort hue, GameObject o)
         {
-            if (!loaded || currentSpell == null) return hue;
+            if (!loaded) return hue;
 
-            if (currentSpell.CastRange > 0 && o.Distance <= currentSpell.CastRange) hue = currentSpell.Hue;
+            // Snapshot once: casts begin/end on other threads and must not race the derefs below.
+            SpellRangeInfo spell = currentSpell;
+            if (spell == null) return hue;
 
-            int cDistance = o.DistanceFrom(LastCursorTileLoc);
+            // Range indicator: full cast-range tint while targeting (or opted into during the cast).
+            if (IsTargetingAfterCasting() && spell.CastRange > 0 && o.Distance <= spell.CastRange) hue = spell.Hue;
 
-            if (currentSpell.CursorSize > 0 && cDistance < currentSpell.CursorSize)
+            // Cursor indicator: separate lifetime from the range indicator.
+            if (IsCursorIndicatorActive() && o.DistanceFrom(LastCursorTileLoc) < spell.CursorSize)
             {
-                if (currentSpell.IsLinear)
+                if (spell.IsLinear)
                 {
                     if (GetDirection(new Vector2(World.Player.X, World.Player.Y), LastCursorTileLoc) == SpellDirection.EastWest)
                     { //X
-                        if (o.Y == LastCursorTileLoc.Y) hue = currentSpell.CursorHue;
+                        if (o.Y == LastCursorTileLoc.Y) hue = spell.CursorHue;
                     }
                     else
                     { //Y
-                        if (o.X == LastCursorTileLoc.X) hue = currentSpell.CursorHue;
+                        if (o.X == LastCursorTileLoc.X) hue = spell.CursorHue;
                     }
                 }
                 else
-                    hue = currentSpell.CursorHue;
+                    hue = spell.CursorHue;
             }
 
             return hue;
@@ -194,48 +327,73 @@ namespace ClassicUO.Game.Managers
             spellRangeCache.Clear();
             Task.Factory.StartNew(() =>
             {
-                if (!File.Exists(savePath))
+                config = SpellVisualRangeConfig.Load();
+
+                if (config.Spells.Count > 0)
                 {
-                    //CreateAndLoadDataFile();
-                    Assembly assembly = GetType().Assembly;
-
-                    string resourceName = "ClassicUO.Game.Managers.DefaultSpellIndicatorConfig.json";
-
-                    try
-                    {
-                        using Stream stream = assembly.GetManifestResourceStream(resourceName);
-
-                        using var reader = new StreamReader(stream);
-
-                        LoadFromString(reader.ReadToEnd());
-                    }
-                    catch (Exception e)
-                    {
-                        Log.Error(e.ToString());
-                        CreateAndLoadDataFile();
-                    }
-
+                    foreach (SpellRangeInfo entry in config.Spells) spellRangeCache[entry.ID] = entry;
                     AfterLoad();
                     loaded = true;
-                    Save();
+                    return;
                 }
-                else
-                    try
-                    {
-                        string data = File.ReadAllText(savePath);
-                        SpellRangeInfo[] fileData = JsonSerializer.Deserialize(data, SpellRangeInfoJsonContext.Default.SpellRangeInfoArray);
 
-                        foreach (SpellRangeInfo entry in fileData) spellRangeCache.Add(entry.ID, entry);
-                        AfterLoad();
-                        loaded = true;
-                    }
-                    catch
-                    {
-                        CreateAndLoadDataFile();
-                        AfterLoad();
-                        loaded = true;
-                    }
+                // No saved config yet - seed from the legacy array file, then the embedded defaults, and persist.
+                if (!TryLoadLegacyFile() && !TryLoadEmbeddedDefaults())
+                    CreateAndLoadDataFile();
+
+                AfterLoad();
+                loaded = true;
+                PersistCache();
             });
+        }
+
+        /// <summary>Migrates the old bare-array save file (Data/Profiles/SpellVisualRange.json) into the cache.</summary>
+        private bool TryLoadLegacyFile()
+        {
+            string legacyPath = Path.Combine(CUOEnviroment.ExecutablePath ?? "", "Data", "Profiles", "SpellVisualRange.json");
+
+            if (!File.Exists(legacyPath))
+                return false;
+
+            try
+            {
+                SpellRangeInfo[] fileData = JsonSerializer.Deserialize(File.ReadAllText(legacyPath), SpellRangeInfoJsonContext.Default.SpellRangeInfoArray);
+
+                if (fileData == null || fileData.Length == 0)
+                    return false;
+
+                foreach (SpellRangeInfo entry in fileData) spellRangeCache[entry.ID] = entry;
+                return true;
+            }
+            catch (Exception e)
+            {
+                Log.Error(e.ToString());
+                return false;
+            }
+        }
+
+        /// <summary>Seeds the cache from the embedded default indicator config.</summary>
+        private bool TryLoadEmbeddedDefaults()
+        {
+            try
+            {
+                Assembly assembly = GetType().Assembly;
+                using Stream stream = assembly.GetManifestResourceStream("ClassicUO.Game.Managers.DefaultSpellIndicatorConfig.json");
+                using var reader = new StreamReader(stream);
+
+                SpellRangeInfo[] fileData = JsonSerializer.Deserialize(reader.ReadToEnd(), SpellRangeInfoJsonContext.Default.SpellRangeInfoArray);
+
+                if (fileData == null || fileData.Length == 0)
+                    return false;
+
+                foreach (SpellRangeInfo entry in fileData) spellRangeCache[entry.ID] = entry;
+                return true;
+            }
+            catch (Exception e)
+            {
+                Log.Error(e.ToString());
+                return false;
+            }
         }
 
         private void LoadOverrides()
@@ -328,11 +486,6 @@ namespace ClassicUO.Game.Managers
             foreach (KeyValuePair<int, SpellDefinition> entry in SpellsSpellweaving.GetAllSpells) spellRangeCache.TryAdd(entry.Value.ID, SpellRangeInfo.FromSpellDef(entry.Value));
             foreach (KeyValuePair<int, SpellDefinition> entry in SpellsMysticism.GetAllSpells) spellRangeCache.TryAdd(entry.Value.ID, SpellRangeInfo.FromSpellDef(entry.Value));
             foreach (KeyValuePair<int, SpellDefinition> entry in SpellsMastery.GetAllSpells) spellRangeCache.TryAdd(entry.Value.ID, SpellRangeInfo.FromSpellDef(entry.Value));
-
-            Task.Factory.StartNew(() =>
-            {
-                Save();
-            });
         }
 
         public void DelayedSave()
@@ -361,26 +514,15 @@ namespace ClassicUO.Game.Managers
                 hasPendingChanges = false;
             }
 
-            string tempPath = null;
-            try
-            {
-                tempPath = Path.GetTempFileName();
-                string fileData = JsonSerializer.Serialize(spellRangeCache.Values.ToArray(), SpellRangeInfoJsonContext.Default.SpellRangeInfoArray);
-                File.WriteAllText(tempPath, fileData);
+            PersistCache();
+        }
 
-                if (File.Exists(savePath))
-                    File.Delete(savePath);
-                File.Move(tempPath, savePath);
-            }
-            catch (Exception e)
-            {
-                Log.Error($"Save failed: {e}");
-            }
-            finally
-            {
-                if (tempPath != null && File.Exists(tempPath))
-                    File.Delete(tempPath);
-            }
+        /// <summary>Writes the current cache to disk via the JsonSave base class (atomic + rotating backups).</summary>
+        private void PersistCache()
+        {
+            config ??= new SpellVisualRangeConfig();
+            config.Spells = spellRangeCache.Values.ToList();
+            config.Save();
         }
 
         public void Save()

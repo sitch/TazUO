@@ -1,4 +1,5 @@
 using ClassicUO.Assets;
+using ClassicUO.Game;
 using ClassicUO.Game.GameObjects;
 using ClassicUO.Game.Managers;
 using ClassicUO.Utility;
@@ -85,19 +86,23 @@ public class ApiGameObject
     public int Distance => MainThreadQueue.InvokeOnMainThread(() => _gameObject?.Distance ?? 0);
 
     /// <summary>
-    /// Set an objects outline color using html hex colors.
+    /// Set an object's outline color using HTML hex colors.
     /// Example:
     /// ```py
     /// API.Player.SetOutlineColor("#105510")
+    /// API.Player.SetOutlineColor(None)
     /// ```
     /// </summary>
-    /// <param name="htmlColor"></param>
-    public void SetOutlineColor(string htmlColor)
+    /// <param name="htmlColor">The color to set. Pass <c>null</c> to remove the outline.</param>
+    public void SetOutlineColor(string htmlColor = null)
     {
         if (_gameObject == null || _gameObject.IsDestroyed)
             return;
 
-        MainThreadQueue.InvokeOnMainThread(() => { _gameObject.OutlineColor = htmlColor.FromHtmlHex(); });
+        MainThreadQueue.BubblingInvokeOnMainThread(() =>
+        {
+            _gameObject.OutlineColor = string.IsNullOrWhiteSpace(htmlColor) ? null : htmlColor.FromHtmlHex();
+        });
     }
 
     /// <summary>
@@ -110,6 +115,44 @@ public class ApiGameObject
             return;
 
         MainThreadQueue.EnqueueAction(() => _gameObject.Hue = hue);
+    }
+
+    /// <summary>
+    /// Highlight this object by setting its hue. The original hue is remembered so it can be restored.
+    /// Call with <c>None</c> to restore the original hue.
+    /// Example:
+    /// ```py
+    /// obj.Highlight(0x0021)
+    /// obj.Highlight(None)
+    /// ```
+    /// </summary>
+    /// <param name="hue">The hue to apply, or <c>null</c> to restore the original hue.</param>
+    public virtual void Highlight(ushort? hue = null)
+    {
+        if (_gameObject == null || _gameObject.IsDestroyed)
+            return;
+
+        MainThreadQueue.EnqueueAction(() => ApplyHighlight(_gameObject, hue));
+    }
+
+    /// <summary>
+    /// Applies or clears a highlight hue on a single game object. Must run on the main thread.
+    /// </summary>
+    private protected static void ApplyHighlight(GameObject obj, ushort? hue)
+    {
+        if (obj == null || obj.IsDestroyed)
+            return;
+
+        if (hue.HasValue)
+        {
+            obj.OriginalHue ??= obj.Hue; //Remember the original hue only on the first highlight.
+            obj.Hue = hue.Value;
+        }
+        else if (obj.OriginalHue.HasValue)
+        {
+            obj.Hue = obj.OriginalHue.Value;
+            obj.OriginalHue = null;
+        }
     }
 
     /// <summary>

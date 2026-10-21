@@ -1,3 +1,4 @@
+using ClassicUO.Configuration;
 using ClassicUO.Game.Managers;
 using ClassicUO.Game.UI.Controls;
 using ClassicUO.Game.UI.MyraWindows.Widgets;
@@ -12,14 +13,28 @@ namespace ClassicUO.Game.UI.MyraWindows;
 
 public class AssistantWindow : MyraControl
 {
-    public static void Show() => UIManager.Add(new AssistantWindow());
+    public static void Show()
+    {
+        foreach (IGui g in UIManager.Gumps)
+        {
+            if (g is AssistantWindow w)
+            {
+                w.CenterInViewPort();
+                w.BringOnTop();
+                // The window is reused, so its cached pages may predate changes made elsewhere
+                // (e.g. items shift-clicked into the auto loot list). Rebuild the visible page.
+                w.RefreshSelectedContent();
+                return;
+            }
+        }
+        UIManager.Add(new AssistantWindow());
+    }
 
     private SkillsTabContent _skillsTabContent;
+    private MyraTabControl _tabs;
 
-    public AssistantWindow() : base("Legion Assistant")
+    public AssistantWindow() : base(TazLang.Get("assistantwindow_title", "Legion Assistant"))
     {
-        UIManager.ForEach<AssistantWindow>(w => { if(w != this) w.Dispose(); });
-
         CanBeSaved = true;
         Build();
         CenterInViewPort();
@@ -35,7 +50,7 @@ public class AssistantWindow : MyraControl
     {
         base.Dispose();
 
-        MacrosTabContent.Cleanup();
+        HotkeysTabContent.Cleanup();
 
         EventSink.SkillValueChangedEvent -= EventSkillUpdated;
         EventSink.SkillBaseChangedEvent -= EventSkillUpdated;
@@ -44,14 +59,17 @@ public class AssistantWindow : MyraControl
 
     private void Build()
     {
-        var tabs = new MyraTabControl();
-        tabs.AddTab("General", GeneralTab.Build);
-        tabs.AddTab("Agents", AgentTab.Build);
-        tabs.AddTab("Filters", FiltersTab.Build);
-        tabs.AddTab("Item Database", ItemDatabaseTabContent.Build);
-        tabs.AddTab("Macros", MacrosTabContent.Build);
-        tabs.AddTab("Skills", () => _skillsTabContent = new());
-        tabs.SelectFirst();
-        SetRootContent(tabs);
+        _tabs = new MyraTabControl();
+        _tabs.AddTab(TazLang.Get("assistantwindow_tab_general", "General"), GeneralTab.Build);
+        _tabs.AddTab(TazLang.Get("assistantwindow_tab_agents", "Agents"), AgentTab.Build, rebuildOnSelect: true);
+        _tabs.AddTab(TazLang.Get("assistantwindow_tab_filters", "Filters"), FiltersTab.Build);
+        _tabs.AddTab(TazLang.Get("assistantwindow_tab_itemdatabase", "Item Database"), ItemDatabaseTabContent.Build);
+        _tabs.AddTab(TazLang.Get("assistantwindow_tab_macros", "Macros"), () => MacrosTabContent.Build(this));
+        _tabs.AddTab(TazLang.Get("assistantwindow_tab_hotkeys", "Hotkeys"), HotkeysTabContent.Build);
+        _tabs.AddTab(TazLang.Get("assistantwindow_tab_skills", "Skills"), () => _skillsTabContent = new SkillsTabContent());
+        _tabs.SelectFirst();
+        SetRootContent(_tabs);
     }
+
+    private void RefreshSelectedContent() => _tabs?.RefreshSelectedContent();
 }

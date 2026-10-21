@@ -28,6 +28,22 @@ class ApiEntity(ApiGameObject):
         """
         pass
 
+    def Target(self) -> None:
+        """
+         Attempts to target this entity. Only has any effect while the client is waiting for a target selection.
+        
+        """
+        pass
+
+    def TargetRel(self, xOffset: "int", yOffset: "int", tilesOnly: "bool" = True) -> None:
+        """
+         Attempts to target the spot at an offset from this entity's position, resolving it the same way a
+         click would: the topmost visible object there is targeted, whether that is an entity, a static/multi,
+         or land. Only has any effect while the client is waiting for a target selection.
+        
+        """
+        pass
+
 class ApiGameObject:
     ""
     Impassible: bool = None
@@ -40,12 +56,13 @@ class ApiGameObject:
     IsDestroyed: bool = None
     __class__: str = None
 
-    def SetOutlineColor(self, htmlColor: "str") -> None:
+    def SetOutlineColor(self, htmlColor: "str" = None) -> None:
         """
-         Set an objects outline color using html hex colors.
+         Set an object's outline color using HTML hex colors.
          Example:
          ```py
          API.Player.SetOutlineColor("#105510")
+         API.Player.SetOutlineColor(None)
          ```
         
         """
@@ -54,6 +71,19 @@ class ApiGameObject:
     def SetHue(self, hue: "int") -> None:
         """
          Set the hue of a game object.
+        
+        """
+        pass
+
+    def Highlight(self, hue: "int | None" = None) -> None:
+        """
+         Highlight this object by setting its hue. The original hue is remembered so it can be restored.
+         Call with `None` to restore the original hue.
+         Example:
+         ```py
+         obj.Highlight(0x0021)
+         obj.Highlight(None)
+         ```
         
         """
         pass
@@ -77,7 +107,7 @@ class ApiGameObject:
     def __repr__(self) -> "str":
         """
          Returns a detailed string representation of the object.
-         This string is used by Python’s built-in <c>repr()</c> function.
+         This string is used by Python’s built-in `repr()` function.
         
         """
         pass
@@ -88,6 +118,7 @@ class ApiItem(ApiEntity):
     Opened: bool = None
     Container: int = None
     RootContainer: int = None
+    CorpseParent: int = None
     OnGround: bool = None
     RootEntity: ApiEntity = None
     __class__: str = None
@@ -105,7 +136,7 @@ class ApiItem(ApiEntity):
 
     def GetContainerGump(self) -> "ApiUiBaseControl":
         """
-         If this item is a container ( item.IsContainer ) and is open, this will return the grid container or container gump for it.
+         If this item is a container ( item.IsContainer ) and is open, this will return the grid container, container gump, or grid loot gump for it.
         
         """
         pass
@@ -191,12 +222,27 @@ class ApiMobile(ApiEntity):
     IsMounted: bool = None
     IsDrivingBoat: bool = None
     IsRunning: bool = None
+    IsParalyzed: bool = None
     Direction: str = None
     Notoriety: Notoriety = None
     InWarMode: bool = None
     Backpack: ApiItem = None
     Mount: ApiItem = None
     __class__: str = None
+
+    def Highlight(self, hue: "int | None" = None) -> None:
+        """
+         Highlight this mobile and all of its equipped items with the given hue.
+         The original hues are remembered so they can be restored.
+         Call with `None` to restore the mobile and its equipped items to their original hues.
+         Example:
+         ```py
+         mob.Highlight(0x0021)
+         mob.Highlight(None)
+         ```
+        
+        """
+        pass
 
     def NameAndProps(self, wait: "bool" = False, timeout: "int" = 10) -> "str":
         """
@@ -421,6 +467,41 @@ class ApiUiBaseControl:
         """
         pass
 
+    def SetTooltip(self, text: "str") -> "ApiUiBaseControl":
+        """
+         Sets a plain text tooltip that is shown when hovering this control.
+         Automatically enables mouse input so the tooltip can be triggered by hovering.
+         Used in python API
+        
+        """
+        pass
+
+    def SetEntityTooltip(self, serial: "int") -> "ApiUiBaseControl":
+        """
+         Sets the tooltip of this control to display the properties of an item/entity, as if hovering that item.
+         Automatically enables mouse input so the tooltip can be triggered by hovering.
+         Used in python API
+        
+        """
+        pass
+
+    def SetAcceptMouseInput(self, enabled: "bool") -> "ApiUiBaseControl":
+        """
+         Sets whether this control accepts mouse input. Mouse input must be enabled for
+         hover-based features such as tooltips to work.
+         Used in python API
+        
+        """
+        pass
+
+    def ClearTooltip(self) -> "ApiUiBaseControl":
+        """
+         Clears the tooltip from this control.
+         Used in python API
+        
+        """
+        pass
+
     def Clear(self) -> "ApiUiBaseControl":
         """
          Clears all child controls from this control.
@@ -553,16 +634,16 @@ class ApiUiGump:
          Get a blank gump.
          Example:
          ```py
-         g = API.CreateGump()
+         g = API.Gumps.CreateGump()
          g.SetRect(100, 100, 200, 200)
-         g.Add(API.CreateGumpLabel("Hello World!"))
-         API.AddGump(g)
+         g.Add(API.Gumps.CreateGumpLabel("Hello World!"))
+         API.Gumps.AddGump(g)
          ```
         
         """
         pass
 
-    def CreateModernGump(self, x: "int", y: "int", width: "int", height: "int", resizable: "bool" = True, minWidth: "int" = 50, minHeight: "int" = 50, onResized: "Any" = None) -> "ApiUiNineSliceGump":
+    def CreateModernGump(self, x: "int", y: "int", width: "int", height: "int", resizable: "bool" = True, minWidth: "int" = 50, minHeight: "int" = 50, onResized: "Any" = None, keepOpen: "bool" = False) -> "ApiUiNineSliceGump":
         """
          Creates a modern nine-slice gump using ModernUIConstants for consistent styling.
          The gump uses the standard modern UI panel texture and border size internally.
@@ -575,10 +656,10 @@ class ApiUiGump:
          Add a gump to the players screen.
          Example:
          ```py
-         g = API.CreateGump()
+         g = API.Gumps.CreateGump()
          g.SetRect(100, 100, 200, 200)
-         g.Add(API.CreateGumpLabel("Hello World!"))
-         API.AddGump(g)
+         g.Add(API.Gumps.CreateGumpLabel("Hello World!"))
+         API.Gumps.AddGump(g)
          ```
         
         """
@@ -589,11 +670,11 @@ class ApiUiGump:
          Create a checkbox for gumps.
           Example:
          ```py
-         g = API.CreateGump()
+         g = API.Gumps.CreateGump()
          g.SetRect(100, 100, 200, 200)
-         cb = API.CreateGumpCheckbox("Check me?!")
+         cb = API.Gumps.CreateGumpCheckbox("Check me?!")
          g.Add(cb)
-         API.AddGump(g)
+         API.Gumps.AddGump(g)
         
          API.SysMsg("Checkbox checked: " + str(cb.IsChecked))
          ```
@@ -606,10 +687,10 @@ class ApiUiGump:
          Create a label for a gump.
          Example:
          ```py
-         g = API.CreateGump()
+         g = API.Gumps.CreateGump()
          g.SetRect(100, 100, 200, 200)
-         g.Add(API.CreateGumpLabel("Hello World!"))
-         API.AddGump(g)
+         g.Add(API.Gumps.CreateGumpLabel("Hello World!"))
+         API.Gumps.AddGump(g)
          ```
         
         """
@@ -620,13 +701,13 @@ class ApiUiGump:
          Get a transparent color box for gumps.
          Example:
          ```py
-         g = API.CreateGump()
+         g = API.Gumps.CreateGump()
          g.SetRect(100, 100, 200, 200)
-         cb = API.CreateGumpColorBox(0.5, "#000000")
+         cb = API.Gumps.CreateGumpColorBox(0.5, "#000000")
          cb.SetWidth(200)
          cb.SetHeight(200)
          g.Add(cb)
-         API.AddGump(g)
+         API.Gumps.AddGump(g)
          ```
         
         """
@@ -637,10 +718,41 @@ class ApiUiGump:
          Create a picture of an item.
          Example:
          ```py
-         g = API.CreateGump()
+         g = API.Gumps.CreateGump()
          g.SetRect(100, 100, 200, 200)
-         g.Add(API.CreateGumpItemPic(0x0E78, 50, 50))
-         API.AddGump(g)
+         g.Add(API.Gumps.CreateGumpItemPic(0x0E78, 50, 50))
+         API.Gumps.AddGump(g)
+         ```
+        
+        """
+        pass
+
+    def CreateGumpRenderedMapArea(self, mapIndex: "int", mapX: "int", mapY: "int", mapWidth: "int", mapHeight: "int", x: "int", y: "int", width: "int", height: "int") -> "Any":
+        """
+         Create a rendered map area, displaying a region of the world map as a texture.
+         Example:
+         ```py
+         gump = API.Gumps.CreateGump()
+         gump.SetRect(100, 100, 200, 200)
+        
+         map = API.Gumps.CreateGumpRenderedMapArea(0, 1000, 1000, 1100, 1100, 0, 0, 200, 200)
+         gump.Add(map)
+         API.Gumps.AddGump(gump)
+         ```
+        
+        """
+        pass
+
+    def LegionTextureControl(self, textureName: "str", width: "int" = 0, height: "int" = 0) -> "Any":
+        """
+         Create an image control that displays a named PNG texture loaded from a ZIP archive.
+         Place the PNG anywhere inside the ZIP (outside gumps/ and art/ folders) and reference it by its path within the archive.
+         Example:
+         ```py
+         # In your zip: icons/sword.png
+         img = API.Gumps.LegionTextureControl("icons/sword.png")
+         img.SetPos(10, 10)
+         g.Add(img)
          ```
         
         """
@@ -651,11 +763,11 @@ class ApiUiGump:
          Create a button for gumps.
          Example:
          ```py
-         g = API.CreateGump()
+         g = API.Gumps.CreateGump()
          g.SetRect(100, 100, 200, 200)
-         button = API.CreateGumpButton("Click Me!")
+         button = API.Gumps.CreateGumpButton("Click Me!")
          g.Add(button)
-         API.AddGump(g)
+         API.Gumps.AddGump(g)
         
          while True:
            API.SysMsg("Button currently clicked?: " + str(button.IsClicked))
@@ -671,11 +783,11 @@ class ApiUiGump:
          Create a simple button, does not use graphics.
          Example:
          ```py
-         g = API.CreateGump()
+         g = API.Gumps.CreateGump()
          g.SetRect(100, 100, 200, 200)
-         button = API.CreateSimpleButton("Click Me!", 100, 20)
+         button = API.Gumps.CreateSimpleButton("Click Me!", 100, 20)
          g.Add(button)
-         API.AddGump(g)
+         API.Gumps.AddGump(g)
          ```
         
         """
@@ -686,18 +798,18 @@ class ApiUiGump:
          Create a radio button for gumps, use group numbers to only allow one item to be checked at a time.
          Example:
          ```py
-         g = API.CreateGump()
+         g = API.Gumps.CreateGump()
          g.SetRect(100, 100, 200, 200)
-         rb = API.CreateGumpRadioButton("Click Me!", 1)
+         rb = API.Gumps.CreateGumpRadioButton("Click Me!", 1)
          g.Add(rb)
-         API.AddGump(g)
+         API.Gumps.AddGump(g)
          API.SysMsg("Radio button checked?: " + str(rb.IsChecked))
          ```
         
         """
         pass
 
-    def CreateGumpTextBox(self, text: "str" = "", width: "int" = 200, height: "int" = 30, multiline: "bool" = False) -> "ApiUiTtfTextInputField":
+    def CreateGumpTextBox(self, text: "str" = "", width: "int" = 200, height: "int" = 30, multiline: "bool" = False, fontSize: "float" = 20) -> "ApiUiTtfTextInputField":
         """
          Create a text area control.
          Example:
@@ -705,41 +817,41 @@ class ApiUiGump:
          w = 500
          h = 600
         
-         gump = API.CreateGump(True, True)
+         gump = API.Gumps.CreateGump(True, True)
          gump.SetWidth(w)
          gump.SetHeight(h)
          gump.CenterXInViewPort()
          gump.CenterYInViewPort()
         
-         bg = API.CreateGumpColorBox(0.7, "#D4202020")
+         bg = API.Gumps.CreateGumpColorBox(0.7, "#D4202020")
          bg.SetWidth(w)
          bg.SetHeight(h)
         
          gump.Add(bg)
         
-         textbox = API.CreateGumpTextBox("Text example", w, h, True)
+         textbox = API.Gumps.CreateGumpTextBox("Text example", w, h, True)
         
          gump.Add(textbox)
         
-         API.AddGump(gump)
+         API.Gumps.AddGump(gump)
          ```
         
         """
         pass
 
-    def CreateGumpTTFLabel(self, text: "str", size: "float", color: "str" = "#FFFFFF", font: "str" = TrueTypeLoader.EMBEDDED_FONT, aligned: "str" = "let", maxWidth: "int" = 0, applyStroke: "bool" = False) -> "ApiUiTextBox":
+    def CreateGumpTTFLabel(self, text: "str", size: "float", color: "str" = "#FFFFFF", font: "str" = TrueTypeLoader.EMBEDDED_FONT, aligned: "str" = "left", maxWidth: "int" = 0, applyStroke: "bool" = False) -> "ApiUiTextBox":
         """
          Create a TTF label with advanced options.
          Example:
          ```py
-         gump = API.CreateGump()
+         gump = API.Gumps.CreateGump()
          gump.SetRect(100, 100, 200, 200)
         
-         ttflabel = API.CreateGumpTTFLabel("Example label", 25, "#F100DD", "alagard")
+         ttflabel = API.Gumps.CreateGumpTTFLabel("Example label", 25, "#F100DD", "alagard")
          ttflabel.SetRect(10, 10, 180, 30)
          gump.Add(ttflabel)
         
-         API.AddGump(gump) #Add the gump to the players screen
+         API.Gumps.AddGump(gump) #Add the gump to the players screen
          ```
         
         """
@@ -750,13 +862,13 @@ class ApiUiGump:
          Create a progress bar. Can be updated as needed with `bar.SetProgress(current, max)`.
          Example:
          ```py
-         gump = API.CreateGump()
+         gump = API.Gumps.CreateGump()
          gump.SetRect(100, 100, 400, 200)
         
-         pb = API.CreateGumpSimpleProgressBar(400, 200)
+         pb = API.Gumps.CreateGumpSimpleProgressBar(400, 200)
          gump.Add(pb)
         
-         API.AddGump(gump)
+         API.Gumps.AddGump(gump)
         
          cur = 0
          max = 100
@@ -772,16 +884,33 @@ class ApiUiGump:
         """
         pass
 
+    def CreateSlider(self, width: "int", min: "int" = 0, max: "int" = 100, value: "int" = 0, x: "int" = 0, y: "int" = 0, showText: "bool" = False) -> "ApiUiSlider":
+        """
+         Create a horizontal slider control. Read or update its value with `slider.Value` / `slider.SetValue(value)`.
+         Example:
+         ```py
+         gump = API.Gumps.CreateGump()
+         gump.SetRect(100, 100, 300, 100)
+        
+         slider = API.Gumps.CreateSlider(200, 0, 100, 50)
+         gump.Add(slider)
+        
+         API.Gumps.AddGump(gump)
+         ```
+        
+        """
+        pass
+
     def CreateGumpScrollArea(self, x: "int", y: "int", width: "int", height: "int") -> "ApiUiScrollArea":
         """
          Create a scrolling area, add and position controls to it directly.
          Example:
          ```py
-         sa = API.CreateGumpScrollArea(0, 60, 200, 140)
+         sa = API.Gumps.CreateGumpScrollArea(0, 60, 200, 140)
          gump.Add(sa)
         
          for i in range(10):
-             label = API.CreateGumpTTFLabel(f"Label {i + 1}", 20, "#FFFFFF", "alagard")
+             label = API.Gumps.CreateGumpTTFLabel(f"Label {i + 1}", 20, "#FFFFFF", "alagard")
              label.SetRect(5, i * 20, 180, 20)
              sa.Add(label)
          ```
@@ -794,7 +923,7 @@ class ApiUiGump:
          Create a gump pic(Use this for gump art, not item art)
          Example:
          ```py
-         gumpPic = API.CreateGumpPic(0xafb)
+         gumpPic = API.Gumps.CreateGumpPic(0xafb)
          gump.Add(gumpPic)
         
         """
@@ -805,7 +934,7 @@ class ApiUiGump:
          Create a gump pic that tiles(repeats) (Use this for gump art, not item art)
          Example:
          ```py
-         gumpPic = API.CreateTiledGumpPic(0xafb, 100, 100)
+         gumpPic = API.Gumps.CreateTiledGumpPic(0xafb, 100, 100)
          gump.Add(gumpPic)
         
         """
@@ -825,8 +954,8 @@ class ApiUiGump:
          ```py
          def myfunc:
            API.SysMsg("Something clicked!")
-         bg = API.CreateGumpColorBox(0.7, "#D4202020")
-         API.AddControlOnClick(bg, myfunc)
+         bg = API.Gumps.CreateGumpColorBox(0.7, "#D4202020")
+         API.Gumps.AddControlOnClick(bg, myfunc)
          while True:
            API.ProcessCallbacks()
          ```
@@ -842,13 +971,13 @@ class ApiUiGump:
          def onClose():
              API.Stop()
         
-         gump = API.CreateGump()
+         gump = API.Gumps.CreateGump()
          gump.SetRect(100, 100, 200, 200)
         
-         bg = API.CreateGumpColorBox(opacity=0.7, color="#000000")
+         bg = API.Gumps.CreateGumpColorBox(opacity=0.7, color="#000000")
          gump.Add(bg.SetRect(0, 0, 200, 200))
         
-         API.AddControlOnDisposed(gump, onClose)
+         API.Gumps.AddControlOnDisposed(gump, onClose)
          ```
         
         """
@@ -865,6 +994,10 @@ class ApiUiLabel(ApiUiBaseControl):
     ""
     Text: str = None
     Hue: int = None
+
+class ApiUiLegionTexture(ApiUiBaseControl):
+    ""
+    TextureName: str = None
 
 class ApiUiMenuItem:
     ""
@@ -885,7 +1018,7 @@ class ApiUiMenuItem:
     def __repr__(self) -> "str":
         """
          Returns a detailed string representation of the object.
-         This string is used by Python’s built-in <c>repr()</c> function.
+         This string is used by Python’s built-in `repr()` function.
         
         """
         pass
@@ -923,7 +1056,6 @@ class ApiUiNiceButton(ApiUiBaseControl):
 
 class ApiUiNineSliceGump(ApiUiBaseControl, IApiGump):
     ""
-    NineSliceGump = None
     Gump: ApiUiBaseGump = None
 
     def GetHue(self) -> "int":
@@ -968,8 +1100,22 @@ class ApiUiNineSliceGump(ApiUiBaseControl, IApiGump):
         """
         pass
 
+    def SetLegionTexture(self, texture: "str", borderSize: "int") -> None:
+        """
+         Set the modern gump texture and border size
+        
+        """
+        pass
+
 class ModernNineSliceGump(NineSliceGump):
     ""
+
+    def SetLegionTexture(self, texture: "str", borderSize: "int") -> None:
+        """
+         Set the modern gump texture and border size
+        
+        """
+        pass
 
     def SetResizeCallback(self, callback: "Any") -> None:
         """
@@ -1009,6 +1155,10 @@ class ApiUiRadioButton(ApiUiCheckbox):
         """
         pass
 
+class ApiUiRenderedMapArea(ApiUiBaseControl):
+    ""
+    Alpha: float = None
+
 class ApiUiResizableStaticPic(ApiUiBaseControl):
     ""
     Hue: int = None
@@ -1024,6 +1174,47 @@ class ApiUiSimpleProgressBar(ApiUiBaseControl):
     def SetProgress(self, value: "float", max: "float") -> None:
         """
          Sets the progress value for the progress bar.
+        
+        """
+        pass
+
+class ApiUiSlider(ApiUiBaseControl):
+    ""
+    Value: int = None
+    MinValue: int = None
+    MaxValue: int = None
+
+    def GetValue(self) -> "int":
+        """
+         Gets the slider's current value.
+         Used in python API
+        
+        """
+        pass
+
+    def SetValue(self, value: "int") -> "ApiUiSlider":
+        """
+         Sets the slider's current value. Values outside MinValue/MaxValue are clamped.
+         Used in python API
+        
+        """
+        pass
+
+    def OnValueChanged(self, onValueChanged: "Any") -> "ApiUiSlider":
+        """
+         Add an onValueChanged callback to this slider, invoked whenever the value changes.
+         The callback function receives the new value as its only argument.
+         Example:
+         ```py
+         def on_change(value):
+           API.SysMsg(f"Slider is now {value}")
+        
+         slider = API.Gumps.CreateGumpSlider(200, 0, 100, 50)
+         slider.OnValueChanged(on_change)
+        
+         while True:
+           API.ProcessCallbacks()
+         ```
         
         """
         pass
@@ -1047,6 +1238,7 @@ class ApiUiTiledGumpPic(ApiUiBaseControl):
 class ApiUiTtfTextInputField(ApiUiBaseControl):
     ""
     Text: str = None
+    FontSize: float = None
     CaretIndex: int = None
     NumbersOnly: bool = None
     AcceptKeyboardInput: bool = None
@@ -1086,6 +1278,8 @@ Random = None
 LastTargetSerial: int = None
 LastTargetPos: ApiPoint3D = None
 LastTargetGraphic: int = None
+LastSpellIndex: int = None
+LastSpellName: str = None
 Found: int = None
 Profile: ApiUserProfile = None
 Gumps: ApiUiGump = None
@@ -1115,12 +1309,28 @@ class PersistentVar:
     Server = 3
     Global = 4
 
+class EffectType:
+    Moving = 1
+    Lightning = 1
+    FixedXYZ = 1
+    FixedFrom = 1
+
+class EffectBlendMode:
+    Normal = 1
+    Multiply = 1
+    Screen = 1
+    ScreenMore = 1
+    ScreenLess = 1
+    NormalHalfTransparent = 1
+    ShadowBlue = 1
+    ScreenRed = 1
+
 def ProcessCallbacks() -> None:
     """
      Use this when you need to wait for players to click buttons.
      Example:
      ```py
-     while True:
+     while not API.StopRequested:
        API.ProcessCallbacks()
        API.Pause(0.1)
      ```
@@ -1139,7 +1349,7 @@ def OnHotKey(key: "str", callback: "Any" = None) -> None:
      def on_shift_a():
          API.SysMsg("SHIFT+A pressed!")
      API.OnHotKey("SHIFT+A", on_shift_a)
-     while True:
+     while not API.StopRequested:
        API.ProcessCallbacks()
        API.Pause(0.1)
      ```
@@ -1149,6 +1359,48 @@ def OnHotKey(key: "str", callback: "Any" = None) -> None:
      ```
      The <paramref name="key"/> can include modifiers (CTRL, SHIFT, ALT),
      for example: "CTRL+SHIFT+F1" or "ALT+A".
+    
+    """
+    pass
+
+def IsKeyPressed(key: "str") -> "bool":
+    """
+     Returns true if the given key combination is currently held down.
+     The key format matches `OnHotKey` , e.g. "CTRL+SHIFT+F1" or "A".
+     Extra modifiers beyond those specified do not prevent a match.
+    
+    """
+    pass
+
+def RequestHotkey(prompt: "str" = "Press a hotkey", timeout: "float" = 30) -> "str":
+    """
+     Shows the in-game hotkey capture window and waits for the player to pick a key combination.
+     The returned string matches what `OnHotKey` and `IsKeyPressed` accept, so it can be passed
+     straight to them, e.g. "CTRL+SHIFT+F1" or "A".
+     Only keyboard bindings are returned; mouse, wheel, controller and modifier-only captures are
+     rejected. Blocks until the player saves a key or closes the window (or the timeout elapses).
+     Example:
+     ```py
+     key = API.RequestHotkey()
+     if key:
+       API.OnHotKey(key, on_pressed)
+     ```
+    
+    """
+    pass
+
+def ScheduleTimedCallback(delayMs: "int", callback: "Any", timesToRepeat: "int" = -1) -> "int":
+    """
+     Schedules a callback to be invoked after a specified delay.
+    
+     Note that as with keyboard hotkeys, you must call `ProcessCallbacks` for the callback to actually be run.
+    
+    """
+    pass
+
+def RemoveTimedCallback(id: "int") -> None:
+    """
+     Removes a previously scheduled timed callback
     
     """
     pass
@@ -1306,6 +1558,20 @@ def Contents(serial: "int") -> "int":
     """
     pass
 
+def GetSpellsInSpellbook(serial: "int") -> "list[str]":
+    """
+     Get the names of all spells scribed into a spellbook.
+     Example:
+     ```py
+     spells = API.GetSpellsInSpellbook(book_serial)
+     if spells:
+       for spell in spells:
+         API.SysMsg(spell)
+     ```
+    
+    """
+    pass
+
 def ContextMenu(serial: "int", entry: "int") -> None:
     """
      Send a context menu(right click menu) response.
@@ -1313,6 +1579,19 @@ def ContextMenu(serial: "int", entry: "int") -> None:
      Example:
      ```py
      API.ContextMenu(API.Player, 1)
+     ```
+    
+    """
+    pass
+
+def ContextMenu(serial: "int", entry: "str", timeout: "float" = 5) -> "bool":
+    """
+     Send a context menu(right click menu) response by matching the entry text.
+     This opens the menu, finds the entry whose text matches, and responds with the correct index.
+     The match is case-insensitive and matches the first entry that contains the given text.
+     Example:
+     ```py
+     API.ContextMenu(API.Player, "Open Paperdoll")
      ```
     
     """
@@ -1408,7 +1687,7 @@ def MoveItem(serial: "int", destination: "int", amt: "int" = 0, x: "int" = 0xFFF
     """
     pass
 
-def QueueMoveItemOffset(serial: "int", amt: "int" = 0, x: "int" = 0, y: "int" = 0, z: "int" = 0, OSI: "bool" = False) -> None:
+def QueueMoveItemOffset(serial: "int", amt: "int" = 0, x: "int" = 0, y: "int" = 0, z: "int" = 1337, OSI: "bool" = False) -> None:
     """
      Move an item to the ground near you.
      Example:
@@ -1421,7 +1700,7 @@ def QueueMoveItemOffset(serial: "int", amt: "int" = 0, x: "int" = 0, y: "int" = 
     """
     pass
 
-def MoveItemOffset(serial: "int", amt: "int" = 0, x: "int" = 0, y: "int" = 0, z: "int" = 0, OSI: "bool" = False) -> None:
+def MoveItemOffset(serial: "int", amt: "int" = 0, x: "int" = 0, y: "int" = 0, z: "int" = 1337, OSI: "bool" = False) -> None:
     """
      Move an item to the ground near you.
      Example:
@@ -1451,7 +1730,7 @@ def DropFromCursor(serial: "int" = 0, x: "int" = 1337, y: "int" = 1337, z: "int"
 
 def GetHeldItem() -> "int":
     """
-     Retrieves data of the currently held item on the game cursor.
+     Retrieves serial of the currently held item on the game cursor.
     
     """
     pass
@@ -1584,6 +1863,48 @@ def ActiveBuffs() -> "list[ApiBuff]":
     """
     pass
 
+def ActiveSpells() -> "list[int]":
+    """
+     Get a list of spell ids for spells that are currently toggled on/active.
+     These are toggle spells/moves (for example Ninjitsu or Bushido moves) that the server
+     reports as active, the same ones the spell bar highlights.
+     Example:
+     ```py
+     for spellId in API.ActiveSpells():
+         API.SysMsg("Active spell id: " + str(spellId))
+     ```
+    
+    """
+    pass
+
+def ActiveSpellNames() -> "list[str]":
+    """
+     Get a list of names for spells that are currently toggled on/active.
+     These are toggle spells/moves (for example Ninjitsu or Bushido moves) that the server
+     reports as active, the same ones the spell bar highlights.
+     Example:
+     ```py
+     for name in API.ActiveSpellNames():
+         API.SysMsg("Active spell: " + name)
+     ```
+    
+    """
+    pass
+
+def IsSpellActive(spell: "Any") -> "bool":
+    """
+     Check if a toggle spell/move is currently active.
+     You can pass a spell name (for example "Confidence") or a spell id.
+     These are toggle spells/moves that the server reports as active, the same ones the spell bar highlights.
+     Example:
+     ```py
+     if API.IsSpellActive("Confidence"):
+         API.SysMsg("Confidence is active!")
+     ```
+    
+    """
+    pass
+
 def SysMsg(message: "str", hue: "int" = 946) -> None:
     """
      Show a system message(Left side of screen).
@@ -1600,7 +1921,7 @@ def Msg(message: "str") -> None:
      Say a message outloud.
      Example:
      ```py
-     API.Say("Hello friend!")
+     API.Msg("Hello friend!")
      ```
     
     """
@@ -1808,6 +2129,74 @@ def CreateCooldownBar(seconds: "float", text: "str", hue: "int") -> None:
     """
     pass
 
+def UpdateCooldown(name: "str", maxValue: "float" = -1, currentValue: "float" = -1) -> None:
+    """
+     Updates an existing cooldown bar. Only the provided values are applied.
+     Example:
+     ```py
+     API.UpdateCooldown("Healing", maxValue=10, currentValue=5)
+     ```
+    
+    """
+    pass
+
+def RestartCooldown(name: "str") -> None:
+    """
+     Restarts the countdown of an existing cooldown bar to its full duration.
+     Example:
+     ```py
+     API.RestartCooldown("Healing")
+     ```
+    
+    """
+    pass
+
+def DeleteCooldown(name: "str") -> None:
+    """
+     Deletes an existing cooldown bar.
+     Example:
+     ```py
+     API.DeleteCooldown("Healing")
+     ```
+    
+    """
+    pass
+
+def CooldownExists(name: "str") -> "bool":
+    """
+     Checks whether a cooldown bar with the given name exists.
+     Example:
+     ```py
+     if API.CooldownExists("Healing"):
+     ```
+    
+    """
+    pass
+
+def CreateEffect(graphic: "int", type: "EffectType" = EffectType.FixedXYZ, source: "int" = 0, target: "int" = 0, hue: "int" = 0, sourceX: "int | None" = None, sourceY: "int | None" = None, sourceZ: "int | None" = None, targetX: "int | None" = None, targetY: "int | None" = None, targetZ: "int | None" = None, duration: "float" = 2, speed: "int" = 0, fixedDirection: "bool" = False, doesExplode: "bool" = False, blendMode: "EffectBlendMode" = EffectBlendMode.Normal) -> None:
+    """
+     Creates and displays a graphic effect in the world, the same kind the server sends for spells,
+     projectiles, explosions, etc. This is a purely local, visual effect - no packet is sent and only
+     you see it.
+     The type decides how it behaves: `EffectType.FixedXYZ` and
+     `EffectType.FixedFrom` stay in place, `EffectType.Moving` travels from
+     the source to the target, and `EffectType.Lightning` draws a bolt from the source.
+     Positions come from the source/target serials when given, otherwise from the coordinates, which
+     default to the player's position.
+     Example:
+     ```py
+     # A stationary animation on the tile next to the player, for 2 seconds
+     API.CreateEffect(0x373A, sourceX=API.Player.X + 1, sourceY=API.Player.Y, hue=0x0481)
+    
+     # A projectile fired from the player at the nearest murderer
+     mob = API.NearestMobile([API.Notoriety.Murderer], 8)
+     if mob:
+       API.CreateEffect(0x36D0, type=API.EffectType.Moving, source=API.Player, target=mob)
+     ```
+    
+    """
+    pass
+
 def IgnoreObject(serial: "int") -> None:
     """
      Adds an item or mobile to your ignore list.
@@ -1856,7 +2245,7 @@ def OnIgnoreList(serial: "int") -> "bool":
     """
     pass
 
-def Pathfind(x: "int", y: "int", z: "int" = 1337, distance: "int" = 1, wait: "bool" = False, timeout: "int" = 10) -> "bool":
+def Pathfind(x: "int", y: "int", z: "int" = 1337, distance: "int" = 1, wait: "bool" = False, timeout: "int" = 10, run: "bool" = True) -> "bool":
     """
      Attempt to pathfind to a location.  This will fail with large distances.
      Example:
@@ -1867,7 +2256,7 @@ def Pathfind(x: "int", y: "int", z: "int" = 1337, distance: "int" = 1, wait: "bo
     """
     pass
 
-def PathfindEntity(entity: "int", distance: "int" = 1, wait: "bool" = False, timeout: "int" = 10) -> "bool":
+def PathfindEntity(entity: "int", distance: "int" = 1, wait: "bool" = False, timeout: "int" = 10, run: "bool" = True) -> "bool":
     """
      Attempt to pathfind to a mobile or item.
      Example:
@@ -2069,7 +2458,7 @@ def RequestTarget(timeout: "float" = 5) -> "int":
 
 def RequestAnyTarget(timeout: "float" = 5) -> "ApiGameObject":
     """
-     Prompts the player to target any object in the game world, including an <c>Item</c> , <c>Mobile</c> , <c>Land</c> tile, <c>Static</c> , or <c>Multi</c> .
+     Prompts the player to target any object in the game world, including an Item, Mobile, Land tile, Static, or Multi.
      Waits for the player to select a target within a given timeout period.
     
     """
@@ -2081,6 +2470,18 @@ def TargetSelf() -> None:
      Example:
      ```py
      API.TargetSelf()
+     ```
+    
+    """
+    pass
+
+def TargetRel(xOffset: "int", yOffset: "int", tilesOnly: "bool" = True) -> None:
+    """
+     Target the spot at an offset from your position, resolving it the same way a click would:
+     the topmost visible object there is targeted, whether that is an entity, a static/multi, or land.
+     Example:
+     ```py
+     API.TargetRel(1, 1)
      ```
     
     """
@@ -2098,10 +2499,10 @@ def TargetLandRel(xOffset: "int", yOffset: "int") -> None:
     """
     pass
 
-def TargetTileRel(xOffset: "int", yOffset: "int", graphic: "int" = 1337) -> None:
+def TargetTileRel(xOffset: "int", yOffset: "int", graphic: "int" = 1337, tilesOnly: "bool" = True) -> None:
     """
-     Target a tile relative to your location.
-     If this doesn't work, try TargetLandRel instead.'
+     Target the highest visible object at a tile relative to your location, skipping land.
+     Resolves the spot the same way <see cref="TargetRel"/> does, but never falls back to land.
      Example:
      ```py
      API.TargetTileRel(1, 1)
@@ -2136,6 +2537,20 @@ def CancelTarget() -> None:
      if API.WaitForTarget():
        API.CancelTarget()
        API.SysMsg("Targeting cancelled, april fools made you target something!")
+     ```
+    
+    """
+    pass
+
+def SetLastTarget(serial: "int | None" = None, x: "int | None" = None, y: "int | None" = None, z: "int | None" = None, graphic: "int | None" = None) -> None:
+    """
+     Override the client's last target. Pass a serial for an entity, or a location (x/y/z)
+     for a land tile. Include graphic to mark the location as a static instead.
+     Example:
+     ```py
+     API.SetLastTarget(serial=0x12345678)
+     API.SetLastTarget(x=1243, y=1337, z=0)
+     API.SetLastTarget(x=1243, y=1337, z=0, graphic=0x1)
      ```
     
     """
@@ -2489,6 +2904,17 @@ def GetSoundLog(seconds: "float") -> "list[ApiSoundEntry]":
     """
     pass
 
+def PlaySound(index: "int") -> None:
+    """
+     Play a sound effect locally (only audible to you).
+     Example:
+     ```py
+     API.PlaySound(0x13E)
+     ```
+    
+    """
+    pass
+
 def InJournalAny(msgs: "list[str]", clearMatches: "bool" = False) -> "bool":
     """
      Check if the journal contains *any* of the strings in this list.
@@ -2551,6 +2977,33 @@ def Stop() -> None:
     """
     pass
 
+def OnStop(callback: "Any" = None) -> None:
+    """
+     Register an optional callback to run when this script is being stopped.
+     When set, stopping the script will be delayed until this callback has been
+     processed, or until a maximum of 5 seconds have passed.
+    
+     Callbacks only run while the script is calling `API.ProcessCallbacks`,
+     so make sure your script keeps calling it (for example in its main loop) for
+     the OnStop callback to actually run before the timeout elapses.
+    
+     Example:
+     ```py
+     def on_stop():
+       API.SysMsg("Cleaning up before stopping...")
+     API.OnStop(on_stop)
+     while not API.StopRequested:
+       API.ProcessCallbacks()
+       API.Pause(0.1)
+     ```
+     To unregister, call with no callback:
+     ```py
+     API.OnStop()
+     ```
+    
+    """
+    pass
+
 def ToggleAutoLoot() -> None:
     """
      Toggle autolooting on or off.
@@ -2581,6 +3034,28 @@ def Virtue(virtue: "str") -> None:
      Example:
      ```py
      API.Virtue("honor")
+     ```
+    
+    """
+    pass
+
+def OpenQuestLog() -> None:
+    """
+     Open the quest log gump.
+     Example:
+     ```py
+     API.OpenQuestLog()
+     ```
+    
+    """
+    pass
+
+def OpenHelp() -> None:
+    """
+     Open the help menu.
+     Example:
+     ```py
+     API.OpenHelp()
      ```
     
     """
@@ -2663,9 +3138,10 @@ def FindMobile(serial: "int") -> "ApiMobile":
     """
     pass
 
-def GetAllMobiles(graphic: "int | None" = None, distance: "int | None" = None, notoriety: "list[Notoriety]" = None) -> "list[ApiMobile]":
+def GetAllMobiles(graphic: "int | None" = None, distance: "int | None" = None, notoriety: "list[Notoriety]" = None, sortby: "str" = "Distance", name: "str" = None, graphics: "list[int]" = None, minDistance: "int | None" = None, isHuman: "bool | None" = None, isFemale: "bool | None" = None, isGhost: "bool | None" = None, isFriend: "bool | None" = None, poisoned: "bool | None" = None, paralyzed: "bool | None" = None, hasLineOfSight: "bool | None" = None, hues: "list[int]" = None) -> "list[ApiMobile]":
     """
      Return a list of all mobiles the client is aware of, optionally filtered by graphic, distance, and/or notoriety.
+     Any additional filter is ignored unless supplied.
      Example:
      ```py
      # Get all mobiles
@@ -2676,6 +3152,12 @@ def GetAllMobiles(graphic: "int | None" = None, distance: "int | None" = None, n
      nearby_humans = API.GetAllMobiles(400, 5)
      # Get all enemies (murderers and criminals) within 15 tiles
      enemies = API.GetAllMobiles(distance=15, notoriety=[API.Notoriety.Murderer, API.Notoriety.Criminal])
+     # Get all mobiles sorted by current hits, lowest first
+     sorted_by_hits = API.GetAllMobiles(sortby="hits")
+     # Get all poisonous ogres within 10 tiles in line of sight
+     targets = API.GetAllMobiles(name="ogre", distance=10, poisoned=True, hasLineOfSight=True)
+     # Get only dead friends with a specific hue, at least 2 tiles away
+     ghosts = API.GetAllMobiles(isGhost=True, isFriend=True, minDistance=2, hues=[0x83EA])
      ```
     
     """
@@ -2881,14 +3363,14 @@ def CreateGumpRadioButton(text: "str" = "", group: "int" = 0, inactive: "int" = 
     """
     pass
 
-def CreateGumpTextBox(text: "str" = "", width: "int" = 200, height: "int" = 30, multiline: "bool" = False) -> "ApiUiTtfTextInputField":
+def CreateGumpTextBox(text: "str" = "", width: "int" = 200, height: "int" = 30, multiline: "bool" = False, fontSize: "float" = 20) -> "ApiUiTtfTextInputField":
     """
      Use API.Gumps.CreateGumpTextBox instead.
     
     """
     pass
 
-def CreateGumpTTFLabel(text: "str", size: "float", color: "str" = "#FFFFFF", font: "str" = TrueTypeLoader.EMBEDDED_FONT, aligned: "str" = "let", maxWidth: "int" = 0, applyStroke: "bool" = False) -> "ApiUiTextBox":
+def CreateGumpTTFLabel(text: "str", size: "float", color: "str" = "#FFFFFF", font: "str" = TrueTypeLoader.EMBEDDED_FONT, aligned: "str" = "left", maxWidth: "int" = 0, applyStroke: "bool" = False) -> "ApiUiTextBox":
     """
      Use API.Gumps.CreateGumpTTFLabel instead.
     
@@ -2971,27 +3453,61 @@ def DisplayRange(distance: "int", hue: "int" = 22) -> None:
     """
     pass
 
-def ToggleScript(scriptName: "str") -> None:
+def ToggleScript(scriptPath: "str") -> None:
     """
      Toggle another script on or off.
      Example:
      ```py
-     API.ToggleScript("MyScript.py")
+     API.ToggleScript("mygroup/MyScript.py")
      ```
     
     """
     pass
 
-def PlayScript(scriptName: "str") -> None:
+def PlayScript(scriptPath: "str") -> None:
     """
      Play a legion script.
+     Example:
+     ```py
+     API.PlayScript("mygroup/MyScript.py")
+     ```
     
     """
     pass
 
-def StopScript(scriptName: "str") -> None:
+def StopScript(scriptPath: "str") -> None:
     """
      Stop a legion script.
+     Example:
+     ```py
+     API.StopScript("mygroup/MyScript.py")
+     ```
+    
+    """
+    pass
+
+def ListRunningScripts() -> "list[str]":
+    """
+     Get the paths of all currently running legion scripts.
+     The paths are relative to the LegionScripts folder and can be passed
+     straight back to PlayScript, StopScript, ToggleScript or IsScriptRunning.
+     Example:
+     ```py
+     for path in API.ListRunningScripts():
+         API.SysMsg(path)
+     ```
+    
+    """
+    pass
+
+def IsScriptRunning(scriptPath: "str") -> "bool":
+    """
+     Check if a legion script is currently running.
+     Example:
+     ```py
+     if not API.IsScriptRunning("mygroup/MyScript.py"):
+         API.PlayScript("mygroup/MyScript.py")
+     ```
     
     """
     pass
@@ -3114,6 +3630,49 @@ def TrackingArrow(x: "int", y: "int", identifier: "int" = 1337) -> None:
     """
     pass
 
+def GetClilocString(cliloc: "int", englishOnly: "bool" = False) -> "str":
+    """
+     Get the string for a cliloc number.
+     Example:
+     ```py
+     text = API.GetClilocString(1020000)
+     if text:
+       API.SysMsg(text)
+    
+     # Force English regardless of client language setting
+     text = API.GetClilocString(1020000, englishOnly=True)
+     ```
+    
+    """
+    pass
+
+def GetClientBounds() -> "Any":
+    """
+     Get the bounds of the client game window.
+     This covers the entire window, including all UI and the game world.
+     Coordinates are in screen pixels.
+     Example:
+     ```py
+     bounds = API.GetClientBounds()
+     API.SysMsg(f"Window is {bounds.Width}x{bounds.Height} at {bounds.X},{bounds.Y}")
+     ```
+    
+    """
+    pass
+
+def GetViewportBounds() -> "Any":
+    """
+     Get the bounds of the game world viewport.
+     This is the area where the game world is rendered, in screen pixel coordinates.
+     Example:
+     ```py
+     vp = API.GetViewportBounds()
+     API.SysMsg(f"Viewport at {vp.X},{vp.Y} size {vp.Width}x{vp.Height}")
+     ```
+    
+    """
+    pass
+
 class EventSinkApiDeclaration:
     ""
 
@@ -3170,7 +3729,7 @@ class EventSinkApiDeclaration:
 
     def ClilocMessageReceived(self, callback: "Any") -> None:
         """
-          Not currently used. May be removed later or put into use, not sure right now
+         Invoked when a cliloc message is received from the server
         
         """
         pass
@@ -3231,6 +3790,12 @@ class EventSinkApiDeclaration:
          Invoked when a container is opened.
          The event's 'sender' is the Item, the event's argument is the item's serial
         
+        """
+        pass
+
+    def ObjectUsed(self, callback: "Any") -> None:
+        """
+        Invoked when the client sends a double-click (use) request for an object's serial.
         """
         pass
 

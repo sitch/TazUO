@@ -9,9 +9,9 @@ namespace ClassicUO.Utility
 {
     public static class Profiler
     {
+        private const string PACKET_CONTEXT_PREFIX = "Packet";
+
         public const int ProfileTimeCount = 60;
-        public const double SpikeThresholdMultiplier = 3.0;
-        public const double MinimumTimeForSpikeDetection = 2.0;
         private static readonly List<ContextAndTick> m_Context;
         private static readonly List<Tuple<string[], double>> m_ThisFrameData;
         private static readonly List<ProfileData> m_AllFrameData;
@@ -36,7 +36,7 @@ namespace ClassicUO.Utility
 
         public static bool Enabled = false;
 
-        [Conditional("DEBUG")]
+        //[Conditional("DEBUG")]
         public static void BeginFrame()
         {
             if (!Enabled)
@@ -73,7 +73,7 @@ namespace ClassicUO.Utility
             m_BeginFrameTicks = _timer.ElapsedTicks;
         }
 
-        [Conditional("DEBUG")]
+        //[Conditional("DEBUG")]
         public static void EndFrame()
         {
             if (!Enabled)
@@ -85,26 +85,56 @@ namespace ClassicUO.Utility
             m_TotalTimeData.AddNewHitLength(LastFrameTimeMS);
         }
 
-        [Conditional("DEBUG")]
-        public static void EnterContext(string context_name)
+        //[Conditional("DEBUG")]
+        public static void EnterContext(string contextName)
         {
             if (!Enabled)
-            {
                 return;
-            }
 
-            m_Context.Add(new ContextAndTick(context_name, _timer.ElapsedTicks));
+            m_Context.Add(new ContextAndTick(contextName, _timer.ElapsedTicks));
         }
 
-        [Conditional("DEBUG")]
-        public static void ExitContext(string context_name, bool errorNotInContext = false)
+        /// <summary>
+        ///     Enters into a 'packet' context
+        /// </summary>
+        /// <remarks>
+        ///     This is used to track the time spent processing a packet (generally an incoming one).
+        ///     It differs from <see cref="EnterContext" /> in that it performs string allocation/interpolation only when
+        ///     necessary, allow hot-path callers to maintain performance.
+        /// </remarks>
+        /// <param name="id">The packet's ID</param>
+        public static void EnterPacketContext(byte id)
+        {
+            if (!Enabled)
+                return;
+            EnterContext($"{PACKET_CONTEXT_PREFIX} 0x{id:X2}");
+        }
+
+        /// <summary>
+        ///     Exits from a 'packet' context
+        /// </summary>
+        /// <remarks>
+        ///     This is used to track the time spent processing a packet (generally an incoming one).
+        ///     It differs from <see cref="EnterContext" /> in that it performs string allocation/interpolation only when
+        ///     necessary, allow hot-path callers to maintain performance.
+        /// </remarks>
+        /// <param name="id">The packet's ID</param>
+        public static void ExitPacketContext(byte id)
+        {
+            if (!Enabled)
+                return;
+            ExitContext($"{PACKET_CONTEXT_PREFIX} 0x{id:X2}");
+        }
+
+        //[Conditional("DEBUG")]
+        public static void ExitContext(string contextName, bool errorNotInContext = false)
         {
             if (!Enabled)
             {
                 return;
             }
 
-            if (m_Context.Count == 0 || m_Context[m_Context.Count - 1].Name != context_name)
+            if (m_Context.Count == 0 || m_Context[m_Context.Count - 1].Name != contextName)
             {
                 if(errorNotInContext)
                     Log.Error("Profiler.ExitProfiledContext: context_name does not match current context.");
@@ -127,14 +157,10 @@ namespace ClassicUO.Utility
         public static bool InContext(string context_name)
         {
             if (!Enabled)
-            {
                 return false;
-            }
 
             if (m_Context.Count == 0)
-            {
                 return false;
-            }
 
             return m_Context[m_Context.Count - 1].Name == context_name;
         }
@@ -157,11 +183,19 @@ namespace ClassicUO.Utility
             return ProfileData.Empty;
         }
 
+        public static void Reset()
+        {
+            m_AllFrameData.Clear();
+            m_ThisFrameData.Clear();
+            m_Context.Clear();
+        }
+
         public class ProfileData
         {
             public static ProfileData Empty = new ProfileData(null, 0d);
             private uint m_LastIndex;
             private readonly double[] m_LastTimes = new double[ProfileTimeCount];
+            private double m_PeakTime;
 
             public ProfileData(string[] context, double time)
             {
@@ -171,6 +205,7 @@ namespace ClassicUO.Utility
             }
 
             public double LastTime => m_LastTimes[m_LastIndex % ProfileTimeCount];
+            public double PeakTime => m_PeakTime;
 
             public double TimeInContext
             {
@@ -210,21 +245,10 @@ namespace ClassicUO.Utility
 
             public void AddNewHitLength(double time)
             {
-                if (m_LastIndex >= ProfileTimeCount && time >= MinimumTimeForSpikeDetection)
-                {
-                    double currentAverage = AverageTime;
-                    if (time > currentAverage * SpikeThresholdMultiplier)
-                    {
-                        string contextName = Context != null ? string.Join(":", Context) : "Unknown";
-                        if(time < 20)
-                            Log.Warn($"Performance spike detected in '{contextName}': {time:F2}ms (avg: {currentAverage:F2}ms, threshold: {currentAverage * SpikeThresholdMultiplier:F2}ms)");
-                        else
-                            Log.Error($"Major spike detected in '{contextName}': {time:F2}ms (avg: {currentAverage:F2}ms, threshold: {currentAverage * SpikeThresholdMultiplier:F2}ms)");
-                    }
-                }
-
                 m_LastTimes[m_LastIndex % ProfileTimeCount] = time;
                 m_LastIndex++;
+                if (time > m_PeakTime)
+                    m_PeakTime = time;
             }
 
             public override string ToString()

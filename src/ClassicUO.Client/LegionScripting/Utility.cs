@@ -6,6 +6,7 @@ using System.Linq;
 using ClassicUO.Game;
 using ClassicUO.Game.Data;
 using ClassicUO.Game.GameObjects;
+using ClassicUO.Utility;
 using Microsoft.Xna.Framework;
 
 namespace ClassicUO.LegionScripting;
@@ -88,24 +89,15 @@ internal static class Utility
     {
         if (item == null)
             return false;
-
-        if (World.OPL.TryGetNameAndData(item.Serial, out string name, out string data))
-        {
-            if (name != null && name.ToLower().Contains(search.ToLower()))
-                return true;
-
-            if (data != null)
-                if (data.ToLower().Contains(search.ToLower()))
-                    return true;
-        }
-        else
-        {
-            if (item.Name != null && item.Name.ToLower().Contains(search.ToLower()))
-                return true;
-
-            if (item.ItemData.Name.ToLower().Contains(search.ToLower()))
-                return true;
-        }
+        
+        if (item.OPLName.ContainsIgnoreCase(search))
+            return true;
+        
+        if (item.OPLData.ContainsIgnoreCase(search))
+            return true;
+        
+        if (item.GetNormalizedName(false).ContainsIgnoreCase(search))
+            return true;
 
         return false;
     }
@@ -121,8 +113,8 @@ internal static class Utility
 
         switch (name)
         {
-            case "onehanded": finalLayer = Layer.OneHanded; break;
-            case "twohanded": finalLayer = Layer.TwoHanded; break;
+            case "onehanded" or "lefthand": finalLayer = Layer.OneHanded; break;
+            case "twohanded" or "righthand": finalLayer = Layer.TwoHanded; break;
             case "shoes": finalLayer = Layer.Shoes; break;
             case "pants": finalLayer = Layer.Pants; break;
             case "shirt": finalLayer = Layer.Shirt; break;
@@ -130,7 +122,7 @@ internal static class Utility
             case "gloves": finalLayer = Layer.Gloves; break;
             case "ring": finalLayer = Layer.Ring; break;
             case "talisman": finalLayer = Layer.Talisman; break;
-            case "necklace": finalLayer = Layer.Necklace; break;
+            case "necklace" or "neck": finalLayer = Layer.Neck; break;
             case "hair": finalLayer = Layer.Hair; break;
             case "waist": finalLayer = Layer.Waist; break;
             case "torso": finalLayer = Layer.Torso; break;
@@ -260,19 +252,7 @@ internal static class Utility
         return serial;
     }
 
-    public static Color GetColorFromHex(string color)
-    {
-        if (color.StartsWith("#") && color.Length == 7)
-        {
-            byte r = Convert.ToByte(color.Substring(1, 2), 16);
-            byte g = Convert.ToByte(color.Substring(3, 2), 16);
-            byte b = Convert.ToByte(color.Substring(5, 2), 16);
-
-                return new Color(r, g, b);
-        }
-
-        return Color.Black;
-    }
+    public static Color GetColorFromHex(string color) => color.FromHtmlHex(Color.Black);
 
 
 

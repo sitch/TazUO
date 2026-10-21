@@ -3,9 +3,9 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using ClassicUO.Game.GameObjects;
 using ClassicUO.Input;
-using ClassicUO.Resources;
 using ClassicUO.Utility.Logging;
 using System.Threading.Tasks;
 using ClassicUO.Game.Data;
@@ -13,6 +13,7 @@ using ClassicUO.Game.UI.Gumps;
 using ClassicUO.Configuration;
 using ClassicUO.Game.UI;
 using ClassicUO.LegionScripting;
+using Myra;
 
 namespace ClassicUO.Game.Managers
 {
@@ -58,7 +59,7 @@ namespace ClassicUO.Game.Managers
                 {
                     if (_world.Player != null)
                     {
-                        GameActions.Print(_world, string.Format(ResGeneral.CurrentDateTimeNowIs0, DateTime.Now));
+                        GameActions.Print(_world, string.Format(TazLang.Get("current_date_time_now_is0"), DateTime.Now));
                     }
                 }
             );
@@ -84,7 +85,7 @@ namespace ClassicUO.Game.Managers
                 s =>
                 {
                     CUOEnviroment.Debug = !CUOEnviroment.Debug;
-
+                    MyraEnvironment.DrawWidgetsFrames = !MyraEnvironment.DrawWidgetsFrames;
                 }
             );
 
@@ -218,34 +219,13 @@ namespace ClassicUO.Game.Managers
 
             });
 
-            Register("optlink", (s) =>
-            {
-                ModernOptionsGump g = UIManager.GetGump<ModernOptionsGump>();
-                if (s.Length > 1)
-                {
-                    if (g != null)
-                    {
-                        g.GoToPage(s[1]);
-                    }
-                    else
-                    {
-                        UIManager.Add(g = new ModernOptionsGump(_world));
-                        g.GoToPage(s[1]);
-                    }
-                }
-                else
-                {
-                    if (g != null)
-                    {
-                        GameActions.Print(_world, g.GetPageString());
-                    }
-                }
-            });
-
             Register("genspelldef", (s) =>
             {
                 Task.Run(() => SpellDefinition.SaveAllSpellsToJson(_world));
             });
+
+            Register("gumppositions", (s) => Game.UI.MyraWindows.GumpPositionManagerWindow.Show());
+            Register("xmleditor", (s) => XmlGumpEditorWindow.Show(_world));
 
             Register("setinscreen", (s) =>
             {
@@ -264,8 +244,6 @@ namespace ClassicUO.Game.Managers
             {
                 UIManager.Add(new UI.Gumps.UpdateTimerViewer(_world));
             });
-
-            Register("artbrowser", (s) => { UIManager.Add(new ArtBrowserGump(_world)); });
 
             Register("animbrowser", (s) => { UIManager.Add(new AnimBrowser(_world)); });
 
@@ -313,10 +291,53 @@ namespace ClassicUO.Game.Managers
                 GameActions.Print($"FPS Limit updated to: {Settings.GlobalSettings.FPS}", Constants.HUE_SUCCESS);
             });
 
-            Register("dressagent", (s) => DressAgentManager.Instance?.DressAgentCommand(s));
-            Register("organize", (s) => OrganizerAgent.Instance?.OrganizerCommand(s));
-            Register("organizer", (s) => OrganizerAgent.Instance?.OrganizerCommand(s));
-            Register("organizerlist", (s) => OrganizerAgent.Instance?.ListOrganizers());
+            Register("dressagent", s => DressAgentManager.Instance?.DressAgentCommand(s));
+            Register("organize", s => OrganizerAgent.Instance?.OrganizerCommand(s));
+            Register("organizer", s => OrganizerAgent.Instance?.OrganizerCommand(s));
+            Register("organizerlist", s => OrganizerAgent.Instance?.ListOrganizers());
+            Register("language-regenerate", _ => TazLang.Load(Settings.GlobalSettings.UILanguage));
+
+            RegisterDebugCommands();
+        }
+
+        /// <summary>Registers debug-only commands. Compiled out of Release.</summary>
+        [Conditional("DEBUG")]
+        private void RegisterDebugCommands()
+        {
+            Register("myra-draw-widget-frames", args => MyraEnvironment.DrawWidgetsFrames = ParseBooleanCommandArgs(args));
+            Register("myra-draw-hovered-widget-frames", args => MyraEnvironment.DrawMouseHoveredWidgetFrame = ParseBooleanCommandArgs(args));
+            Register("myra-draw-hovered-widget-info", args => MyraEnvironment.DrawMouseHoveredWidgetInfo = ParseBooleanCommandArgs(args));
+
+            // Desyncs death state from the server; only a real death/resurrect packet restores it.
+            Register("deadman-mode", args => World.Instance?.Player?.IsDead = ParseBooleanCommandArgs(args));
+        }
+
+        /// <summary>
+        ///     Parses a command and returns a boolean indicating whether the first argument is 'truthy'
+        ///     using lax semantics.
+        ///     <br />
+        ///     A truthy value is defined as one of the following:
+        ///     <list type="bullet">
+        ///         <item>true</item>
+        ///         <item>on</item>
+        ///         <item>yes</item>
+        ///         <item>1</item>
+        ///     </list>
+        /// </summary>
+        /// <param name="args">The command's arguments</param>
+        /// <returns><c>true</c> if the first argument is 'truthy', <c>false</c> otherwise</returns>
+        /// <remarks>
+        ///     // Like in process envs, the first argument is the command itself
+        /// </remarks>
+        private static bool ParseBooleanCommandArgs(string[] args) => args?.Length > 1 && ParseTruthyValue(args[1]);
+
+        private static bool ParseTruthyValue(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return false;
+
+            string loweredArg = value.ToLowerInvariant();
+            return new[] { "on", "true", "yes", "1" }.Contains(loweredArg);
         }
 
 
@@ -356,7 +377,7 @@ namespace ClassicUO.Game.Managers
             }
             else
             {
-                GameActions.Print(_world, string.Format(Language.Instance.ErrorsLanguage.CommandNotFound, name));
+                GameActions.Print(_world, TazLang.Get("errors_commandnotfound", new[] { name }));
                 Log.Warn($"Command: '{name}' not exists");
             }
         }
@@ -368,7 +389,7 @@ namespace ClassicUO.Game.Managers
             if (entity != null)
             {
                 _world.TargetManager.Target(entity);
-                GameActions.Print(_world, string.Format(ResGeneral.ItemID0Hue1, entity.Graphic, entity.Hue));
+                GameActions.Print(_world, string.Format(TazLang.Get("item_id0_hue1"), entity.Graphic, entity.Hue));
             }
         }
     }

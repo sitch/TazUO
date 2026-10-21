@@ -6,6 +6,7 @@ using ClassicUO.Game.Managers;
 using ClassicUO.Game.Managers.Structs;
 using ClassicUO.Game.UI.Controls;
 using ClassicUO.Game.UI.Gumps;
+using ClassicUO.Game.UI.MyraWindows.Widgets.ArtTexture;
 using ClassicUO.Utility;
 using ClassicUO.Utility.Logging;
 using Myra.Graphics2D.UI;
@@ -38,7 +39,7 @@ public class ItemDetailMyraWindow : MyraControl
         var row = new HorizontalStackPanel { Spacing = 8 };
 
         if (_item.Graphic > 0)
-            row.Widgets.Add(new MyraArtTexture(_item.Graphic, 64)
+            row.Widgets.Add(new MyraArtTexture(_item.Graphic, maxSize: 64)
                 { Tooltip = $"Graphic: {_item.Graphic} (0x{_item.Graphic:X4})" });
 
         var infoCol = new VerticalStackPanel { Spacing = 2 };

@@ -1,25 +1,18 @@
 // SPDX-License-Identifier: BSD-2-Clause
 
-using System.Collections.Generic;
+using System;
 using System.Xml;
 using ClassicUO.Configuration;
-using ClassicUO.Game.Data;
 using ClassicUO.Game.GameObjects;
+using ClassicUO.Game.Managers;
+using ClassicUO.Game.Managers.Hotkeys;
 using ClassicUO.Game.UI.Controls;
 using ClassicUO.Input;
-using ClassicUO.Assets;
-using ClassicUO.Game.Managers;
-using ClassicUO.Game.UI.Gumps.SpellBar;
-using ClassicUO.Renderer;
-using ClassicUO.Resources;
-using ClassicUO.Utility;
 using ClassicUO.Utility.Logging;
-using Microsoft.Xna.Framework;
-using Microsoft.Xna.Framework.Graphics;
 
 namespace ClassicUO.Game.UI.Gumps
 {
-    public class CounterBarGump : Gump
+    public class CounterBarGump : Gump, IBarCellHost
     {
         private AlphaBlendControl _background;
 
@@ -80,6 +73,18 @@ namespace ClassicUO.Game.UI.Gumps
         }
 
         public override GumpType GumpType => GumpType.CounterBar;
+
+        /// <inheritdoc />
+        public Gump OwnerGump => this;
+
+        /// <summary>Current number of cell rows.</summary>
+        public int Rows => _rows;
+
+        /// <summary>Current number of cell columns.</summary>
+        public int Columns => _columns;
+
+        /// <summary>Current cell edge length in pixels.</summary>
+        public int RectSize => _rectSize;
 
         private void BuildGump()
         {
@@ -203,7 +208,7 @@ namespace ClassicUO.Game.UI.Gumps
                         c.Width = _rectSize - 4;
                         c.Height = _rectSize - 4;
 
-                        c.SetGraphic(c.Graphic, c.Hue);
+                        c.OnCellResized();
 
                         indices[index] = -1;
                     }
@@ -228,11 +233,17 @@ namespace ClassicUO.Game.UI.Gumps
 
                 if (index >= 0 && index < items.Length)
                 {
+                    // The cell is being removed by the shrink, so drop its hotkey too.
+                    ClearCellHotkey(i);
+
                     items[i].Parent = null;
 
                     items[i].Dispose();
                 }
             }
+
+            // Re-center keybind labels for the new cell size.
+            RefreshHotkeyLabels();
 
             SetInScreen();
         }
@@ -246,12 +257,73 @@ namespace ClassicUO.Game.UI.Gumps
                 return null;
             }
 
-            if (items.Length > index)
+            if (index >= 0 && items.Length > index)
             {
                 return items[index];
             }
 
             return null;
+        }
+
+        /// <summary>Position of <paramref name="item"/> among the counter cells, matching the order used by save/restore and hotkey ids. -1 when not found.</summary>
+        public int IndexOf(BarCell item)
+        {
+            CounterItem[] items = GetControls<CounterItem>();
+
+            for (int i = 0; i < items.Length; i++)
+                if (items[i] == item)
+                    return i;
+
+            return -1;
+        }
+
+        /// <summary>Refreshes every cell's optional keybind label (e.g. after toggling the option or restoring).</summary>
+        public void RefreshHotkeyLabels()
+        {
+            foreach (CounterItem item in GetControls<CounterItem>())
+                item.UpdateHotkeyLabel();
+        }
+
+        /// <summary>Display name for a cell's hotkey in the central hotkeys list.</summary>
+        private static string HotkeyDisplayName(int index) => TazLang.Get("counterbar_slot", new[] { (index + 1).ToString() });
+
+        private const string HotkeyIdPrefix = "counterbar:";
+        private const string HotkeyCategory = "Bar";
+
+        private static string HotkeyId(int index) => HotkeyIdPrefix + index;
+
+        /// <summary>Current binding for a cell, or an empty binding when unset.</summary>
+        public HotkeyBinding GetCellHotkey(int index) => HotKeys.Get(HotkeyId(index))?.Binding?.Clone() ?? new HotkeyBinding();
+
+        /// <summary>
+        /// Registers (or clears) a cell's hotkey with the central <see cref="HotKeys"/> system. The
+        /// binding is persisted with the cell on the next gump save; unbindable bindings clear it.
+        /// </summary>
+        public void SetCellHotkey(int index, HotkeyBinding binding)
+        {
+            string id = HotkeyId(index);
+
+            if (binding?.IsTriggerable != true)
+            {
+                HotKeys.Unregister(id);
+                return;
+            }
+
+            HotKeyEntry entry = HotKeys.Register(id, HotkeyDisplayName(index), new HotkeyBinding(), HotkeyCategory, () =>
+            {
+                // The gump is kept around while counters are toggled off, so only fire when visible.
+                if (!IsDisposed && IsEnabled && IsVisible)
+                    GetCounterItem(index)?.ActivateFromHotkey();
+            });
+            entry.Binding = binding.Clone();
+        }
+
+        private static void ClearCellHotkey(int index) => HotKeys.Unregister(HotkeyId(index));
+
+        private static void ClearCellHotkeys(int count)
+        {
+            for (int i = 0; i < count; i++)
+                HotKeys.Unregister(HotkeyId(i));
         }
 
         public override void OnMouseUp(int x, int y, MouseButtonType button)
@@ -275,17 +347,50 @@ namespace ClassicUO.Game.UI.Gumps
             writer.WriteAttributeString("columns", _columns.ToString());
             writer.WriteAttributeString("rectsize", _rectSize.ToString());
 
-            IEnumerable<CounterItem> controls = FindControls<CounterItem>();
+            CounterItem[] controls = GetControls<CounterItem>();
 
             writer.WriteStartElement("controls");
 
-            foreach (CounterItem control in controls)
+            for (int index = 0; index < controls.Length; index++)
             {
+                CounterItem control = controls[index];
+
                 writer.WriteStartElement("control");
                 writer.WriteAttributeString("graphic", control.Graphic.ToString());
                 writer.WriteAttributeString("hue", control.Hue.ToString());
-                if (control.SpellID != default)
-                    writer.WriteAttributeString("spellid", control.SpellID.ToString());
+
+                CounterBarSlot slot = control.Slot;
+                if (slot != null && !slot.IsEmpty)
+                {
+                    writer.WriteAttributeString("slottype", ((int)slot.Type).ToString());
+
+                    switch (slot.Type)
+                    {
+                        case CounterBarSlotType.Spell:
+                            writer.WriteAttributeString("spellid", slot.SpellId.ToString());
+                            break;
+                        case CounterBarSlotType.Macro:
+                            writer.WriteAttributeString("macroname", slot.MacroName ?? string.Empty);
+                            break;
+                        case CounterBarSlotType.Script:
+                            writer.WriteAttributeString("scriptid", slot.ScriptId ?? string.Empty);
+                            break;
+                        case CounterBarSlotType.Skill:
+                            writer.WriteAttributeString("skillindex", slot.SkillIndex.ToString());
+                            break;
+                        case CounterBarSlotType.Ability:
+                            writer.WriteAttributeString("abilityprimary", slot.AbilityPrimary.ToString());
+                            break;
+                        case CounterBarSlotType.DressAgent:
+                            writer.WriteAttributeString("dressconfigname", slot.DressConfigName ?? string.Empty);
+                            writer.WriteAttributeString("dressagentundress", slot.DressAgentUndress.ToString());
+                            break;
+                    }
+                }
+
+                BarXml.WriteCellColor(writer, control.CellColor);
+                BarXml.WriteHotkey(writer, GetCellHotkey(index));
+
                 writer.WriteEndElement();
             }
 
@@ -313,29 +418,42 @@ namespace ClassicUO.Game.UI.Gumps
                 {
                     if (index < items.Length)
                     {
-                        bool isGump = false;
-                        if (controlXml.HasAttribute("spellid"))
+                        CounterBarSlot slot = BarXml.ReadSlot(controlXml);
+
+                        if (slot != null && !slot.IsEmpty)
                         {
-                            items[index].SpellID = int.Parse(controlXml.GetAttribute("spellid"));
-                            isGump = true;
+                            // Spell/macro/ability/script/skill/dress-agent action; resolves its own icon/label.
+                            items[index]?.SetSlot(slot);
+                        }
+                        else
+                        {
+                            // Plain item counter.
+                            items[index]?.SetGraphic(
+                                ushort.Parse(controlXml.GetAttribute("graphic")),
+                                ushort.Parse(controlXml.GetAttribute("hue"))
+                            );
                         }
 
-                        items[index]?.SetGraphic(
-                            ushort.Parse(controlXml.GetAttribute("graphic")),
-                            ushort.Parse(controlXml.GetAttribute("hue")),
-                            isGump
-                        );
+                        items[index]?.SetCellColor(BarXml.ReadCellColor(controlXml));
+
+                        // Re-register the saved hotkey with the central system (XML is the source of truth).
+                        HotkeyBinding hotkey = BarXml.ReadHotkey(controlXml);
+                        if (hotkey != null && !hotkey.IsEmpty)
+                            SetCellHotkey(index, hotkey);
+
                         index++;
                     }
                     else
                     {
-                        Log.Error(ResGumps.IndexOutOfbounds);
+                        Log.Error(TazLang.Get("index_out_ofbounds"));
                     }
                 }
             }
 
             IsEnabled = IsVisible = ProfileManager.CurrentProfile.CounterBarEnabled;
             IsLocked = ProfileManager.CurrentProfile.CounterGumpLocked;
+
+            RefreshHotkeyLabels();
         }
 
         protected override void OnLockedChanged()
@@ -348,505 +466,22 @@ namespace ClassicUO.Game.UI.Gumps
         {
             if (CurrentCounterBarGump == this)
             {
+                // Drop this bar's cell hotkeys from the central registry so they don't linger or fire
+                // after the gump is gone (e.g. across a profile switch).
+                ClearCellHotkeys(_rows * _columns);
                 CurrentCounterBarGump = null;
             }
             base.Dispose();
         }
 
-        public class CounterItem : Control
+        /// <summary>A counter-bar cell: a plain item counter or a counter action.</summary>
+        public class CounterItem : BarCell
         {
-            private int _amount;
-            private readonly ImageWithText _image;
-            private uint _time;
-            private const uint HIGHLIGHT_DURATION = 1000;
-            private uint _endHighlight;
-            private bool _highlight;
-            private readonly CounterBarGump _gump;
-
-            public CounterItem(CounterBarGump gump, int x, int y, int w, int h)
-            {
-                _gump = gump;
-                AcceptMouseInput = true;
-                WantUpdateSize = false;
-                CanMove = true;
-                CanCloseWithRightClick = false;
-
-                X = x;
-                Y = y;
-                Width = w;
-                Height = h;
-
-                _image = new ImageWithText();
-                Add(_image);
-
-                ContextMenu = new ContextMenuControl(_gump);
-                ContextMenu.Add(ResGumps.UseObject, Use);
-                ContextMenu.Add(ResGumps.Remove, RemoveItem);
-                ContextMenu.Add("Set spell", GenSpellList());
-                ContextMenu.Add("Quick set spell", QuickSetSpell);
-            }
-
-            public ushort Graphic { get; private set; }
-
-            public ushort Hue { get; private set; }
-
-            public int SpellID { get; set; }
-
-            public void SetGraphic(ushort graphic, ushort hue, bool isGumpIcon = false)
-            {
-                _image.ChangeGraphic(graphic, hue, isGumpIcon);
-
-                if (graphic == 0)
-                {
-                    return;
-                }
-
-                Graphic = graphic;
-                Hue = hue;
-            }
-
-            public void RemoveItem()
-            {
-                _image?.ChangeGraphic(0, 0);
-                _amount = 0;
-                Graphic = 0;
-                SpellID = default;
-            }
-
-            public void Use()
-            {
-                if (Graphic == 0)
-                {
-                    return;
-                }
-
-                if (SpellID != default)
-                {
-                    GameActions.CastSpell(SpellID);
-                    return;
-                }
-
-                if (SpellID != default)
-                {
-                    GameActions.CastSpell(SpellID);
-                    return;
-                }
-
-                Item backpack = _gump.World.Player.Backpack;
-
-                if (backpack == null)
-                {
-                    return;
-                }
-
-                Item item = backpack.FindItem(Graphic, Hue);
-
-                if (item != null)
-                {
-                    GameActions.DoubleClick(_gump.World, item);
-                }
-            }
-
-            // public override void OnMouseOver(int x, int y)
-            // {
-            //     base.OnMouseOver(x, y);
-
-            //     if (_gump.World.Player.Backpack?.FindItem(Graphic, Hue) is {} item)
-            //         SetTooltip(item);
-            // }
-
-            // protected override void OnMouseExit(int x, int y)
-            // {
-            //     base.OnMouseExit(x, y);
-            //     ClearTooltip();
-            // }
-
-            private void QuickSetSpell() =>
-                UIManager.Add
-                (
-                    new SpellQuickSearch
-                    (World.Instance,
-                        ScreenCoordinateX - 20, ScreenCoordinateY - 90, (s) =>
-                        {
-                            SetGraphic((ushort)(s.GumpIconSmallID), 0, true);
-                            SpellID = s.ID;
-                        }, true
-                    )
-                );
-
-            private List<ContextMenuItemEntry> GenSpellList()
-            {
-                var list = new List<ContextMenuItemEntry>();
-
-                var entry = new ContextMenuItemEntry("Magery");
-                foreach (SpellDefinition spell in SpellsMagery.GetAllSpells.Values)
-                    entry.Add(new ContextMenuItemEntry(spell.Name, () =>
-                    {
-                        SetGraphic((ushort)(spell.GumpIconSmallID), 0, true);
-                        SpellID = spell.ID;
-                    }));
-                list.Add(entry);
-
-
-                entry = new ContextMenuItemEntry("Necromancy");
-                foreach (SpellDefinition spell in SpellsNecromancy.GetAllSpells.Values)
-                    entry.Add(new ContextMenuItemEntry(spell.Name, () =>
-                    {
-                        SetGraphic((ushort)(spell.GumpIconSmallID), 0, true);
-                        SpellID = spell.ID;
-                    }));
-                list.Add(entry);
-
-
-                entry = new ContextMenuItemEntry("Chivalry");
-                foreach (SpellDefinition spell in SpellsChivalry.GetAllSpells.Values)
-                    entry.Add(new ContextMenuItemEntry(spell.Name, () =>
-                    {
-                        SetGraphic((ushort)(spell.GumpIconSmallID), 0, true);
-                        SpellID = spell.ID;
-                    }));
-                list.Add(entry);
-
-
-                entry = new ContextMenuItemEntry("Bushido");
-                foreach (SpellDefinition spell in SpellsBushido.GetAllSpells.Values)
-                    entry.Add(new ContextMenuItemEntry(spell.Name, () =>
-                    {
-                        SetGraphic((ushort)(spell.GumpIconSmallID), 0, true);
-                        SpellID = spell.ID;
-                    }));
-                list.Add(entry);
-
-
-                entry = new ContextMenuItemEntry("Ninjitsu");
-                foreach (SpellDefinition spell in SpellsNinjitsu.GetAllSpells.Values)
-                    entry.Add(new ContextMenuItemEntry(spell.Name, () =>
-                    {
-                        SetGraphic((ushort)(spell.GumpIconSmallID), 0, true);
-                        SpellID = spell.ID;
-                    }));
-                list.Add(entry);
-
-
-                entry = new ContextMenuItemEntry("Spellweaving");
-                foreach (SpellDefinition spell in SpellsSpellweaving.GetAllSpells.Values)
-                    entry.Add(new ContextMenuItemEntry(spell.Name, () =>
-                    {
-                        SetGraphic((ushort)(spell.GumpIconSmallID), 0, true);
-                        SpellID = spell.ID;
-                    }));
-                list.Add(entry);
-
-
-                entry = new ContextMenuItemEntry("Mysticism");
-                foreach (SpellDefinition spell in SpellsMysticism.GetAllSpells.Values)
-                    entry.Add(new ContextMenuItemEntry(spell.Name, () =>
-                    {
-                        SetGraphic((ushort)(spell.GumpIconSmallID), 0, true);
-                        SpellID = spell.ID;
-                    }));
-                list.Add(entry);
-
-
-                entry = new ContextMenuItemEntry("Mastery");
-                foreach (SpellDefinition spell in SpellsMastery.GetAllSpells.Values)
-                    entry.Add(new ContextMenuItemEntry(spell.Name, () =>
-                    {
-                        SetGraphic((ushort)(spell.GumpIconSmallID), 0, true);
-                        SpellID = spell.ID;
-                    }));
-                list.Add(entry);
-                return list;
-            }
-            public override void OnMouseUp(int x, int y, MouseButtonType button)
-            {
-                if (button == MouseButtonType.Left)
-                {
-                    if (Keyboard.Alt && Keyboard.Ctrl)
-                        if(Parent is Gump pg)
-                        {
-                            Log.Trace(pg.GetType().ToString());
-                            pg.IsLocked = ProfileManager.CurrentProfile.CounterGumpLocked = !pg.IsLocked;
-                        }
-                    if (Client.Game.UO.GameCursor.ItemHold.Enabled)
-                    {
-                        SetGraphic(
-                            Client.Game.UO.GameCursor.ItemHold.Graphic,
-                            Client.Game.UO.GameCursor.ItemHold.Hue
-                        );
-
-                        GameActions.DropItem(
-                            Client.Game.UO.GameCursor.ItemHold.Serial,
-                            Client.Game.UO.GameCursor.ItemHold.X,
-                            Client.Game.UO.GameCursor.ItemHold.Y,
-                            0,
-                            Client.Game.UO.GameCursor.ItemHold.Container
-                        );
-                    }
-                    else if (ProfileManager.CurrentProfile.CastSpellsByOneClick)
-                    {
-                        Use();
-                        return;
-                    }
-                }
-                else if (button == MouseButtonType.Right && Keyboard.Alt && Graphic != 0)
-                {
-                    RemoveItem();
-
-                    return;
-                }
-
-                base.OnMouseUp(x, y, button);
-            }
-
-            public override bool OnMouseDoubleClick(int x, int y, MouseButtonType button)
-            {
-                if (
-                    button == MouseButtonType.Left
-                    && !ProfileManager.CurrentProfile.CastSpellsByOneClick
-                )
-                {
-                    Use();
-                }
-
-                return true;
-            }
-
-            public override void Update()
-            {
-                base.Update();
-
-                if (Parent != null && Parent.IsEnabled && _time < Time.Ticks)
-                {
-                    _time = Time.Ticks + 100;
-                    if (SpellID != default)
-                    {
-                        if (Tooltip == null)
-                            SetTooltip(SpellDefinition.FullIndexGetSpell(SpellID).Name);
-                        return;
-                    }
-
-                    if (Graphic == 0)
-                    {
-                        _image.SetAmount(string.Empty);
-                    }
-                    else
-                    {
-                        _amount = 0;
-
-                        for (
-                            var item = (Item)_gump.World.Player.Items;
-                            item != null;
-                            item = (Item)item.Next
-                        )
-                        {
-                            if (
-                                item.ItemData.IsContainer
-                                && !item.IsEmpty
-                                && item.Layer >= Layer.OneHanded
-                                && item.Layer <= Layer.Legs
-                            )
-                            {
-                                GetAmount(item, Graphic, Hue, ref _amount);
-                            }
-                        }
-
-                        if (ProfileManager.CurrentProfile.CounterBarDisplayAbbreviatedAmount)
-                        {
-                            if (
-                                _amount >= ProfileManager.CurrentProfile.CounterBarAbbreviatedAmount
-                            )
-                            {
-                                _image.SetAmount(StringHelper.IntToAbbreviatedString(_amount));
-
-                                return;
-                            }
-                        }
-
-                        if (ProfileManager.CurrentProfile.CounterBarHighlightOnUse)
-                        {
-                            if (int.TryParse(_image.GetText(), out int cAmt))
-                            {
-                                if (cAmt > _amount)
-                                {
-                                    _highlight = true;
-                                    _endHighlight = Time.Ticks + HIGHLIGHT_DURATION;
-                                }
-                            }
-                        }
-                        _image.SetAmount(_amount.ToString());
-                    }
-                }
-            }
-
-            private void GetAmount(Item parent, ushort graphic, ushort hue, ref int amount)
-            {
-                if (parent == null)
-                {
-                    return;
-                }
-
-                for (LinkedObject i = parent.Items; i != null; i = i.Next)
-                {
-                    var item = (Item)i;
-
-                    GetAmount(item, graphic, hue, ref amount);
-
-                    if (item.Graphic == graphic && item.Hue == hue && item.Exists)
-                    {
-                        amount += item.Amount;
-                        SetTooltip(item);
-                    }
-                }
-            }
-
-            public override bool Draw(UltimaBatcher2D batcher, int x, int y)
-            {
-                base.Draw(batcher, x, y);
-
-                Texture2D color = SolidColorTextureCache.GetTexture(
-                    MouseIsOver
-                        ? Color.Yellow
-                        : ProfileManager.CurrentProfile.CounterBarHighlightOnAmount
-                        && _amount < ProfileManager.CurrentProfile.CounterBarHighlightAmount
-                        && Graphic != 0
-                            ? Color.Red
-                            : Color.Gray
-                );
-
-                Vector3 hueVector = ShaderHueTranslator.GetHueVector(0);
-
-                if (_highlight && Time.Ticks > _endHighlight)
-                {
-                    _highlight = false;
-                }
-
-                if (_highlight)
-                {
-                    hueVector.Z = ((float)_endHighlight - (float)Time.Ticks) / (float)HIGHLIGHT_DURATION;
-                    batcher.Draw(SolidColorTextureCache.GetTexture(Color.Yellow), new Rectangle(x, y, Width, Height), hueVector);
-                }
-
-                hueVector.Z = 1;
-
-                batcher.DrawRectangle(color, x, y, Width, Height, hueVector);
-
-                return true;
-            }
-
-            private class ImageWithText : Control
-            {
-                private readonly Label _label;
-                private ushort _graphic;
-                private ushort _hue;
-                private bool _partial;
-                private bool _isGumpGraphic;
-
-                public ImageWithText()
-                {
-                    CanMove = true;
-                    WantUpdateSize = true;
-                    AcceptMouseInput = false;
-
-                    _label = new Label("", true, 0x35, 0, 1, FontStyle.BlackBorder)
-                    {
-                        X = 2,
-                        Y = Height - 15,
-                        AcceptMouseInput = false
-                    };
-
-                    Add(_label);
-                }
-
-                public void ChangeGraphic(ushort graphic, ushort hue, bool isGumpGraphic = false)
-                {
-                    _isGumpGraphic = isGumpGraphic;
-                    if (graphic != 0)
-                    {
-                        _graphic = graphic;
-                        _hue = hue;
-                        _partial = isGumpGraphic ? false : Client.Game.UO.FileManager.TileData.StaticData[graphic].IsPartialHue;
-                        _label.Y = Parent.Height - 15;
-                    }
-                    else
-                    {
-                        _graphic = 0;
-                    }
-                    if (_isGumpGraphic)
-                        _label.Text = string.Empty;
-                }
-
-                public override void Update()
-                {
-                    base.Update();
-
-                    if (Parent != null)
-                    {
-                        Width = Parent.Width;
-                        Height = Parent.Height;
-                    }
-                }
-
-                public override bool Draw(UltimaBatcher2D batcher, int x, int y)
-                {
-                    if (_graphic != 0)
-                    {
-                        ref readonly SpriteInfo artInfo = ref Client.Game.UO.Arts.GetArt(_graphic);
-                        if (_isGumpGraphic)
-                            artInfo = ref Client.Game.UO.Gumps.GetGump(_graphic);
-
-                        Rectangle rect = _isGumpGraphic ? artInfo.UV : Client.Game.UO.Arts.GetRealArtBounds(_graphic);
-
-                        Vector3 hueVector = ShaderHueTranslator.GetHueVector(_hue, _partial, 1f, _isGumpGraphic);
-
-                        var originalSize = new Point(Width, Height);
-                        var point = new Point();
-
-                        if (rect.Width < Width)
-                        {
-                            originalSize.X = rect.Width;
-                            point.X = (Width >> 1) - (originalSize.X >> 1);
-                        }
-
-                        if (rect.Height < Height)
-                        {
-                            originalSize.Y = rect.Height;
-                            point.Y = (Height >> 1) - (originalSize.Y >> 1);
-                        }
-
-                        if (_isGumpGraphic)
-                            batcher.Draw(
-                                artInfo.Texture,
-                                new Rectangle(x + point.X, y + point.Y, originalSize.X, originalSize.Y),
-                                new Rectangle(
-                                    artInfo.UV.X,
-                                    artInfo.UV.Y,
-                                    rect.Width,
-                                    rect.Height
-                                ),
-                                hueVector
-                            );
-                        else
-                            batcher.Draw(
-                                artInfo.Texture,
-                                new Rectangle(x + point.X, y + point.Y, originalSize.X, originalSize.Y),
-                                new Rectangle(
-                                    artInfo.UV.X + rect.X,
-                                    artInfo.UV.Y + rect.Y,
-                                    rect.Width,
-                                    rect.Height
-                                ),
-                                hueVector
-                            );
-                    }
-
-                    return base.Draw(batcher, x, y);
-                }
-
-                public void SetAmount(string amount) => _label.Text = amount;
-
-                public string GetText() => _label?.Text ?? "";
-            }
+            public CounterItem(CounterBarGump gump, int x, int y, int w, int h) : base(gump, x, y, w, h) { }
+
+            /// <inheritdoc />
+            protected override void ToggleLock(Gump gump) =>
+                gump.IsLocked = ProfileManager.CurrentProfile.CounterGumpLocked = !gump.IsLocked;
         }
     }
 }

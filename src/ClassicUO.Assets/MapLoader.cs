@@ -22,6 +22,8 @@ namespace ClassicUO.Assets
         // cannot be a const, due to UOLive implementation
         public static int MAPS_COUNT = 6;
 
+        public static (int width, int height)[] ServerMapDefinitions { get; private set; }
+
         public MapLoader(UOFileManager fileManager) : base(fileManager)
         {
         }
@@ -249,6 +251,115 @@ namespace ClassicUO.Assets
             _filesStatics.CopyTo(_currentStaticsFiles, 0);
         }
 
+        protected static int GetMapCount((int index, int width, int height)[] defs)
+        {
+            int maxIndex = -1;
+
+            foreach (var d in defs)
+            {
+                if (d.index > maxIndex)
+                {
+                    maxIndex = d.index;
+                }
+            }
+
+            return maxIndex + 1;
+        }
+
+        protected static void StoreServerMapDefinitions((int index, int width, int height)[] defs, int count)
+        {
+            var store = new (int width, int height)[count];
+
+            foreach ((int index, int width, int height) in defs)
+            {
+                if (index < 0 || index >= count || width <= 0 || height <= 0)
+                {
+                    continue;
+                }
+
+                store[index] = (width, height);
+            }
+
+            ServerMapDefinitions = store;
+        }
+
+        public virtual void ApplyServerMapDefinitions((int index, int width, int height)[] defs)
+        {
+            if (defs == null)
+            {
+                return;
+            }
+
+            int count = GetMapCount(defs);
+
+            if (count <= 0)
+            {
+                return;
+            }
+
+            count = Math.Max(count, MAPS_COUNT);
+
+            StoreServerMapDefinitions(defs, count);
+
+            int[] widths = new int[count];
+            int[] heights = new int[count];
+
+            int existing = MapsDefaultSize.GetLength(0);
+
+            for (int i = 0; i < count; i++)
+            {
+                int src = i < existing ? i : 0;
+                widths[i] = MapsDefaultSize[src, 0];
+                heights[i] = MapsDefaultSize[src, 1];
+            }
+
+            foreach ((int index, int width, int height) in defs)
+            {
+                if (index < 0 || index >= count || width <= 0 || height <= 0)
+                {
+                    continue;
+                }
+
+                widths[index] = width;
+                heights[index] = height;
+            }
+
+            if (count == MAPS_COUNT && count <= existing)
+            {
+                bool changed = false;
+
+                for (int i = 0; i < count; i++)
+                {
+                    if (MapsDefaultSize[i, 0] != widths[i] || MapsDefaultSize[i, 1] != heights[i])
+                    {
+                        changed = true;
+
+                        break;
+                    }
+                }
+
+                if (!changed)
+                {
+                    Log.Trace($"Server map definitions unchanged [count: {count}], skipping reload");
+
+                    return;
+                }
+            }
+
+            string[] parts = new string[count];
+
+            for (int i = 0; i < count; i++)
+            {
+                parts[i] = $"{widths[i]},{heights[i]}";
+            }
+
+            MapsLayouts = string.Join(";", parts);
+
+            Log.Trace($"Applying server map definitions [count: {count}] -> {MapsLayouts}");
+
+            Load();
+        }
+
         public unsafe void LoadMap(int i, bool useXFiles = false)
         {
             if (i < 0 || i + 1 > MAPS_COUNT || _currentMapFiles[i] == null)
@@ -350,14 +461,21 @@ namespace ClassicUO.Assets
                 ulong staticPos = 0ul;
                 uint staticCount = 0u;
 
-                fileidx.Seek(block * staticidxblocksize, SeekOrigin.Begin);
-
-                StaidxBlock st = fileidx.Read<StaidxBlock>();
-
-                if (st.Size > 0 && st.Position != 0xFFFF_FFFF)
+                // The statics index (staidx) file can be missing/unavailable for a map (for
+                // example a custom or incomplete data set). When it is, there are simply no
+                // statics for this block - the map itself is still usable - so skip the lookup
+                // instead of dereferencing a null reader.
+                if (fileidx != null)
                 {
-                    staticPos = st.Position;
-                    staticCount = Math.Min(1024, (uint)(st.Size / staticblocksize));
+                    fileidx.Seek(block * staticidxblocksize, SeekOrigin.Begin);
+
+                    StaidxBlock st = fileidx.Read<StaidxBlock>();
+
+                    if (st.Size > 0 && st.Position != 0xFFFF_FFFF)
+                    {
+                        staticPos = st.Position;
+                        staticCount = Math.Min(1024, (uint)(st.Size / staticblocksize));
+                    }
                 }
 
                 ref IndexMap data = ref BlockData[i][block];
@@ -455,10 +573,23 @@ namespace ClassicUO.Assets
                     continue;
                 }
 
-                int mapPatchesCount = (int)reader.ReadUInt32BE();
-                MapPatchCount[i] = mapPatchesCount;
+                // Statics first, then land.
+                //
+                // This was the other way round, and it silently disabled land patching against
+                // every server that sends this packet. RunUO, ServUO and ModernUO all write the
+                // statics count first - ModernUO in OutgoingMapPackets.SendMapPatches - so
+                // reading land first takes the statics count as the land count and the land count
+                // as the statics count.
+                //
+                // The failure is invisible rather than loud: a shard that patches land and not
+                // statics sends (0, n), which reads as "no land patches" and n statics patches
+                // that then clamp to zero against an empty stadifl. Nothing throws, nothing logs,
+                // and the ground simply stays as it was while the server believes it changed. It
+                // has probably gone unnoticed because almost nothing ships map patches any more.
                 int staticPatchesCount = (int)reader.ReadUInt32BE();
                 StaticPatchCount[i] = staticPatchesCount;
+                int mapPatchesCount = (int)reader.ReadUInt32BE();
+                MapPatchCount[i] = mapPatchesCount;
 
                 int w = MapBlocksSize[i, 0];
                 int h = MapBlocksSize[i, 1];

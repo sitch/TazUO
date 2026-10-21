@@ -6,15 +6,16 @@ using ClassicUO.Configuration;
 using ClassicUO.Game.Data;
 using ClassicUO.Game.GameObjects;
 using ClassicUO.Game.Managers;
+using ClassicUO.Game.Managers.Hotkeys;
 using ClassicUO.Game.UI.Gumps;
 using ClassicUO.Input;
 using ClassicUO.Network;
-using ClassicUO.Resources;
 using ClassicUO.Utility;
 using Microsoft.Xna.Framework;
 using SDL3;
 using MathHelper = ClassicUO.Utility.MathHelper;
 using ClassicUO.Assets;
+using ClassicUO.Common;
 using ClassicUO.Common.Enums;
 using ClassicUO.Game.UI.Controls;
 
@@ -50,9 +51,6 @@ namespace ClassicUO.Game.Scenes
                 {
                     _world.Player.Pathfinder.StopAutoWalk();
                 }
-
-                if (LongDistancePathfinder.IsPathfinding())
-                    LongDistancePathfinder.StopPathfinding();
 
                 int x = Camera.Bounds.X + (Camera.Bounds.Width >> 1) + ((ProfileManager.CurrentProfile.PlayerOffset.X - ProfileManager.CurrentProfile.PlayerOffset.Y) * 22);
                 int y = Camera.Bounds.Y + (Camera.Bounds.Height >> 1) + ((ProfileManager.CurrentProfile.PlayerOffset.X + ProfileManager.CurrentProfile.PlayerOffset.Y) * 22);
@@ -379,6 +377,14 @@ namespace ClassicUO.Game.Scenes
 
         internal override bool OnMouseDown(MouseButtonType button)
         {
+            // Profile is unloaded as the scene tears down, but the SDL save-conflict prompt shown during the
+            // final settings save keeps pumping mouse events back in. Nothing here is actionable without a
+            // profile, so bail rather than dereference it.
+            if (ProfileManager.CurrentProfile == null)
+            {
+                return false;
+            }
+
             switch (button)
             {
                 case MouseButtonType.Left:
@@ -396,6 +402,11 @@ namespace ClassicUO.Game.Scenes
 
         internal override bool OnMouseUp(MouseButtonType button)
         {
+            if (ProfileManager.CurrentProfile == null)
+            {
+                return false;
+            }
+
             switch (button)
             {
                 case MouseButtonType.Left:
@@ -413,6 +424,11 @@ namespace ClassicUO.Game.Scenes
 
         internal override bool OnMouseDoubleClick(MouseButtonType button)
         {
+            if (ProfileManager.CurrentProfile == null)
+            {
+                return false;
+            }
+
             switch (button)
             {
                 case MouseButtonType.Left:
@@ -439,57 +455,76 @@ namespace ClassicUO.Game.Scenes
                 return false;
             }
 
+            // Drop focus from other inputs the instant the world is pressed, not just on release,
+            // so a press-and-hold (e.g. hold-to-walk) also releases the previously focused field.
+            UIManager.RestoreSystemChatFocus();
+
             if (_world.CustomHouseManager != null)
             {
-                _isMouseLeftDown = true;
+                HandleHouseManagerMouseDown();
+                return true;
+            }
 
-                if (
-                    _world.TargetManager.IsTargeting
-                    && _world.TargetManager.TargetingState == CursorTarget.MultiPlacement
-                    && (
-                        _world.CustomHouseManager.SelectedGraphic != 0
-                        || _world.CustomHouseManager.Erasing
-                        || _world.CustomHouseManager.SeekTile
-                    )
-                    && SelectedObject.Object is GameObject obj
-                    && (
-                        obj.X != _lastSelectedMultiPositionInHouseCustomization.X
-                        || obj.Y != _lastSelectedMultiPositionInHouseCustomization.Y
-                    )
-                )
+            SelectedObject.LastLeftDownObject = SelectedObject.Object;
+
+            if (ProfileManager.CurrentProfile.EnableDragSelect && DragSelectModifierActive())
+            {
+                if (CanDragSelectOnObject(SelectedObject.Object as GameObject))
                 {
-                    _world.CustomHouseManager.OnTargetWorld(obj);
-                    _timeToPlaceMultiInHouseCustomization = Time.Ticks + 50;
-                    _lastSelectedMultiPositionInHouseCustomization.X = obj.X;
-                    _lastSelectedMultiPositionInHouseCustomization.Y = obj.Y;
+                    _selectionStart = Mouse.Position;
+                    _isSelectionActive = true;
                 }
             }
             else
             {
-                SelectedObject.LastLeftDownObject = SelectedObject.Object;
-
-                if (ProfileManager.CurrentProfile.EnableDragSelect && DragSelectModifierActive())
-                {
-                    if (CanDragSelectOnObject(SelectedObject.Object as GameObject))
-                    {
-                        _selectionStart = Mouse.Position;
-                        _isSelectionActive = true;
-                    }
-                }
-                else
-                {
-                    _isMouseLeftDown = true;
-                    _holdMouse2secOverItemTime = Time.Ticks;
-                }
-
-                if (UIManager.TopMostControl is MyraControl)
-                    UIManager.TopMostControl = null;
-
-                if (ProfileManager.CurrentProfile.SingleClickMobileSetsLastTarget && SelectedObject.Object is Mobile m)
-                    World.Instance.TargetManager.LastTargetInfo.SetEntity(m);
+                _isMouseLeftDown = true;
+                _holdMouse2secOverItemTime = Time.Ticks;
             }
 
+            if (UIManager.TopMostControl is MyraControl)
+                UIManager.TopMostControl = null;
+
+            if (ProfileManager.CurrentProfile.SingleClickMobileSetsLastTarget && SelectedObject.Object is Mobile m)
+                World.Instance.TargetManager.LastTargetInfo.SetEntity(m);
+
             return true;
+        }
+
+        /// <summary>
+        /// Handles the mouse down event when the house customization manager is open
+        /// </summary>
+        private void HandleHouseManagerMouseDown()
+        {
+            _isMouseLeftDown = true;
+
+            // Check if this is indeed a house customization operation
+            if (!_world.TargetManager.IsTargeting || _world.TargetManager.TargetingState != CursorTarget.MultiPlacement)
+                return;
+
+            // Check if this is an operation that actually needs to be forwarded to the manager
+            if (_world.CustomHouseManager.SelectedGraphic == 0 && !_world.CustomHouseManager.Erasing &&
+                !_world.CustomHouseManager.SeekTile)
+                return;
+
+            // Null/Type guard
+            if (SelectedObject.Object is not GameObject obj)
+                return;
+
+            // Guard against multiple clicks to on the exact same entity
+            if (obj.X == _lastSelectedMultiPositionInHouseCustomization.X &&
+                obj.Y == _lastSelectedMultiPositionInHouseCustomization.Y &&
+                obj.Z == _lastSelectedMultiPositionInHouseCustomization.Z
+               )
+                return;
+
+            // Record the last position
+            _lastSelectedMultiPositionInHouseCustomization = new Point3D(obj.X, obj.Y, obj.Z);
+
+            // Dispatch the event
+            _world.CustomHouseManager.OnTargetWorld(obj);
+
+            // Add a delay to normalize placement behavior
+            _timeToPlaceMultiInHouseCustomization = Time.Ticks + 50;
         }
 
         private bool OnLeftMouseUp()
@@ -526,11 +561,7 @@ namespace ClassicUO.Game.Scenes
                 return false;
             }
 
-            if (UIManager.SystemChat != null && !UIManager.SystemChat.IsFocused)
-            {
-                UIManager.KeyboardFocusControl = null;
-                UIManager.SystemChat.SetFocus();
-            }
+            UIManager.RestoreSystemChatFocus();
 
             if (!ProfileManager.CurrentProfile.DisableAutoMove && _rightMousePressed)
             {
@@ -672,7 +703,6 @@ namespace ClassicUO.Game.Scenes
                     case CursorTarget.Object:
                     case CursorTarget.MultiPlacement when _world.CustomHouseManager == null:
                     case CursorTarget.CallbackTarget:
-
                         {
                             BaseGameObject obj = lastObj;
 
@@ -884,20 +914,9 @@ namespace ClassicUO.Game.Scenes
 
                     case Entity ent:
 
-                        if (Keyboard.Alt && !ProfileManager.CurrentProfile.DisableAutoFollowAlt && ent is Mobile)
+                        if (HotKeys.IsPressed(HotKeyRegistrar.FollowMobileId) && !ProfileManager.CurrentProfile.DisableAutoFollowAlt && ent is Mobile followMobile)
                         {
-                            _world.MessageManager.HandleMessage(
-                                _world.Player,
-                                ResGeneral.NowFollowing,
-                                string.Empty,
-                                0,
-                                MessageType.Regular,
-                                3,
-                                TextType.CLIENT
-                            );
-
-                            ProfileManager.CurrentProfile.FollowingMode = true;
-                            ProfileManager.CurrentProfile.FollowingTarget = ent;
+                            followMobile.Follow();
                         }
                         else if (!_world.DelayedObjectClickManager.IsEnabled)
                         {
@@ -1027,7 +1046,7 @@ namespace ClassicUO.Game.Scenes
 
             if (ProfileManager.CurrentProfile.EnablePathfind && ProfileManager.CurrentProfile.PathfindSingleClick)
             {
-                if (ProfileManager.CurrentProfile.UseShiftToPathfind && !Keyboard.Shift)
+                if (ProfileManager.CurrentProfile.UseShiftToPathfind && !HotKeys.IsPressed(HotKeyRegistrar.PathfindId))
                 {
                     return false;
                 }
@@ -1041,7 +1060,7 @@ namespace ClassicUO.Game.Scenes
                             _world.Player.AddMessage
                             (
                                 MessageType.Label,
-                                ResGeneral.Pathfinding,
+                                TazLang.Get("pathfinding"),
                                 3,
                                 0,
                                 false,
@@ -1056,7 +1075,7 @@ namespace ClassicUO.Game.Scenes
                         _world.Player.AddMessage
                         (
                             MessageType.Label,
-                            ResGeneral.Pathfinding,
+                            TazLang.Get("pathfinding"),
                             3,
                             0,
                             false,
@@ -1078,10 +1097,17 @@ namespace ClassicUO.Game.Scenes
                 return false;
             }
 
+            _continueRunning = false;
+            StopFollowing();
+
             if (ProfileManager.CurrentProfile.EnablePathfind && !_world.Player.Pathfinder.AutoWalking)
             {
-                if ((ProfileManager.CurrentProfile.UseShiftToPathfind && !Keyboard.Shift) || ProfileManager.CurrentProfile.PathfindSingleClick)
+                if ((ProfileManager.CurrentProfile.UseShiftToPathfind && !HotKeys.IsPressed(HotKeyRegistrar.PathfindId)) || ProfileManager.CurrentProfile.PathfindSingleClick)
                 {
+                    // Pathfinding is not requested for this click, so mirror OnRightMouseDown: the
+                    // second click of a rapid pair still counts as holding the button to walk.
+                    _rightMousePressed = true;
+
                     return false;
                 }
 
@@ -1093,13 +1119,17 @@ namespace ClassicUO.Game.Scenes
                         {
                             _world.Player.AddMessage(
                                 MessageType.Label,
-                                ResGeneral.Pathfinding,
+                                TazLang.Get("pathfinding"),
                                 3,
                                 0,
                                 false,
                                 TextType.CLIENT
                             );
 
+                            // The pathfinder drives movement now. Leave _rightMousePressed false so
+                            // MoveCharacterByMouseInput does not override it with a cursor walk —
+                            // the release is skipped after a consumed double-click, so nothing would
+                            // reset it afterwards.
                             return true;
                         }
                     }
@@ -1107,7 +1137,7 @@ namespace ClassicUO.Game.Scenes
                     {
                         _world.Player.AddMessage(
                             MessageType.Label,
-                            ResGeneral.Pathfinding,
+                            TazLang.Get("pathfinding"),
                             3,
                             0,
                             false,
@@ -1126,6 +1156,8 @@ namespace ClassicUO.Game.Scenes
                 //    }
                 //}
             }
+
+            _rightMousePressed = true;
 
             return false;
         }
@@ -1189,7 +1221,12 @@ namespace ClassicUO.Game.Scenes
 
         internal override bool OnMouseWheel(bool up)
         {
-            if (Keyboard.Ctrl && Client.Game.UO.GameCursor.ItemHold.Enabled)
+            if (ProfileManager.CurrentProfile == null)
+            {
+                return false;
+            }
+
+            if (HotKeys.IsPressed(HotKeyRegistrar.ItemDragLockId) && Client.Game.UO.GameCursor.ItemHold.Enabled)
             {
                 if (!up && !Client.Game.UO.GameCursor.ItemHold.IsFixedPosition)
                 {
@@ -1205,7 +1242,11 @@ namespace ClassicUO.Game.Scenes
                 }
             }
 
-            if (CanExecuteMacro())
+            // There's a bit of an edge case here - if the control is 'scrollable',
+            // we may want to direct the input to it, rather than execute a macro.
+            // Since it's basically impossible to know, from this vantage point, what gump we're looking at,
+            // this check specifically targets the Shop Gump. This is the least invasive, if imperfect solution right now.
+            if (CanExecuteMacro() && UIManager.TopMostControl is not ShopGump)
             {
                 Macro macro = _world.Macros.FindMacro(up, Keyboard.Alt, Keyboard.Ctrl, Keyboard.Shift);
 
@@ -1213,7 +1254,7 @@ namespace ClassicUO.Game.Scenes
                 {
                     if (macro.Items is MacroObject mac)
                     {
-                        if (ProfileManager.CurrentProfile.DisableHotkeys && mac.Code != MacroType.ToggleHotkeys)
+                        if (HotKeys.GloballyDisabled && mac.Code != MacroType.ToggleHotkeys)
                         {
                             return false;
                         }
@@ -1230,7 +1271,7 @@ namespace ClassicUO.Game.Scenes
                 return false;
             }
 
-            if (Keyboard.Ctrl && ProfileManager.CurrentProfile.EnableMousewheelScaleZoom)
+            if (HotKeys.IsPressed(HotKeyRegistrar.ZoomScrollId) && ProfileManager.CurrentProfile.EnableMousewheelScaleZoom)
             {
                 if (up)
                 {
@@ -1249,6 +1290,11 @@ namespace ClassicUO.Game.Scenes
 
         internal override bool OnMouseDragging()
         {
+            if (ProfileManager.CurrentProfile == null)
+            {
+                return false;
+            }
+
             if (!UIManager.IsMouseOverWorld)
             {
                 return false;
@@ -1343,6 +1389,14 @@ namespace ClassicUO.Game.Scenes
 
         internal override void OnKeyDown(SDL.SDL_KeyboardEvent e)
         {
+            // The profile is unloaded while the scene tears down, but the SDL save-conflict prompt shown
+            // during the final settings save keeps pumping key events back into this scene. Nothing here
+            // is actionable without a profile, so bail rather than dereference it.
+            if (ProfileManager.CurrentProfile == null)
+            {
+                return;
+            }
+
             var key = (SDL.SDL_Keycode)e.key;
 
             if (key == SDL.SDL_Keycode.SDLK_TAB && e.repeat)
@@ -1368,8 +1422,6 @@ namespace ClassicUO.Game.Scenes
                     {
                         _world.Player.Pathfinder.StopAutoWalk();
                     }
-                    if (LongDistancePathfinder.IsPathfinding())
-                        LongDistancePathfinder.StopPathfinding();
 
                     break;
 
@@ -1473,7 +1525,8 @@ namespace ClassicUO.Game.Scenes
 
             if (CanExecuteMacro())
             {
-                SpellBarManager.KeyPress(key, e.mod);
+                SelfHealManager.HandleKeyDown(key, e.mod, e.repeat);
+                ClassicUO.Game.Managers.Hotkeys.HotKeys.HandleKeyDown(key, e.mod, e.repeat);
 
                 Macro macro = _world.Macros.FindMacro(
                     key,
@@ -1486,7 +1539,7 @@ namespace ClassicUO.Game.Scenes
                 {
                     if (macro.Items is MacroObject mac)
                     {
-                        if (ProfileManager.CurrentProfile.DisableHotkeys && mac.Code != MacroType.ToggleHotkeys)
+                        if (HotKeys.GloballyDisabled && mac.Code != MacroType.ToggleHotkeys)
                         { //Disable hotkeys for all macros unless it's the toggle hotkey macro
                         }
                         else if (mac.Code == MacroType.LookAtMouse)
@@ -1557,22 +1610,32 @@ namespace ClassicUO.Game.Scenes
                 }
                 else
                 {
-                    if (string.IsNullOrEmpty(UIManager.SystemChat.TextBoxControl.Text))
+                    if (string.IsNullOrEmpty(UIManager.SystemChat.TextBoxControl.Text) && ProfileManager.CurrentProfile != null && ProfileManager.GlobalSettings != null)
                     {
-                        bool wasd = ProfileManager.CurrentProfile.UseWASDInsteadArrowKeys && !UIManager.SystemChat.IsActive;
+                        bool wasd = ProfileManager.GlobalSettings.UseWASDInsteadArrowKeys && !UIManager.SystemChat.IsActive;
 
                         SDL.SDL_Keycode[] wasdKeys = { SDL.SDL_Keycode.SDLK_W, SDL.SDL_Keycode.SDLK_A, SDL.SDL_Keycode.SDLK_S, SDL.SDL_Keycode.SDLK_D };
                         SDL.SDL_Keycode[] arrowKeys = { SDL.SDL_Keycode.SDLK_UP, SDL.SDL_Keycode.SDLK_LEFT, SDL.SDL_Keycode.SDLK_DOWN, SDL.SDL_Keycode.SDLK_RIGHT };
 
                         SDL.SDL_Keycode[] keys = wasd ? wasdKeys : arrowKeys;
 
-                        for (int i = 0; i < keys.Length; i++)
+                        bool disableArrowKeys = ProfileManager.CurrentProfile.DisableArrowBtn && !wasd;
+
+                        if (!disableArrowKeys)
                         {
-                            if (key == keys[i])
+                            for (int i = 0; i < keys.Length; i++)
                             {
-                                _flags[i] = true;
-                                break;
+                                if (key == keys[i])
+                                {
+                                    _flags[i] = true;
+                                    break;
+                                }
                             }
+                        }
+
+                        if (!ProfileManager.CurrentProfile.DisableArrowBtn)
+                        {
+                            SetNumpadMovementFlags(key, true);
                         }
                     }
                 }
@@ -1586,7 +1649,9 @@ namespace ClassicUO.Game.Scenes
 
         internal override void OnKeyUp(SDL.SDL_KeyboardEvent e)
         {
-            if (!_world.InGame)
+            // The profile is unloaded while the scene tears down, but SDL keeps pumping key events
+            // back into this scene; bail before the profile is dereferenced below.
+            if (!_world.InGame || ProfileManager.CurrentProfile == null)
             {
                 return;
             }
@@ -1594,7 +1659,7 @@ namespace ClassicUO.Game.Scenes
             var key = (SDL.SDL_Keycode)e.key;
 
             if (
-                !Keyboard.Ctrl &&
+                !HotKeys.IsPressed(HotKeyRegistrar.ZoomScrollId) &&
                 ProfileManager.CurrentProfile.EnableMousewheelScaleZoom
                 && ProfileManager.CurrentProfile.RestoreScaleAfterUnpressCtrl
             )
@@ -1692,21 +1757,27 @@ namespace ClassicUO.Game.Scenes
                 }
             }
 
-            bool wasd = ProfileManager.CurrentProfile.UseWASDInsteadArrowKeys && !UIManager.SystemChat.IsActive;
+            bool wasd = ProfileManager.GlobalSettings.UseWASDInsteadArrowKeys && !UIManager.SystemChat.IsActive;
 
             SDL.SDL_Keycode[] wasdKeys = { SDL.SDL_Keycode.SDLK_W, SDL.SDL_Keycode.SDLK_A, SDL.SDL_Keycode.SDLK_S, SDL.SDL_Keycode.SDLK_D };
             SDL.SDL_Keycode[] arrowKeys = { SDL.SDL_Keycode.SDLK_UP, SDL.SDL_Keycode.SDLK_LEFT, SDL.SDL_Keycode.SDLK_DOWN, SDL.SDL_Keycode.SDLK_RIGHT };
 
             SDL.SDL_Keycode[] keys = wasd ? wasdKeys : arrowKeys;
 
-            for (int i = 0; i < keys.Length; i++)
-            {
-                if (key == keys[i])
+            bool disableArrowKeys = ProfileManager.CurrentProfile.DisableArrowBtn && !wasd;
+
+            if (!disableArrowKeys)
+                for (int i = 0; i < keys.Length; i++)
                 {
-                    _flags[i] = false;
-                    break;
+                    if (key == keys[i])
+                    {
+                        _flags[i] = false;
+                        break;
+                    }
                 }
-            }
+
+            if (!ProfileManager.CurrentProfile.DisableArrowBtn)
+                SetNumpadMovementFlags(key, false);
 
             if (
                 key == SDL.SDL_Keycode.SDLK_TAB
@@ -1740,12 +1811,10 @@ namespace ClassicUO.Game.Scenes
 
             if (CanExecuteMacro())
             {
-                SpellBarManager.ControllerInput((SDL.SDL_GamepadButton)e.button);
-
                 Macro macro = _world.Macros.FindMacro((SDL.SDL_GamepadButton)e.button);
                 if (macro != null && macro.Items is MacroObject mac)
                 {
-                    if (ProfileManager.CurrentProfile.DisableHotkeys && mac.Code != MacroType.ToggleHotkeys)
+                    if (HotKeys.GloballyDisabled && mac.Code != MacroType.ToggleHotkeys)
                     {
                     }
                     else
@@ -1753,6 +1822,41 @@ namespace ClassicUO.Game.Scenes
                         ExecuteMacro(mac);
                     }
                 }
+            }
+        }
+
+        private void SetNumpadMovementFlags(SDL.SDL_Keycode key, bool pressed)
+        {
+            switch (key)
+            {
+                case SDL.SDL_Keycode.SDLK_KP_8:
+                    _flags[0] = pressed;
+                    break;
+                case SDL.SDL_Keycode.SDLK_KP_2:
+                    _flags[2] = pressed;
+                    break;
+                case SDL.SDL_Keycode.SDLK_KP_4:
+                    _flags[1] = pressed;
+                    break;
+                case SDL.SDL_Keycode.SDLK_KP_6:
+                    _flags[3] = pressed;
+                    break;
+                case SDL.SDL_Keycode.SDLK_KP_7:
+                    _flags[0] = pressed;
+                    _flags[1] = pressed;
+                    break;
+                case SDL.SDL_Keycode.SDLK_KP_9:
+                    _flags[0] = pressed;
+                    _flags[3] = pressed;
+                    break;
+                case SDL.SDL_Keycode.SDLK_KP_1:
+                    _flags[2] = pressed;
+                    _flags[1] = pressed;
+                    break;
+                case SDL.SDL_Keycode.SDLK_KP_3:
+                    _flags[2] = pressed;
+                    _flags[3] = pressed;
+                    break;
             }
         }
 

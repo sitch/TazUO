@@ -6,7 +6,6 @@ using ClassicUO.Configuration;
 using ClassicUO.Game.Data;
 using ClassicUO.Game.Managers;
 using ClassicUO.Game.UI.Gumps;
-using ClassicUO.Resources;
 using ClassicUO.Utility;
 using ClassicUO.Utility.Collections;
 using Microsoft.Xna.Framework;
@@ -16,66 +15,6 @@ namespace ClassicUO.Game.GameObjects
 {
     public partial class Mobile : Entity
     {
-        //private static readonly QueuedPool<Mobile> _pool = new QueuedPool<Mobile>(
-        //    Constants.PREDICTABLE_CHUNKS,
-        //    mobile =>
-        //    {
-        //        mobile.IsDestroyed = false;
-        //        mobile.Graphic = 0;
-        //        mobile.Steps.Clear();
-        //        mobile.Offset = Vector3.Zero;
-        //        mobile.SpeedMode = CharacterSpeedType.Normal;
-        //        mobile.Race = 0;
-        //        mobile.Hits = 0;
-        //        mobile.HitsMax = 0;
-        //        mobile.Mana = 0;
-        //        mobile.ManaMax = 0;
-        //        mobile.Stamina = 0;
-        //        mobile.StaminaMax = 0;
-        //        mobile.NotorietyFlag = 0;
-        //        mobile.IsRenamable = false;
-        //        mobile.Flags = 0;
-        //        mobile.IsFemale = false;
-        //        mobile.InWarMode = false;
-        //        mobile.IsRunning = false;
-        //        mobile._animationInterval = 0;
-        //        mobile.AnimationFrameCount = 0;
-        //        mobile._animationRepeateMode = 1;
-        //        mobile._animationRepeatModeCount = 1;
-        //        mobile._animationRepeat = false;
-        //        mobile.AnimationFromServer = false;
-        //        mobile._isAnimationForwardDirection = false;
-        //        mobile.LastStepSoundTime = 0;
-        //        mobile.StepSoundOffset = 0;
-        //        mobile.Title = string.Empty;
-        //        mobile._animationGroup = 0xFF;
-        //        mobile._isDead = false;
-        //        mobile._isSA_Poisoned = false;
-        //        mobile._lastAnimationIdleDelay = 0;
-        //        mobile.X = 0;
-        //        mobile.Y = 0;
-        //        mobile.Z = 0;
-        //        mobile.Direction = 0;
-        //        mobile.LastAnimationChangeTime = Time.Ticks;
-        //        mobile.TextContainer?.Clear();
-        //        mobile.HitsPercentage = 0;
-        //        mobile.IsFlipped = false;
-        //        mobile.FrameInfo = Rectangle.Empty;
-        //        mobile.ObjectHandlesStatus = ObjectHandlesStatus.NONE;
-        //        mobile.AlphaHue = 0;
-        //        mobile.AllowedToDraw = true;
-        //        mobile.IsClicked = false;
-        //        mobile.RemoveFromTile();
-        //        mobile.Clear();
-        //        mobile.Next = null;
-        //        mobile.Previous = null;
-        //        mobile.Name = null;
-        //        mobile.ExecuteAnimation = true;
-        //        mobile.HitsRequest = HitsRequestStatus.None;
-
-        //        mobile.CalculateRandomIdleTime();
-        //    }
-        //);
 
         private static readonly byte[,] _animationIdle =
         {
@@ -100,12 +39,17 @@ namespace ClassicUO.Game.GameObjects
         private bool _isSA_Poisoned;
         private long _lastAnimationIdleDelay;
         private bool _isAnimationForwardDirection;
-        private uint _lastEnqueueTime;
+        private uint _lastStepArrival;
+        private bool _turnSinceLastStep;
         private byte _animationGroup = 0xFF;
         private byte _animationInterval;
         private bool _animationRepeat;
         private ushort _animationRepeateMode = 1;
         private ushort _animationRepeatModeCount = 1;
+
+        // Smooths the per-frame animation offset that anchors overhead text so it doesn't jitter (-1 = uninitialized).
+        private float _smoothedTextAnimOffset = -1f;
+        private uint _lastTextCoordUpdate;
 
         public Mobile(World world, uint serial) : base(world, serial)
         {
@@ -116,6 +60,18 @@ namespace ClassicUO.Game.GameObjects
         public Mobile(World world) : base(world, 0) { }
 
         private readonly Item[] _equippedLayers = new Item[30];
+
+        public override void NameUpdated()
+        {
+            base.NameUpdated();
+            _nameText = null;
+        }
+
+        public override void OPLUpdated(ItemProperty newProps)
+        {
+            base.OPLUpdated(newProps);
+            _nameText = null;
+        }
 
         public override void PushToBack(LinkedObject item)
         {
@@ -154,6 +110,113 @@ namespace ClassicUO.Game.GameObjects
         public Item Backpack => FindItemByLayer(Layer.Backpack);
         public bool IsVisible { get; set; } = true;
         public Deque<Step> Steps { get; } = new Deque<Step>(Constants.MAX_STEP_COUNT);
+
+        // Rolling median of the last few arrival intervals: one jittered or paused packet
+        // must not change the pace.
+        private unsafe struct CadenceWindow
+        {
+            public const int CAPACITY = 5;
+            private fixed ushort _samples[CAPACITY];
+            private byte _count;
+            private byte _head;
+
+            public int Median { get; private set; }
+            public int Count => _count;
+
+            public void Add(int sample)
+            {
+                fixed (ushort* ptr = _samples)
+                {
+                    ptr[_head] = (ushort)sample;
+
+                    if (++_head == CAPACITY) { _head = 0; }
+                    if (_count < CAPACITY) { _count++; }
+
+                    Span<ushort> span = stackalloc ushort[_count];
+                    new ReadOnlySpan<ushort>(ptr, _count).CopyTo(span);
+                    span.Sort();
+
+                    Median = span[(_count - 1) / 2];
+                }
+            }
+
+            public void Clear() => this = default;
+        }
+
+        // Learned server cadence (ms); 0 = unknown, render at the client's own table.
+        public int StepInterval { get; private set; }
+        private CadenceWindow _cadence;
+        private byte _slowSamples;
+
+        public bool IsActuallyMounted =>
+            IsMounted
+            || SpeedMode == CharacterSpeedType.FastUnmount
+            || SpeedMode == CharacterSpeedType.FastUnmountAndCantRun
+            || IsFlying;
+
+        private void ResetCadence()
+        {
+            StepInterval = 0;
+            _cadence.Clear();
+            _lastStepArrival = 0;
+            _turnSinceLastStep = false;
+            _slowSamples = 0;
+        }
+
+        private void SampleCadence(uint now)
+        {
+            if (_lastStepArrival == 0)
+            {
+                _lastStepArrival = now;
+                _turnSinceLastStep = false;
+                return;
+            }
+
+            int elapsed = (int)(now - _lastStepArrival);
+            _lastStepArrival = now;
+
+            bool spansTurn = _turnSinceLastStep;
+            _turnSinceLastStep = false;
+
+            // A pause longer than any stride: forget the cadence, the next run relearns it.
+            if (elapsed > MovementSpeed.STEP_PAUSE_MAX)
+            {
+                StepInterval = 0;
+                _cadence.Clear();
+                _slowSamples = 0;
+                return;
+            }
+
+            // Same-tick bursts and turn-spanning pairs (period + turn latency) are not strides.
+            if (elapsed < MovementSpeed.STEP_SAMPLE_MIN || spansTurn)
+            {
+                _slowSamples = 0;
+                return;
+            }
+
+            int median = _cadence.Median;
+
+            if (_cadence.Count > 0 && elapsed <= (int)(median * 0.70f))
+            {
+                // Faster arrivals cannot come from lag: a genuine speed-up, adopt at once.
+                _cadence.Clear();
+            }
+            else if (median > 0 && elapsed >= Math.Max((int)(median * 1.55f), median + 100))
+            {
+                // One slow arrival is a think pause; two in a row is a slower pace.
+                if (++_slowSamples < 2)
+                {
+                    return;
+                }
+
+                _cadence.Clear();
+            }
+
+            _slowSamples = 0;
+            _cadence.Add(elapsed);
+            StepInterval = _cadence.Median;
+        }
+
         public bool IsParalyzed => (Flags & Flags.Frozen) != 0;
         public bool IsYellowHits => (Flags & Flags.YellowBar) != 0;
         public bool IsPoisoned =>
@@ -175,7 +238,10 @@ namespace ClassicUO.Game.GameObjects
         }
 
         public bool IsFlying =>
-            Client.Game.UO.Version >= ClientVersion.CV_7000 && (Flags & Flags.Poisoned) != 0;
+            Client.Game.UO.Version >= ClientVersion.CV_7000 && (Flags & Flags.Flying) != 0;
+
+        public bool IsFlyingAnimationEnabled =>
+            IsFlying && (!IsGargoyle || !(_profile ?? Profile.DefaultPreviewProfile).DisableGargoyleFlyingAnimation);
 
         public virtual bool InWarMode
         {
@@ -197,7 +263,7 @@ namespace ClassicUO.Game.GameObjects
             {
                 Item it = Mount;
 
-                if (it != null && !IsDrivingBoat && it.GetGraphicForAnimation() != 0xFFFF)
+                if (it != null && !IsDead && !IsDrivingBoat && it.GetGraphicForAnimation() != 0xFFFF)
                 {
                     return true;
                 }
@@ -288,6 +354,33 @@ namespace ClassicUO.Game.GameObjects
 
         public void SetSAPoison(bool value) => _isSA_Poisoned = value;
 
+        /// <summary>
+        /// Enables auto follow mode with this mobile as the target.
+        /// </summary>
+        /// <param name="showMessage">Whether to display the "Now following" overhead message.</param>
+        public void Follow(bool showMessage = true)
+        {
+            if (ProfileManager.CurrentProfile == null)
+                return;
+
+            if (showMessage)
+            {
+                World.MessageManager.HandleMessage
+                (
+                    World.Player,
+                    TazLang.Get("now_following"),
+                    string.Empty,
+                    0,
+                    MessageType.Regular,
+                    3,
+                    TextType.CLIENT
+                );
+            }
+
+            ProfileManager.CurrentProfile.FollowingMode = true;
+            ProfileManager.CurrentProfile.FollowingTarget = Serial;
+        }
+
         private void CalculateRandomIdleTime()
         {
             const int TIME = 30000;
@@ -315,7 +408,7 @@ namespace ClassicUO.Game.GameObjects
         {
             Steps.Clear();
             Offset = Vector3.Zero;
-            _lastEnqueueTime = 0;
+            ResetCadence();
         }
 
         public bool EnqueueStep(int x, int y, sbyte z, Direction direction, bool run)
@@ -332,8 +425,6 @@ namespace ClassicUO.Game.GameObjects
                 return true;
             }
 
-            int timeDiff = _lastEnqueueTime == 0 ? MovementSpeed.TimeToCompleteMovement(run, IsMounted || IsFlying) : (int)(Time.Ticks - _lastEnqueueTime);
-
             if (Steps.Count == 0)
             {
                 if (!IsWalking)
@@ -344,10 +435,21 @@ namespace ClassicUO.Game.GameObjects
                 LastStepTime = Time.Ticks;
             }
 
-            _lastEnqueueTime = Time.Ticks;
-
             Direction moveDir = DirectionHelper.CalculateDirection(endX, endY, x, y);
-            var step = new Step();
+            var step = new Step { Arrival = Time.Ticks };
+
+            if (Serial != World.Player)
+            {
+                if (moveDir == Direction.NONE)
+                {
+                    // A facing-turn neither defines the cadence nor restarts the clock.
+                    _turnSinceLastStep = true;
+                }
+                else
+                {
+                    SampleCadence(Time.Ticks);
+                }
+            }
 
             if (moveDir != Direction.NONE)
             {
@@ -358,7 +460,6 @@ namespace ClassicUO.Game.GameObjects
                     step.Z = endZ;
                     step.Direction = (byte)moveDir;
                     step.Run = run;
-                    step.TimeDiff = timeDiff;
                     Steps.AddToBack(step);
                 }
 
@@ -367,7 +468,6 @@ namespace ClassicUO.Game.GameObjects
                 step.Z = z;
                 step.Direction = (byte)moveDir;
                 step.Run = run;
-                step.TimeDiff = timeDiff;
                 Steps.AddToBack(step);
             }
 
@@ -378,7 +478,6 @@ namespace ClassicUO.Game.GameObjects
                 step.Z = z;
                 step.Direction = (byte)direction;
                 step.Run = run;
-                step.TimeDiff = timeDiff;
                 Steps.AddToBack(step);
             }
 
@@ -518,7 +617,7 @@ namespace ClassicUO.Game.GameObjects
                         return;
                     }
 
-                    if (IsGargoyle && IsFlying)
+                    if (IsGargoyle && IsFlyingAnimationEnabled)
                     {
                         if (RandomHelper.GetValue(0, 2) != 0)
                         {
@@ -581,7 +680,7 @@ namespace ClassicUO.Game.GameObjects
         private void ProcessFootstepsSound()
         {
             if (
-                ProfileManager.CurrentProfile.EnableFootstepsSound
+                (ProfileManager.GlobalSettings == null || ProfileManager.GlobalSettings.EnableFootstepsSound)
                 && IsHuman
                 && !IsHidden
                 && !IsDead
@@ -747,6 +846,25 @@ namespace ClassicUO.Game.GameObjects
             LastAnimationChangeTime = Time.Ticks + currentDelay;
         }
 
+        // A real move waiting behind the in-flight step; facing-turns share a tile and do not count.
+        private bool HasMoveQueuedBehind()
+        {
+            int prevX = Steps[0].X;
+            int prevY = Steps[0].Y;
+
+            for (int i = 1; i < Steps.Count; i++)
+            {
+                Step s = Steps[i];
+
+                if (s.X != prevX || s.Y != prevY)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
         public void ProcessSteps(out byte dir, bool evalutate = false)
         {
             dir = (byte)Direction;
@@ -755,12 +873,7 @@ namespace ClassicUO.Game.GameObjects
             if (Steps.Count != 0 && !IsDestroyed)
             {
                 ref Step step = ref Steps.Front();
-                dir = step.Direction;
-
-                if (step.Run)
-                {
-                    dir &= 7;
-                }
+                dir = (byte)(step.Direction & 7);
 
                 if (evalutate)
                 {
@@ -770,21 +883,38 @@ namespace ClassicUO.Game.GameObjects
                     }
 
                     int delay = (int)Time.Ticks - (int)LastStepTime;
-                    int maxDelay;
+                    bool actuallyMounted = IsActuallyMounted;
+                    bool run = step.Run;
 
-                    if (Serial == World.Player)
+                    // The duration is fixed when the step reaches the front of the queue; a
+                    // later packet must never move an in-flight sprite.
+                    if (step.Duration == 0)
                     {
-                        bool mounted =
-                            IsMounted
-                            || SpeedMode == CharacterSpeedType.FastUnmount
-                            || SpeedMode == CharacterSpeedType.FastUnmountAndCantRun
-                            || IsFlying;
-                        maxDelay = MovementSpeed.TimeToCompleteMovement(step.Run, mounted) - (int)Client.Game.FrameDelay[1];
+                        int nominal = MovementSpeed.TimeToCompleteMovement(run, actuallyMounted);
+
+                        if (Serial == World.Player || StepInterval <= 0)
+                        {
+                            step.Duration = nominal;
+                        }
+                        else
+                        {
+                            // Render at the server's pace up to the cap; slower paces keep the
+                            // step-then-stand look.
+                            int cap = (int)(MovementSpeed.TimeToCompleteMovement(false, actuallyMounted) * MovementSpeed.RENDER_CAP_WALK_MULTIPLIER);
+                            int cadence = Math.Min(StepInterval, cap);
+
+                            // On time means ending when the next packet is due: the cadence less
+                            // how late this step's clock started after its packet arrived (the
+                            // clock starts at arrival when the queue was empty, else at the previous
+                            // step's end). A move already queued behind it is a full period of
+                            // deficit. Never faster than double speed.
+                            int late = Math.Max((int)LastStepTime - (int)step.Arrival, 0);
+                            int deficit = late + (HasMoveQueuedBehind() ? cadence : 0);
+                            step.Duration = Math.Max(Math.Max(cadence - deficit, cadence / 2), MovementSpeed.STEP_DELAY_MIN);
+                        }
                     }
-                    else
-                    {
-                        maxDelay = (step.TimeDiff > 0 ? step.TimeDiff : MovementSpeed.TimeToCompleteMovement(step.Run, IsMounted || IsFlying)) - (int)Client.Game.FrameDelay[1];
-                    }
+
+                    int maxDelay = Math.Max(step.Duration - (int)Client.Game.FrameDelay[1], 1);
 
                     bool removeStep = delay >= maxDelay;
                     bool directionChange = false;
@@ -846,7 +976,7 @@ namespace ClassicUO.Game.GameObjects
                             if (Z - step.Z >= 22)
                             {
                                 // oUCH!!!!
-                                AddMessage(MessageType.Label, ResGeneral.Ouch, TextType.CLIENT);
+                                AddMessage(MessageType.Label, TazLang.Get("ouch"), TextType.CLIENT);
                             }
 
                             if (
@@ -893,17 +1023,17 @@ namespace ClassicUO.Game.GameObjects
                         Offset.X = 0;
                         Offset.Y = 0;
                         Offset.Z = 0;
-                        Steps.RemoveFromFront();
 
-                        if (Steps.Count == 0)
+                        if (Steps.Count != 0)
                         {
-                            _lastEnqueueTime = 0;
+                            Steps.RemoveFromFront();
                         }
 
                         CalculateRandomIdleTime();
 
                         if (directionChange)
                         {
+                            LastStepTime = Time.Ticks;
                             ProcessSteps(out dir, evalutate);
 
                             return;
@@ -982,7 +1112,7 @@ namespace ClassicUO.Game.GameObjects
                 return;
             }
 
-            int offY = NameOverheadGump.CurrentHeight;
+            int offY = NameOverheadGump.CurrentHeight + NameOverheadTextExtraHeight;
 
             bool health = ProfileManager.CurrentProfile.ShowMobilesHP;
             int alwaysHP = ProfileManager.CurrentProfile.MobileHPShowWhen;
@@ -990,7 +1120,7 @@ namespace ClassicUO.Game.GameObjects
 
             Point p = RealScreenPosition;
 
-            if (IsGargoyle && IsFlying)
+            if (IsGargoyle && IsFlyingAnimationEnabled)
             {
                 p.Y -= 22;
             }
@@ -1015,8 +1145,12 @@ namespace ClassicUO.Game.GameObjects
                 out int height
             );
 
+            // height/centerY change every animation frame and bounce the text; smooth the anchor so it glides instead of jumping.
+            int targetAnimOffset = height + centerY + 8;
+            int smoothedAnimOffset = SmoothTextAnimOffset(targetAnimOffset);
+
             p.X += (int)Offset.X + 22;
-            p.Y += (int)(Offset.Y - Offset.Z - (height + centerY + 8));
+            p.Y += (int)(Offset.Y - Offset.Z - smoothedAnimOffset);
             // Removed Camera.WorldToScreen() - text is now transformed by worldRTMatrix during rendering
 
             if (ObjectHandlesStatus == ObjectHandlesStatus.DISPLAYING)
@@ -1052,6 +1186,32 @@ namespace ClassicUO.Game.GameObjects
             }
 
             FixTextCoordinatesInScreen();
+        }
+
+        // Frame-rate independent exponential smoothing of the text anchor offset; advances at most once per game tick.
+        private int SmoothTextAnimOffset(int target)
+        {
+            // First use or a large jump (mount/dismount, morph, graphic swap): snap instead of sliding across the gap.
+            if (_smoothedTextAnimOffset < 0f || Math.Abs(target - _smoothedTextAnimOffset) > 40f)
+            {
+                _smoothedTextAnimOffset = target;
+                _lastTextCoordUpdate = Time.Ticks;
+                return target;
+            }
+
+            uint now = Time.Ticks;
+            float dt = (now - _lastTextCoordUpdate) / 1000f;
+
+            if (dt > 0f)
+            {
+                // ~200ms to converge; higher speed = snappier, lower = smoother.
+                const float SPEED = 12f;
+                float t = 1f - MathF.Exp(-SPEED * dt);
+                _smoothedTextAnimOffset += (target - _smoothedTextAnimOffset) * t;
+                _lastTextCoordUpdate = now;
+            }
+
+            return (int)MathF.Round(_smoothedTextAnimOffset);
         }
 
         public override void CheckGraphicChange(byte animIndex = 0)
@@ -1145,6 +1305,8 @@ namespace ClassicUO.Game.GameObjects
 
                 //_pool.ReturnOne(this);
             }
+
+            _nameText?.Dispose();
         }
 
         public struct Step
@@ -1154,7 +1316,8 @@ namespace ClassicUO.Game.GameObjects
             public sbyte Z;
             public byte Direction;
             public bool Run;
-            public int TimeDiff;
+            public uint Arrival;
+            public int Duration;
         }
     }
 }

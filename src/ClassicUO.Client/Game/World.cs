@@ -3,8 +3,10 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.InteropServices;
 using ClassicUO.IO.Audio;
 using ClassicUO.Game.Data;
+using ClassicUO.Game.Effects;
 using ClassicUO.Game.GameObjects;
 using ClassicUO.Game.Managers;
 using ClassicUO.Game.Map;
@@ -16,12 +18,14 @@ using ClassicUO.Game.Scenes;
 using ClassicUO.Utility.Logging;
 using ClassicUO.Assets;
 using ClassicUO.Game.UI;
+using ClassicUO.Network;
 
 namespace ClassicUO.Game
 {
     public sealed class World
     {
         public static World Instance { get; private set; }
+        public static HashSet<EnhancedPacketDisabledFeaturesEnum> DisabledFeatures = new();
         private readonly EffectManager _effectManager;
         private readonly List<uint> _toRemove = new List<uint>();
         private uint _timeToDelete;
@@ -48,10 +52,28 @@ namespace ClassicUO.Game
             Macros = new MacroManager(this);
             CommandManager = new CommandManager(this);
             Weather = new Weather(this);
+            RippleEffect = new RippleEffect(this);
+            SplashEffect = new SplashEffect();
             InfoBars = new InfoBarManager(this);
             DurabilityManager = new DurabilityManager(this);
             OPL = new ObjectPropertiesListManager(this);
             CoolDownBarManager = new CoolDownBarManager(this);
+
+            ProfileManager.CurrentProfileChanged += OnCurrentProfileChanged;
+            ApplyWeatherFromProfile();
+        }
+
+        private void OnCurrentProfileChanged(object sender, EventArgs e) => ApplyWeatherFromProfile();
+
+        private void ApplyWeatherFromProfile()
+        {
+            bool wantsEnhanced = ProfileManager.CurrentProfile?.EnableEnhancedWeather == true;
+            bool hasEnhanced = Weather is EnhancedWeather;
+
+            if (wantsEnhanced != hasEnhanced)
+            {
+                SwitchWeather(wantsEnhanced);
+            }
         }
 
         public Point RangeSize;
@@ -107,13 +129,30 @@ namespace ClassicUO.Game
 
         public CommandManager CommandManager { get; }
 
-        public Weather Weather { get; }
+        public WeatherBase Weather { get; private set; }
+
+        internal RippleEffect RippleEffect { get; }
+
+        internal SplashEffect SplashEffect { get; }
+
+        public void SwitchWeather(bool enhanced)
+        {
+            Weather?.Reset();
+            RippleEffect?.Reset();
+            SplashEffect?.Reset();
+            Weather = enhanced ? new EnhancedWeather(this) : new Weather(this);
+        }
 
         public InfoBarManager InfoBars { get; }
 
         public Dictionary<uint, Item> Items { get; } = new Dictionary<uint, Item>();
 
         public Dictionary<uint, Mobile> Mobiles { get; } = new Dictionary<uint, Mobile>();
+
+        // Pre-grows the item dictionary in large steps once a spawn burst is detected, reducing repeated rehashes.
+        private const int ITEM_BURST_GROW_THRESHOLD = 128;
+        private const int ITEM_BURST_GROW_STEP = 2048;
+        private int _itemsCreatedSinceLastGrow;
 
         // Separate collection for corpses to optimize iteration in TryOpenCorpses
         private readonly HashSet<Item> _corpses = new HashSet<Item>();
@@ -163,6 +202,14 @@ namespace ClassicUO.Game
                         return;
                     }
 
+                    // Clamp to a valid map index. The server may send an out-of-range
+                    // index (map change is a single byte, so 0-255), which would throw
+                    // IndexOutOfRangeException when the Map is constructed.
+                    if (value < 0 || value >= MapLoader.MAPS_COUNT)
+                    {
+                        value = 0;
+                    }
+
                     if (Map != null)
                     {
                         if (MapIndex >= 0)
@@ -175,11 +222,6 @@ namespace ClassicUO.Game
                         sbyte z = Player.Z;
 
                         Map = null;
-
-                        if (value >= MapLoader.MAPS_COUNT)
-                        {
-                            value = 0;
-                        }
 
                         Client.Game.UO.FileManager.Maps.LoadMap(value, ClientFeatures.Flags.HasFlag(CharacterListFlags.CLF_UNLOCK_FELUCCA_AREAS));
                         Map = new Map.Map(this, value);
@@ -211,6 +253,39 @@ namespace ClassicUO.Game
 
         public bool InGame => Player != null && Map != null;
 
+        public void ReloadCurrentMap()
+        {
+            if (Map == null)
+                return;
+
+            int index = Map.Index;
+
+            if (index < 0 || index >= MapLoader.MAPS_COUNT)
+                index = 0;
+
+            ushort x = Player.X;
+            ushort y = Player.Y;
+            sbyte z = Player.Z;
+
+            UnlinkEntitiesFromMap();
+
+            Map.Destroy();
+            Map = null;
+
+            Client.Game.UO.FileManager.Maps.LoadMap(index, ClientFeatures.Flags.HasFlag(CharacterListFlags.CLF_UNLOCK_FELUCCA_AREAS));
+            Map = new Map.Map(this, index);
+
+            Player.SetInWorldTile(x, y, z);
+            Player.ClearSteps();
+
+            RelinkEntitiesToMap();
+
+            if (Client.Game.UO.GameCursor != null)
+            {
+                Client.Game.UO.GameCursor.Graphic = 0xFFFF;
+            }
+        }
+
         public IsometricLight Light { get; } = new IsometricLight
         {
             Overall = 0,
@@ -237,6 +312,9 @@ namespace ClassicUO.Game
                 {
                     _corpses.Add(item);
                 }
+
+                // Reapply the looted hue if this corpse was previously looted and hued.
+                AutoLootManager.ApplyLootedHueIfNeeded(item);
             }
         }
 
@@ -272,7 +350,9 @@ namespace ClassicUO.Game
             if (ProfileManager.CurrentProfile == null)
             {
                 string lastChar = LastCharacterManager.GetLastCharacter(LoginScene.Account, ServerName);
-                ProfileManager.Load(ServerName, LoginScene.Account, lastChar);
+                ProfileManager.Load(ServerName, LoginScene.Account, lastChar, serial);
+                SoundFilterManager.MigrateLegacySqlSettings();
+                SeasonFilter.MigrateLegacySqlSettings();
             }
 
             if (Player != null)
@@ -556,42 +636,46 @@ namespace ClassicUO.Game
             return ent;
         }
 
-        public Item GetOrCreateItem(uint serial)
+        public Item GetOrCreateItem(uint serial) => GetOrCreateItem(serial, out _);
+
+        public Item GetOrCreateItem(uint serial, out bool created)
         {
-            Item item = Items.Get(serial);
+            // Single hash lookup instead of Get + Add; also pre-grows capacity during spawn bursts.
+            ref Item slot = ref CollectionsMarshal.GetValueRefOrAddDefault(Items, serial, out bool exists);
 
-            if (item != null && item.IsDestroyed)
+            if (exists && !slot.IsDestroyed)
             {
-                Items.Remove(serial);
-                item = null;
+                created = false;
+                return slot;
             }
 
-            if (item == null /*|| item.IsDestroyed*/)
+            created = true;
+            slot = Item.Create(this, serial);
+
+            if (++_itemsCreatedSinceLastGrow >= ITEM_BURST_GROW_THRESHOLD)
             {
-                item = Item.Create(this, serial);
-                Items.Add(item);
+                _itemsCreatedSinceLastGrow = 0;
+                Items.EnsureCapacity(Items.Count + ITEM_BURST_GROW_STEP);
             }
 
-            return item;
+            return slot;
         }
 
-        public Mobile GetOrCreateMobile(uint serial)
+        public Mobile GetOrCreateMobile(uint serial) => GetOrCreateMobile(serial, out _);
+
+        public Mobile GetOrCreateMobile(uint serial, out bool created)
         {
-            Mobile mob = Mobiles.Get(serial);
+            ref Mobile slot = ref CollectionsMarshal.GetValueRefOrAddDefault(Mobiles, serial, out bool exists);
 
-            if (mob != null && mob.IsDestroyed)
+            if (exists && !slot.IsDestroyed)
             {
-                Mobiles.Remove(serial);
-                mob = null;
+                created = false;
+                return slot;
             }
 
-            if (mob == null /*|| mob.IsDestroyed*/)
-            {
-                mob = Mobile.Create(this, serial);
-                Mobiles.Add(mob);
-            }
-
-            return mob;
+            created = true;
+            slot = Mobile.Create(this, serial);
+            return slot;
         }
 
         public void RemoveItemFromContainer(uint serial)
@@ -664,6 +748,7 @@ namespace ClassicUO.Game
             }
 
             OPL.Remove(serial);
+            DurabilityManager?.RemoveItem(serial);
             item.Destroy();
 
             if (forceRemove)
@@ -696,6 +781,7 @@ namespace ClassicUO.Game
             }
 
             OPL.Remove(serial);
+            DurabilityManager?.RemoveMobile(serial);
             mobile.Destroy();
 
             if (forceRemove)
@@ -797,6 +883,16 @@ namespace ClassicUO.Game
                             {
                                 continue;
                             }
+                            if (FriendsListManager.Instance.IsFriend(mobile.Serial))
+                            {
+                                continue;
+                            }
+                            break;
+                        case ScanTypeObject.Friend:
+                            if (!FriendsListManager.Instance.IsFriend(mobile.Serial))
+                            {
+                                continue;
+                            }
                             break;
                         case ScanTypeObject.Objects:
                             /* This was handled separately above */
@@ -871,6 +967,16 @@ namespace ClassicUO.Game
                             {
                                 continue;
                             }
+                            if (FriendsListManager.Instance.IsFriend(mobile.Serial))
+                            {
+                                continue;
+                            }
+                            break;
+                        case ScanTypeObject.Friend:
+                            if (!FriendsListManager.Instance.IsFriend(mobile.Serial))
+                            {
+                                continue;
+                            }
                             break;
                         case ScanTypeObject.Objects:
                             /* This was handled separately above */
@@ -939,6 +1045,7 @@ namespace ClassicUO.Game
             _toRemove.Clear();
             CorpseManager.Clear();
             OPL.Clear();
+            DurabilityManager?.Clear();
             WMapManager.Clear();
             HouseManager?.Clear();
 
@@ -950,6 +1057,55 @@ namespace ClassicUO.Game
             ActiveSpellIcons.Clear();
 
             SkillsRequested = false;
+            DisabledFeatures.Clear();
+        }
+
+        private void UnlinkEntitiesFromMap()
+        {
+            foreach (Mobile mobile in Mobiles.Values)
+            {
+                mobile.RemoveFromTile();
+            }
+
+            foreach (Item item in Items.Values)
+            {
+                if (item.OnGround)
+                {
+                    item.RemoveFromTile();
+                }
+            }
+
+            foreach (House house in HouseManager.Houses)
+            {
+                foreach (Multi component in house.Components)
+                {
+                    component.RemoveFromTile();
+                }
+            }
+        }
+
+        private void RelinkEntitiesToMap()
+        {
+            foreach (Mobile mobile in Mobiles.Values)
+            {
+                if (mobile != Player)
+                {
+                    mobile.SetInWorldTile(mobile.X, mobile.Y, mobile.Z);
+                }
+            }
+
+            foreach (Item item in Items.Values)
+            {
+                if (item.OnGround)
+                {
+                    item.SetInWorldTile(item.X, item.Y, item.Z);
+                }
+            }
+
+            foreach (House house in HouseManager.Houses)
+            {
+                house.Generate(true);
+            }
         }
 
         private void InternalMapChangeClear(bool noplayer)

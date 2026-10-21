@@ -32,6 +32,16 @@ namespace ClassicUO.Game.Scenes
             new TreeUnion(0x0D8C, 0x0D90)
         };
 
+        // Art sprites are anchored at their base tile and extend upward by (art height - this offset),
+        // matching the y -= index.Height positioning in DrawStaticAnimated. Horizontally the art is
+        // centered on the tile, so it extends (art width / 2 - this offset) past the base on both sides.
+        private const int SPRITE_BASE_OFFSET_PIXELS = 44;
+        private const int SPRITE_CENTER_OFFSET_PIXELS = 22;
+
+        // A tile advances 22 screen pixels along either isometric axis. Used to convert the light
+        // halo cull margin into the extra tiles the chunk walk must cover.
+        private const int SCREEN_STEP_PER_TILE = 22;
+
         private sbyte _maxGroundZ;
         private int _maxZ;
         private Vector2 _minPixel,
@@ -47,9 +57,19 @@ namespace ClassicUO.Game.Scenes
             _oldPlayerZ;
         private int _foliageCount;
 
-        // Smooth camera following
-        private Vector2 _currentSmoothedOffset = Vector2.Zero;
+        // World mouse-selection cache: the per-object pixel pass (CheckMouseSelection) is skipped
+        // while neither the cursor nor the view transform moved, and last frame's selection is
+        // reused. _selectionDirty is raised by GetViewPort when the view transform changes.
+        private bool _runWorldSelection;
+        private bool _selectionDirty = true;
+        private Point _lastSelectionMousePosition = new Point(int.MinValue, int.MinValue);
+        private GameObject _lastWorldSelectionObject;
 
+        // Cached world-space cursor: MouseToWorldPosition is a pure function of the mouse position
+        // and the camera transform, so skip recomputing it while both are unchanged.
+        private Point _lastTranslatedMouseMouse = new Point(int.MinValue, int.MinValue);
+        private Rectangle _lastTranslatedMouseBounds;
+        private ulong _lastTranslatedCameraVersion = ulong.MaxValue;
 
         private readonly List<GameObject> _renderListStatics = new List<GameObject>();
         private readonly List<GameObject> _renderListTransparentObjects = new List<GameObject>();
@@ -357,9 +377,9 @@ namespace ClassicUO.Game.Scenes
         )
         {
             allowSelection = true;
-            if (ProfileManager.CurrentProfile.UseCircleOfTransparency && ProfileManager.CurrentProfile.CircleOfTransparencyType == 2)
+            if (ProfileManager.GlobalSettings.UseCircleOfTransparency && ProfileManager.GlobalSettings.CircleOfTransparencyType == 2)
             {
-                if (Vector2.Distance(new Vector2(obj.RealScreenPosition.X, obj.RealScreenPosition.Y), playerPos) < ProfileManager.CurrentProfile.CircleOfTransparencyRadius)
+                if (Vector2.Distance(new Vector2(obj.RealScreenPosition.X, obj.RealScreenPosition.Y), playerPos) < ProfileManager.GlobalSettings.CircleOfTransparencyRadius)
                 {
                     if (obj.Z >= _maxZ)
                     {
@@ -452,9 +472,9 @@ namespace ClassicUO.Game.Scenes
             ref bool allowSelection
         )
         {
-            if (ProfileManager.CurrentProfile.UseCircleOfTransparency && obj.TransparentTest(maxZ))
+            if (ProfileManager.GlobalSettings.UseCircleOfTransparency && obj.TransparentTest(maxZ))
             {
-                int maxDist = ProfileManager.CurrentProfile.CircleOfTransparencyRadius + 0;
+                int maxDist = ProfileManager.GlobalSettings.CircleOfTransparencyRadius + 0;
                 var pos = new Vector2(obj.RealScreenPosition.X, obj.RealScreenPosition.Y - 44);
                 Vector2.Distance(ref playerPos, ref pos, out float dist);
 
@@ -486,6 +506,27 @@ namespace ClassicUO.Game.Scenes
             }
 
             return false;
+        }
+
+        /// <summary>
+        /// Determines whether a foliage object should be hidden as part of the tree-to-stumps
+        /// feature. When <see cref="Profile.TreeToStumpsWithinRadius"/> is enabled the foliage is
+        /// only hidden while it is within the circle of transparency radius from the player.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static bool HideFoliageForStumps(GameObject obj, Profile profile, ref Vector2 playerScreePos)
+        {
+            if (!profile.TreeToStumps || World.DisabledFeatures.Contains(Network.EnhancedPacketDisabledFeaturesEnum.TreeToStumps))
+            {
+                return false;
+            }
+
+            if (profile.TreeToStumpsWithinRadius)
+            {
+                return StaticFilters.IsWithinStumpRadius(obj.GetScreenPosition(), playerScreePos, ref obj.WithinStumpRadius);
+            }
+
+            return true;
         }
 
         private static bool CalculateAlpha(ref byte alphaHue, int maxAlpha)
@@ -530,6 +571,135 @@ namespace ClassicUO.Game.Scenes
             alphaHue = (byte)alpha;
 
             return result;
+        }
+
+        /// <summary>
+        /// Extra cull margin, in pixels, for an object that emits light. Zero when lighting is off.
+        /// </summary>
+        /// <remarks>
+        /// The halo is drawn centered on the source and reaches half the light texture past it in
+        /// every direction, which is far larger than the source art. Without this the source is
+        /// culled while its glow is still on screen, and the glow pops at the edge.
+        /// </remarks>
+        private int LightHaloCullMargin
+        {
+            get
+            {
+                if (!UseLights && !UseAltLights)
+                {
+                    return 0;
+                }
+
+                return Client.Game.UO.FileManager.Lights.MaxLightDimension >> 1;
+            }
+        }
+
+        /// <summary>
+        /// Tests whether an object is a light source whose halo must be kept alive past its art.
+        /// </summary>
+        /// <param name="obj">Object being culled.</param>
+        /// <param name="itemData">The object's static tile data, whose flags mark most light sources.</param>
+        /// <returns>True when the object draws a light halo.</returns>
+        private static bool EmitsLight(GameObject obj, ref StaticTiles itemData)
+        {
+            if (itemData.IsLight)
+            {
+                return true;
+            }
+
+            // ItemView also lights a few graphics that the tile flags miss.
+            if (obj is Item item)
+            {
+                ushort graphic = item.DisplayedGraphic;
+
+                return (graphic >= 0x3E02 && graphic <= 0x3E0B)
+                    || (graphic >= 0x3914 && graphic <= 0x3929);
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Resolves the art a static/item actually draws, following the animation offset that
+        /// <c>DrawStaticAnimated</c> applies, so culling measures the same sprite that is rendered.
+        /// </summary>
+        /// <param name="graphic">Base graphic id.</param>
+        /// <returns>Sprite info for the drawn frame, or an empty sprite when there is no art.</returns>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static ref readonly SpriteInfo GetCullArt(ushort graphic)
+        {
+            ref var index = ref Client.Game.UO.FileManager.Arts.File.GetValidRefEntry(graphic + 0x4000);
+
+            return ref Client.Game.UO.Arts.GetArt((ushort)(graphic + index.AnimOffset));
+        }
+
+        /// <summary>
+        /// Tests whether a tile-anchored sprite is fully below the viewport bottom.
+        /// </summary>
+        /// <remarks>
+        /// These sprites are anchored at their base tile and grow upward (see
+        /// <c>DrawStaticAnimated</c>), so comparing only the base Y culls tall art such as trees
+        /// whose canopy is still on screen, making it pop in at the bottom edge while the camera
+        /// scrolls. The sprite height is added back before culling. The top edge needs no such
+        /// allowance: art above the top extent stays above the top.
+        /// </remarks>
+        /// <param name="screenY">Sprite base Y in viewport space.</param>
+        /// <param name="graphic">Graphic id whose art height defines the upward extent.</param>
+        /// <param name="margin">Extra reach (shadow/light) to keep while it still overlaps.</param>
+        /// <returns>True when no part of the sprite can be visible.</returns>
+        private bool IsBelowViewportBottom(int screenY, ushort graphic, int margin = 0)
+        {
+            if (screenY <= _maxPixel.Y + margin)
+            {
+                return false;
+            }
+
+            ref readonly SpriteInfo artInfo = ref GetCullArt(graphic);
+
+            if (artInfo.Texture == null)
+            {
+                return true;
+            }
+
+            return screenY + SPRITE_BASE_OFFSET_PIXELS - artInfo.UV.Height > _maxPixel.Y + margin;
+        }
+
+        /// <summary>
+        /// Tests whether a tile-anchored sprite is fully outside the viewport left or right.
+        /// </summary>
+        /// <remarks>
+        /// These sprites are centered on their base tile (see <c>DrawStaticAnimated</c>), so a base
+        /// X just past either horizontal edge can still have more than half the art on screen.
+        /// Using the base X alone culls it and makes the art pop in from the side. The art width is
+        /// applied before culling; the sprite is kept while any column of it remains visible. Drop
+        /// shadows lean down-right, so they can also reach past the right edge by half the art
+        /// height and are given the same allowance.
+        /// </remarks>
+        /// <param name="screenX">Sprite base X in viewport space.</param>
+        /// <param name="graphic">Graphic id whose art width defines the horizontal extent.</param>
+        /// <param name="margin">Extra reach (light halo) to keep while it still overlaps.</param>
+        /// <param name="castsShadow">Whether this sprite draws a skewed drop shadow.</param>
+        /// <returns>True when no part of the sprite can be visible.</returns>
+        private bool IsSpriteOutsideHorizontally(int screenX, ushort graphic, int margin = 0, bool castsShadow = false)
+        {
+            if (screenX >= _minPixel.X && screenX <= _maxPixel.X)
+            {
+                return false;
+            }
+
+            ref readonly SpriteInfo artInfo = ref GetCullArt(graphic);
+
+            if (artInfo.Texture == null)
+            {
+                return true;
+            }
+
+            int width = artInfo.UV.Width;
+            int effectiveMargin = castsShadow ? Math.Max(margin, artInfo.UV.Height >> 1) : margin;
+            int left = screenX + SPRITE_CENTER_OFFSET_PIXELS - (width >> 1);
+
+            return left + width < _minPixel.X - effectiveMargin
+                || left > _maxPixel.X + effectiveMargin;
         }
 
         private static byte CalculateObjectHeight(ref int maxObjectZ, ref StaticTiles itemData)
@@ -626,9 +796,11 @@ namespace ClassicUO.Game.Scenes
                 return;
             }
 
-            // slow as fuck
+            RecordLightOccluder(obj);
+
             if (
-                allowSelection
+                _runWorldSelection
+                && allowSelection
                 && obj.Z <= _maxGroundZ
                 && obj.AllowedToDraw
                 && obj.CheckMouseSelection()
@@ -657,6 +829,156 @@ namespace ClassicUO.Game.Scenes
             }
         }
 
+        /// <summary>
+        /// Cheap screen-space re-validation of a cached world selection while the cursor is frozen.
+        /// Immovable tiles (land, static, multi, corpses) only need a liveness check - they can't
+        /// leave the cursor. Mobiles and ground items use their sprite bounds so one that moved away
+        /// still deselects without paying the pixel picker's RLE walk.
+        /// </summary>
+        private bool IsWorldSelectionValid(GameObject obj)
+        {
+            if (obj.IsDestroyed || !obj.AllowedToDraw)
+            {
+                return false;
+            }
+
+            Point mouse = SelectedObject.TranslatedMousePositionByViewport;
+
+            switch (obj)
+            {
+                case Land:
+                case Static:
+                case Multi:
+                    // Matches the foliage-index exclusion in StaticView/MultiView.CheckMouseSelection.
+                    if (obj.FoliageIndex != -1 && FoliageIndex == obj.FoliageIndex)
+                    {
+                        return false;
+                    }
+
+                    return true;
+
+                case Mobile:
+                {
+                    Point position = obj.RealScreenPosition;
+                    position.Y -= 3;
+                    position.X += (int)obj.Offset.X + 22;
+                    position.Y += (int)(obj.Offset.Y - obj.Offset.Z) + 22;
+
+                    Rectangle r = obj.FrameInfo;
+                    r.X = position.X - r.X;
+                    r.Y = position.Y - r.Y;
+
+                    return r.Contains(mouse);
+                }
+
+                case Item item:
+                    // Corpses don't move; only the liveness check above applies.
+                    return item.IsCorpse || IsPointInItemArtBounds(item, mouse);
+
+                default:
+                    return true;
+            }
+        }
+
+        private static bool IsPointInItemArtBounds(Item item, in Point mouse)
+        {
+            ushort graphic = item.DisplayedGraphic;
+
+            if (item.OnGround && item.ItemData.IsAnimated)
+            {
+                if (
+                    ProfileManager.CurrentProfile.FieldsType == 2
+                    && (StaticFilters.IsFireField(item.Graphic)
+                        || StaticFilters.IsParalyzeField(item.Graphic)
+                        || StaticFilters.IsEnergyField(item.Graphic)
+                        || StaticFilters.IsPoisonField(item.Graphic)
+                        || StaticFilters.IsWallOfStone(item.Graphic))
+                )
+                {
+                    graphic = Constants.FIELD_REPLACE_GRAPHIC;
+                }
+                else
+                {
+                    graphic += (ushort)Client.Game.UO.FileManager.Arts.File
+                        .GetValidRefEntry(graphic + 0x4000)
+                        .AnimOffset;
+                }
+            }
+
+            ref readonly SpriteInfo info = ref Client.Game.UO.Arts.GetArt(graphic);
+
+            if (info.Texture == null)
+            {
+                return true;
+            }
+
+            Point position = item.RealScreenPosition;
+            position.X += (int)item.Offset.X;
+            position.Y += (int)(item.Offset.Y + item.Offset.Z);
+
+            int width = info.UV.Width;
+            int height = info.UV.Height;
+
+            // The art is anchored at its center offset (index.Width = (w >> 1) - 22, index.Height = h - 44),
+            // so the picker's bounds rect is the full sprite shifted by that anchor.
+            Rectangle rect = new Rectangle(
+                position.X + 22 - (width >> 1),
+                position.Y + 44 - height,
+                width,
+                height
+            );
+
+            if (rect.Contains(mouse))
+            {
+                return true;
+            }
+
+            // Stacked piles repeat the art 5px up-left, matching the second PixelCheck in ItemView.
+            return !item.IsMulti
+                && !item.IsCoin
+                && item.Amount > 1
+                && item.ItemData.IsStackable
+                && new Rectangle(rect.X - 5, rect.Y - 5, width, height).Contains(mouse);
+        }
+
+        // Records a drawn opaque tile (terrain/static/multi) as a light occluder, bucketed by isometric column (X - Y).
+        private void RecordLightOccluder(GameObject obj)
+        {
+            if (!UseLights && !UseAltLights)
+            {
+                return;
+            }
+
+            int z;
+
+            if (obj is Land land)
+            {
+                z = land.IsStretched ? land.AverageZ : land.Z;
+            }
+            else if (obj is Static s && !s.ItemData.IsTransparent)
+            {
+                z = obj.Z;
+            }
+            else if (obj is Multi m && !m.ItemData.IsTransparent)
+            {
+                z = obj.Z;
+            }
+            else
+            {
+                return;
+            }
+
+            int column = obj.X - obj.Y;
+
+            if (!_lightOccluders.TryGetValue(column, out List<LightOccluder> bucket))
+            {
+                bucket = _lightOccluderPool.Count > 0 ? _lightOccluderPool.Pop() : new List<LightOccluder>();
+                _lightOccluders[column] = bucket;
+            }
+
+            bucket.Add(new LightOccluder { X = obj.X, Z = z });
+        }
+
         private unsafe bool AddTileToRenderList(
             GameObject obj,
             bool useObjectHandles,
@@ -678,7 +1000,15 @@ namespace ClassicUO.Game.Scenes
 
                 if (screenX < _minPixel.X || screenX > _maxPixel.X)
                 {
-                    break;
+                    // Static/Multi/Item sprites can be wider than their base tile (and light
+                    // sources out-reach it with their halo), so part of them may still be on screen;
+                    // they get an exact, extent-aware test in their case handlers. Not a break: the
+                    // tile list head is usually a Land, and breaking on its base X would skip a wider
+                    // static sharing the same tile.
+                    if (obj is not Static && obj is not Multi && obj is not Item)
+                    {
+                        continue;
+                    }
                 }
 
                 int screenY = obj.RealScreenPosition.Y;
@@ -743,7 +1073,7 @@ namespace ClassicUO.Game.Scenes
                             }
 
                             //we avoid to hide impassable foliage or bushes, if present...
-                            if (itemData.IsFoliage && profile.TreeToStumps)
+                            if (itemData.IsFoliage && HideFoliageForStumps(obj, profile, ref playerScreePos))
                             {
                                 continue;
                             }
@@ -769,7 +1099,20 @@ namespace ClassicUO.Game.Scenes
                                 return itemData.Height != 0 && maxObjectZ - maxZ < height;
                             }
 
-                            if (screenY < _minPixel.Y || screenY > _maxPixel.Y)
+                            int lightMargin = EmitsLight(obj, ref itemData) ? LightHaloCullMargin : 0;
+                            bool castsShadow = profile.ShadowsEnabled
+                                && profile.ShadowsStatics
+                                && (
+                                    StaticFilters.IsTree(obj.Graphic, out _)
+                                    || itemData.IsFoliage
+                                    || StaticFilters.IsRock(obj.Graphic)
+                                );
+
+                            if (
+                                screenY < _minPixel.Y - lightMargin
+                                || IsBelowViewportBottom(screenY, obj.Graphic, lightMargin)
+                                || IsSpriteOutsideHorizontally(screenX, obj.Graphic, lightMargin, castsShadow)
+                            )
                             {
                                 continue;
                             }
@@ -777,15 +1120,7 @@ namespace ClassicUO.Game.Scenes
                             CheckIfBehindATree(obj, ref itemData);
 
                             // hacky way to render shadows without z-fight
-                            if (
-                                profile.ShadowsEnabled
-                                && profile.ShadowsStatics
-                                && (
-                                    StaticFilters.IsTree(obj.Graphic, out _)
-                                    || itemData.IsFoliage
-                                    || StaticFilters.IsRock(obj.Graphic)
-                                )
-                            )
+                            if (castsShadow)
                             {
                                 PushToRenderList(
                                     obj,
@@ -832,7 +1167,7 @@ namespace ClassicUO.Game.Scenes
 
                             if (!itemData.IsMultiMovable)
                             {
-                                if (itemData.IsFoliage && profile.TreeToStumps)
+                                if (itemData.IsFoliage && HideFoliageForStumps(obj, profile, ref playerScreePos))
                                 {
                                     continue;
                                 }
@@ -855,7 +1190,20 @@ namespace ClassicUO.Game.Scenes
                                 return itemData.Height != 0 && maxObjectZ - maxZ < height;
                             }
 
-                            if (screenY < _minPixel.Y || screenY > _maxPixel.Y)
+                            int lightMargin = EmitsLight(obj, ref itemData) ? LightHaloCullMargin : 0;
+                            bool castsShadow = profile.ShadowsEnabled
+                                && profile.ShadowsStatics
+                                && (
+                                    StaticFilters.IsTree(obj.Graphic, out _)
+                                    || itemData.IsFoliage
+                                    || StaticFilters.IsRock(obj.Graphic)
+                                );
+
+                            if (
+                                screenY < _minPixel.Y - lightMargin
+                                || IsBelowViewportBottom(screenY, obj.Graphic, lightMargin)
+                                || IsSpriteOutsideHorizontally(screenX, obj.Graphic, lightMargin, castsShadow)
+                            )
                             {
                                 continue;
                             }
@@ -863,15 +1211,7 @@ namespace ClassicUO.Game.Scenes
                             CheckIfBehindATree(obj, ref itemData);
 
                             // hacky way to render shadows without z-fight
-                            if (
-                                profile.ShadowsEnabled
-                                && profile.ShadowsStatics
-                                && (
-                                    StaticFilters.IsTree(obj.Graphic, out _)
-                                    || itemData.IsFoliage
-                                    || StaticFilters.IsRock(obj.Graphic)
-                                )
-                            )
+                            if (castsShadow)
                             {
                                 PushToRenderList(
                                     obj,
@@ -979,7 +1319,7 @@ namespace ClassicUO.Game.Scenes
                             if (
                                 !itemData.IsMultiMovable
                                 && itemData.IsFoliage
-                                && profile.TreeToStumps
+                                && HideFoliageForStumps(obj, profile, ref playerScreePos)
                             )
                             {
                                 continue;
@@ -997,9 +1337,34 @@ namespace ClassicUO.Game.Scenes
                                 return itemData.Height != 0 && maxObjectZ - maxZ < height;
                             }
 
-                            if (screenY < _minPixel.Y || screenY > _maxPixel.Y)
+                            if (item.IsCorpse)
                             {
-                                continue;
+                                // Corpses draw as animation frames, not base-anchored static art.
+                                if (
+                                    screenX < _minPixel.X
+                                    || screenX > _maxPixel.X
+                                    || screenY < _minPixel.Y
+                                    || screenY > _maxPixel.Y
+                                )
+                                {
+                                    continue;
+                                }
+                            }
+                            else
+                            {
+                                // Ground items draw like statics (base-anchored, growing up), and
+                                // many are light sources, so they need the same extent-aware culling.
+                                int itemLightMargin = EmitsLight(obj, ref itemData) ? LightHaloCullMargin : 0;
+                                ushort itemGraphic = item.DisplayedGraphic;
+
+                                if (
+                                    screenY < _minPixel.Y - itemLightMargin
+                                    || IsBelowViewportBottom(screenY, itemGraphic, itemLightMargin)
+                                    || IsSpriteOutsideHorizontally(screenX, itemGraphic, itemLightMargin)
+                                )
+                                {
+                                    continue;
+                                }
                             }
 
                             if (!item.IsCorpse)
@@ -1115,7 +1480,8 @@ namespace ClassicUO.Game.Scenes
                 winGameScaledHeight = 0;
             }
 
-            int size = (int)(Math.Max(winGameWidth / 44f + 1, winGameHeight / 44f + 1) * zoom);
+            // +1 extra tile in all directions to keep edge objects from popping out
+            int size = (int)(Math.Max(winGameWidth / 44f + 1, winGameHeight / 44f + 1) * zoom) + 1;
 
             if (Camera.Offset.X != 0 || Camera.Offset.Y != 0)
             {
@@ -1155,6 +1521,7 @@ namespace ClassicUO.Game.Scenes
             {
                 UpdateDrawPosition = true;
                 _lastCamOffset = Camera.Offset;
+                _selectionDirty = true;
             }
 
             _minTile.X = realMinRangeX;
@@ -1167,38 +1534,8 @@ namespace ClassicUO.Game.Scenes
             _maxPixel.X = maxPixelsX;
             _maxPixel.Y = maxPixelsY;
 
-            // Apply smooth camera interpolation
-            var targetOffset = new Vector2(winDrawOffsetX, winDrawOffsetY);
-            float smoothingFactor = ProfileManager.CurrentProfile.CameraSmoothingFactor;
-
-            if (smoothingFactor > 0f)
-            {
-                // Calculate distance to target
-                float distance = Vector2.Distance(_currentSmoothedOffset, targetOffset);
-
-                if (distance > 0.5f)
-                {
-                    // Smooth interpolation with easing - similar to Camera.CalculatePeek()
-                    // Higher smoothing factor = slower camera movement (more smoothing)
-                    float lerpAmount = Math.Min(Time.Delta * (10f / smoothingFactor), 1f);
-                    _currentSmoothedOffset = Vector2.Lerp(_currentSmoothedOffset, targetOffset, lerpAmount);
-                }
-                else
-                {
-                    // Snap to target when very close to avoid jitter
-                    _currentSmoothedOffset = targetOffset;
-                }
-
-                _offset.X = (int)_currentSmoothedOffset.X;
-                _offset.Y = (int)_currentSmoothedOffset.Y;
-            }
-            else
-            {
-                // No smoothing - instant camera follow (classic behavior)
-                _currentSmoothedOffset = targetOffset;
-                _offset.X = winDrawOffsetX;
-                _offset.Y = winDrawOffsetY;
-            }
+            _offset.X = winDrawOffsetX;
+            _offset.Y = winDrawOffsetY;
 
             _last_scaled_offset.X = winGameScaledOffsetX;
             _last_scaled_offset.Y = winGameScaledOffsetY;

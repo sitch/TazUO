@@ -1,4 +1,5 @@
-﻿using ClassicUO.Assets;
+using ClassicUO.Assets;
+using ClassicUO.Configuration;
 using ClassicUO.Game.UI.Controls;
 using ClassicUO.Renderer;
 using Microsoft.Xna.Framework;
@@ -24,7 +25,7 @@ namespace ClassicUO.Game.UI.Gumps
         };
         private AlphaBlendControl _background;
 
-        private Texture2D image = PNGLoader.Instance.GetImageTexture(Path.Combine(CUOEnviroment.ExecutablePath, "ExternalImages", "tazuo.png"));
+        private Texture2D image = ExternalImageLoader.Instance.GetImageTexture(Path.Combine(CUOEnviroment.ExecutablePath, "ExternalImages", "tazuo.png"));
 
         private Label[] supporterLabels = new Label[SUPPORTERS.Length];
 
@@ -36,8 +37,8 @@ namespace ClassicUO.Game.UI.Gumps
         {
             Width = WIDTH;
             Height = HEIGHT;
-            X = (Client.Game.Window.ClientBounds.Width - Width) >> 1;
-            Y = (Client.Game.Window.ClientBounds.Height - Height) >> 1;
+            X = (ScaleHelper.LogicalWindowWidth - Width) >> 1;
+            Y = (ScaleHelper.LogicalWindowHeight - Height) >> 1;
 
             CanCloseWithEsc = true;
             CanCloseWithRightClick = true;
@@ -51,7 +52,7 @@ namespace ClassicUO.Game.UI.Gumps
             _background.Y = 1;
             Add(_background);
 
-            var title = new Label("TazUO supporters and honorable mentions<br>And a special thanks to all the ClassicUO devs that made this possible!", true, 0xffff, WIDTH, 255, FontStyle.BlackBorder, Assets.TEXT_ALIGN_TYPE.TS_CENTER, true);
+            var title = new Label(TazLang.Get("supporters_title", "TazUO supporters and honorable mentions<br>And a special thanks to all the ClassicUO devs that made this possible!"), true, 0xffff, WIDTH, 255, FontStyle.BlackBorder, Assets.TEXT_ALIGN_TYPE.TS_CENTER, true);
             title.Y = 1;
             Add(title);
 

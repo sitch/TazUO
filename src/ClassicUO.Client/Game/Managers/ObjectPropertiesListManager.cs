@@ -1,13 +1,10 @@
-﻿// SPDX-License-Identifier: BSD-2-Clause
-
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Text.RegularExpressions;
 using ClassicUO.Configuration;
+using ClassicUO.Game.Data;
 using ClassicUO.Game.GameObjects;
 using ClassicUO.Game.UI.Controls;
-using ClassicUO.Game.UI.Gumps.GridHighLight;
-using ClassicUO.Network;
 using ClassicUO.Network.PacketHandlers.Helpers;
 using ClassicUO.Utility;
 
@@ -16,14 +13,14 @@ namespace ClassicUO.Game.Managers
     public sealed class ObjectPropertiesListManager
     {
         private readonly Dictionary<uint, ItemProperty> _itemsProperties = new Dictionary<uint, ItemProperty>();
-        private World _world;
+        private readonly World _world;
 
         public ObjectPropertiesListManager(World world)
         {
             _world = world;
         }
 
-        public void Add(uint serial, uint revision, string name, string data, int namecliloc)
+        public void Add(uint serial, uint revision, string name, string data, int namecliloc, int[] clilocs = null)
         {
             // Preserve any LabelData that ForcedTooltipManager has accumulated for this item
             // so server-driven OPL refreshes (which can arrive unsolicited and overwrite Data)
@@ -46,12 +43,19 @@ namespace ClassicUO.Game.Managers
             prop.Data = data;
             prop.LabelData = preservedLabel;
             prop.NameCliloc = namecliloc;
+            prop.Clilocs = clilocs;
 
             EventSink.InvokeOPLOnReceive(null, new OPLEventArgs(serial, name, data));
 
-            Item item = _world.Items.Get(serial);
-            if(item != null)
+            Entity ent = _world.Get(serial);
+            ent?.OPLUpdated(prop);
+
+            if (ent is Item item)
+            {
+                item.OPLName = name;
+                item.OPLData = data;
                 ItemDatabaseManager.Instance.AddOrUpdateItem(item, _world);
+            }
         }
 
         public bool Contains(uint serial)
@@ -274,6 +278,53 @@ namespace ClassicUO.Game.Managers
                 && haystack.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
+        public int[] GetClilocs(uint serial)
+        {
+            if (_itemsProperties.TryGetValue(serial, out ItemProperty p) && p.Clilocs != null)
+                return p.Clilocs;
+
+            return [];
+        }
+
+        /// <summary>
+        /// Checks whether the item, given by serial, has the given <see cref="ClilocValues"/>
+        /// </summary>
+        /// <param name="serial">The serial of the item to check</param>
+        /// <param name="requireAll">Whether all values must be found, rather than any one of them</param>
+        /// <param name="values">The values to look for</param>
+        /// <returns>
+        /// <see langword="true"/> if the item has the given <see cref="ClilocValues"/>, <see langword="false"/> otherwise.
+        /// An item whose property list has not been received yet matches nothing, so <paramref name="requireAll"/>
+        /// decides the result exactly as it does for an item with an empty list. An empty <paramref name="values"/>
+        /// likewise yields <paramref name="requireAll"/>: everything in an empty set is present, nothing in it is.
+        /// </returns>
+        public bool MatchClilocs(uint serial, bool requireAll, params ReadOnlySpan<ClilocValues> values)
+        {
+            if (serial == 0)
+                return false;
+
+            int[] clilocs = GetClilocs(serial);
+
+            foreach (ClilocValues value in values)
+            {
+                bool found = false;
+
+                foreach (int cliloc in clilocs)
+                {
+                    if (cliloc != (int)value)
+                        continue;
+
+                    found = true;
+                    break;
+                }
+
+                if (found != requireAll)
+                    return found;
+            }
+
+            return requireAll;
+        }
+
         public int GetNameCliloc(uint serial)
         {
             if (_itemsProperties.TryGetValue(serial, out ItemProperty p))
@@ -310,6 +361,7 @@ namespace ClassicUO.Game.Managers
         public uint Revision;
         public uint Serial;
         public int NameCliloc;
+        public int[] Clilocs;
 
         public string CreateData(bool extended) => string.Empty;
     }
@@ -390,14 +442,14 @@ namespace ClassicUO.Game.Managers
                     {
                         if (String.Equals(thisItem.Name, secondItem.Name, StringComparison.InvariantCultureIgnoreCase))
                         {
-                            if (thisItem.FirstValue != double.MinValue && secondItem.FirstValue != double.MinValue)
+                            if (thisItem.FirstValue.HasValue && secondItem.FirstValue.HasValue)
                             {
-                                thisItem.FirstDiff = thisItem.FirstValue - secondItem.FirstValue;
+                                thisItem.FirstDiff = thisItem.FirstValue.Value - secondItem.FirstValue.Value;
                             }
 
-                            if (thisItem.SecondValue > double.MinValue && secondItem.SecondValue > double.MinValue)
+                            if (thisItem.SecondValue.HasValue && secondItem.SecondValue.HasValue)
                             {
-                                thisItem.SecondDiff = thisItem.SecondValue - secondItem.SecondValue;
+                                thisItem.SecondDiff = thisItem.SecondValue.Value - secondItem.SecondValue.Value;
                             }
                             break;
                         }
@@ -426,20 +478,20 @@ namespace ClassicUO.Game.Managers
                         foundMatch = true;
                         finalTooltip += thisItem.Name;
 
-                        if (thisItem.FirstValue != double.MinValue && secondItem.FirstValue != double.MinValue)
+                        if (thisItem.FirstValue.HasValue && secondItem.FirstValue.HasValue)
                         {
-                            double diff = thisItem.FirstValue - secondItem.FirstValue;
-                            finalTooltip += $" {thisItem.FirstValue}";
+                            double diff = thisItem.FirstValue.Value - secondItem.FirstValue.Value;
+                            finalTooltip += $" {thisItem.FirstValue.Value}";
                             if (diff != 0)
                             {
                                 finalTooltip += $"({(diff >= 0 ? "/c[green]+" : "/c[red]")} {diff}/cd)";
                             }
                         }
 
-                        if (thisItem.SecondValue > double.MinValue && secondItem.SecondValue > double.MinValue)
+                        if (thisItem.SecondValue.HasValue && secondItem.SecondValue.HasValue)
                         {
-                            double diff = thisItem.SecondValue - secondItem.SecondValue;
-                            finalTooltip += $" {thisItem.SecondValue}";
+                            double diff = thisItem.SecondValue.Value - secondItem.SecondValue.Value;
+                            finalTooltip += $" {thisItem.SecondValue.Value}";
                             if (diff != 0)
                             {
                                 finalTooltip += $"({(diff >= 0 ? "/c[green]+" : "/c[red]")}{diff}/cd)";
@@ -473,8 +525,8 @@ namespace ClassicUO.Game.Managers
         {
             public string OriginalString;
             public string Name = "";
-            public double FirstValue = double.MinValue;
-            public double SecondValue = double.MinValue;
+            public double? FirstValue = null;
+            public double? SecondValue = null;
             public double FirstDiff = 0;
             public double SecondDiff = 0;
 
@@ -490,9 +542,11 @@ namespace ClassicUO.Game.Managers
 
                 if (matches.Count > 0)
                 {
-                    double.TryParse(matches[0].Value, out FirstValue);
-                    if (matches.Count > 1)
-                        double.TryParse(matches[1].Value, out SecondValue);
+                    if (double.TryParse(matches[0].Value, out double firstValue))
+                        FirstValue = firstValue;
+
+                    if (matches.Count > 1 && double.TryParse(matches[1].Value, out double secondValue))
+                        SecondValue = secondValue;
                 }
 
                 // Remove all numbers and symbols from the cleaned string to isolate the name
@@ -510,11 +564,11 @@ namespace ClassicUO.Game.Managers
                 if (Name != null)
                     output += Name;
 
-                if (FirstValue != double.MinValue)
-                    output += $" {FirstValue}";
+                if (FirstValue.HasValue)
+                    output += $" {FirstValue.Value}";
 
-                if (SecondValue != double.MinValue)
-                    output += $" {SecondValue}";
+                if (SecondValue.HasValue)
+                    output += $" {SecondValue.Value}";
 
                 return output;
             }

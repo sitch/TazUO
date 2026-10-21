@@ -8,12 +8,10 @@ using ClassicUO.Game.GameObjects;
 using ClassicUO.Game.UI.Gumps;
 using ClassicUO.Input;
 using ClassicUO.Network;
-using ClassicUO.Resources;
 using ClassicUO.Utility;
 using System;
-using System.Threading;
-using System.Threading.Tasks;
-using ClassicUO.Utility.Logging;
+using System.Linq;
+using Microsoft.Xna.Framework;
 
 namespace ClassicUO.Game.Managers
 {
@@ -133,18 +131,25 @@ namespace ClassicUO.Game.Managers
     {
         public uint TargetSerial { get; set; }
         public TargetType ExpectedTargetType { get; set; }
+        // When true, respond to any target cursor type instead of only ExpectedTargetType.
+        public bool MatchAnyTargetType { get; set; }
         public bool IsSet => TargetSerial != 0;
 
-        public void Set(uint serial, TargetType targetType)
+        public void Set(uint serial, TargetType targetType, bool matchAnyTargetType = false)
         {
             TargetSerial = serial;
             ExpectedTargetType = targetType;
+            MatchAnyTargetType = matchAnyTargetType;
         }
+
+        // Returns true if this auto target should respond to the given cursor target type.
+        public bool Matches(TargetType targetType) => MatchAnyTargetType || ExpectedTargetType == targetType;
 
         public void Clear()
         {
             TargetSerial = 0;
             ExpectedTargetType = TargetType.Cancel;
+            MatchAnyTargetType = false;
         }
     }
 
@@ -165,7 +170,10 @@ namespace ClassicUO.Game.Managers
             set
             {
                 _lastAttack = value;
-                if (ProfileManager.CurrentProfile != null && ProfileManager.CurrentProfile.OpenHealthBarForLastAttack)
+
+                // Only a real mobile gets a bar: World.Clear() zeroes this on logout and character
+                // switch, which would otherwise open one for serial 0.
+                if (SerialHelper.IsMobile(value) && ProfileManager.CurrentProfile?.OpenHealthBarForLastAttack == true)
                 {
                     if (ProfileManager.CurrentProfile.UseOneHPBarForLastAttack)
                     {
@@ -188,10 +196,25 @@ namespace ClassicUO.Game.Managers
                     {
                         if (UIManager.GetGump<BaseHealthBarGump>(value) == null)
                         {
-                            if (ProfileManager.CurrentProfile.CustomBarsToggled)
-                                UIManager.Add(new HealthBarGumpCustom(_world, value) { Location = ProfileManager.CurrentProfile.LastTargetHealthBarPos, IsLastTarget = true });
+                            BaseHealthBarGump bar = ProfileManager.CurrentProfile.CustomBarsToggled
+                                ? new HealthBarGumpCustom(_world, value)
+                                : new HealthBarGump(_world, value);
+
+                            if (ProfileManager.CurrentProfile.StackHealthBarsForLastAttack)
+                            {
+                                bar.StackBelowExisting(
+                                    UIManager.Gumps.OfType<BaseHealthBarGump>(),
+                                    ProfileManager.CurrentProfile.LastTargetHealthBarPos,
+                                    ProfileManager.CurrentProfile.AnchorHealthBarsForLastAttack
+                                );
+                            }
                             else
-                                UIManager.Add(new HealthBarGump(_world, value) { Location = ProfileManager.CurrentProfile.LastTargetHealthBarPos, IsLastTarget = true });
+                            {
+                                bar.Location = ProfileManager.CurrentProfile.LastTargetHealthBarPos;
+                            }
+
+                            bar.IsLastTarget = true;
+                            UIManager.Add(bar);
                         }
                     }
                 }
@@ -239,6 +262,13 @@ namespace ClassicUO.Game.Managers
             SetTargeting(CursorTarget.CallbackTarget, cursorId, cursorType);
         }
 
+        /// <summary>
+        /// Whether the cursor is armed for <paramref name="callback"/> specifically
+        /// </summary>
+        /// <param name="callback">The callback to test for, compared by reference.</param>
+        public bool IsCurrentTargetingAction(Action<object> callback) =>
+            callback != null && IsTargeting && TargetingState == CursorTarget.CallbackTarget && ReferenceEquals(_targetCallback, callback);
+
         public void SetTargeting(CursorTarget targeting, uint cursorID, TargetType cursorType)
         {
             if (targeting == CursorTarget.Invalid)
@@ -267,7 +297,7 @@ namespace ClassicUO.Game.Managers
             _targetCursorId = cursorID;
         }
 
-        public static void SetAutoTarget(uint serial, TargetType targetType) => NextAutoTarget.Set(serial, targetType);
+        public static void SetAutoTarget(uint serial, TargetType targetType, bool matchAnyTargetType = false) => NextAutoTarget.Set(serial, targetType, matchAnyTargetType);
 
         public void CancelTarget()
         {
@@ -479,7 +509,7 @@ namespace ClassicUO.Game.Managers
                         if (SerialHelper.IsItem(serial))
                         {
                             ProfileManager.CurrentProfile.GrabBagSerial = serial;
-                            GameActions.Print(_world, string.Format(ResGeneral.GrabBagSet0, serial));
+                            GameActions.Print(_world, string.Format(TazLang.Get("grab_bag_set0"), serial));
                         }
 
                         ClearTargetingWithoutTargetCancelPacket();
@@ -533,7 +563,7 @@ namespace ClassicUO.Game.Managers
                         CancelTarget();
                         return;
                     case CursorTarget.MoveItemContainer:
-                        if (SerialHelper.IsItem(serial))
+                        if (SerialHelper.IsItem(serial) || SerialHelper.IsMobile(serial))
                         {
                             MultiItemMoveGump.OnContainerTarget(_world, serial);
                         }
@@ -635,6 +665,38 @@ namespace ClassicUO.Game.Managers
         {
             TargetPacket(0, x, y, z);
             MultiTargetInfo = null;
+        }
+
+        /// <summary>
+        ///     Re-encodes <see cref="LastTargetInfo" /> into the 0x6C fields <see cref="TargetLast"/> replays.
+        ///     Needed when the last target is set programmatically instead of by an in-world selection, which
+        ///     is the only thing that normally refreshes the replay buffer.
+        /// </summary>
+        public void SyncLastTargetReplay()
+        {
+            LastTargetInfo info = LastTargetInfo;
+
+            uint serial = info.IsEntity ? info.Serial : 0;
+
+            // Land carries 0xFFFF as an IsLand sentinel; the wire value for a land target is 0.
+            ushort graphic = info.IsStatic ? info.Graphic : (ushort)0;
+
+            _lastDataBuffer[7] = (byte)(serial >> 24);
+            _lastDataBuffer[8] = (byte)(serial >> 16);
+            _lastDataBuffer[9] = (byte)(serial >> 8);
+            _lastDataBuffer[10] = (byte)serial;
+
+            _lastDataBuffer[11] = (byte)(info.X >> 8);
+            _lastDataBuffer[12] = (byte)info.X;
+
+            _lastDataBuffer[13] = (byte)(info.Y >> 8);
+            _lastDataBuffer[14] = (byte)info.Y;
+
+            _lastDataBuffer[15] = (byte)(info.Z >> 8);
+            _lastDataBuffer[16] = (byte)info.Z;
+
+            _lastDataBuffer[17] = (byte)(graphic >> 8);
+            _lastDataBuffer[18] = (byte)graphic;
         }
 
         public void TargetLast()

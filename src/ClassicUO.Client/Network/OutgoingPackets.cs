@@ -146,6 +146,9 @@ namespace ClassicUO.Network
             socket.Send(writer.BufferWritten);
 
             writer.Dispose();
+
+            // Lowest place to dispatch an "object used" event
+            EventSink.InvokeObjectUsed(serial);
         }
 
         public static void Send_Seed
@@ -3056,6 +3059,9 @@ namespace ClassicUO.Network
                     break;
                 case 0x03:
                     ClassicUO.LegionScripting.ScriptRecorder.Instance.RecordVirtue("valor");
+                    break;
+                case 0x04:
+                    ClassicUO.LegionScripting.ScriptRecorder.Instance.RecordVirtue("justice");
                     break;
             }
 

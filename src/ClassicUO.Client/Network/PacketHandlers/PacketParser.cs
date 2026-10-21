@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BSD-2-Clause
 
 using System;
+using System.Diagnostics;
 using ClassicUO.Game;
 using ClassicUO.IO;
 using ClassicUO.Utility;
@@ -30,7 +31,7 @@ internal sealed class PacketParser
 
     public PacketParser()
     {
-        foreach ((uint id, PacketHandler handler) in PacketHandlerRegistry.GetHandlers())
+        foreach ((uint id, PacketHandler handler, _) in PacketHandlerRegistry.GetHandlers())
             AddHandler(id, handler, false);
     }
 
@@ -38,24 +39,26 @@ internal sealed class PacketParser
 
     public int ParsePackets(World world, Span<byte> data)
     {
-        Profiler.EnterContext("APPEND");
         Append(data, false);
-        Profiler.ExitContext("APPEND");
-
-#if DEBUG
-        string packet = _buffer == null || _buffer.Length == 0 ? "0xFF" : _buffer[0].ToString();
-
-        Profiler.EnterContext(packet);
-#endif
-
-        int c = ParsePackets(world, _buffer, true) + ParsePackets(world, _pluginsBuffer, false);
-
-#if DEBUG
-        Profiler.ExitContext(packet);
-#endif
-
-        return c;
+        return ParsePackets(world, _buffer, true, int.MaxValue, long.MaxValue)
+            + ParsePackets(world, _pluginsBuffer, false, int.MaxValue, long.MaxValue);
     }
+
+    /// <summary>
+    /// Appends raw socket data to the main buffer without parsing, so a large burst can be consumed over several frames.
+    /// </summary>
+    public void AppendToMainBuffer(Span<byte> data) => Append(data, false);
+
+    /// <summary>
+    /// Parses up to <paramref name="maxPackets"/> packets from the main buffer, stopping early once <paramref name="deadlineTicks"/> is reached.
+    /// Leftover bytes remain buffered for the next call, so a single huge message can span frames without a hitch.
+    /// </summary>
+    public int ParseAvailablePackets(World world, int maxPackets, long deadlineTicks) => ParsePackets(world, _buffer, true, maxPackets, deadlineTicks);
+
+    public int ParsePluginsPackets(World world) => ParsePackets(world, _pluginsBuffer, false, int.MaxValue, long.MaxValue);
+
+    /// <summary>True when packets parsed earlier frames are still waiting in the main buffer.</summary>
+    public bool HasBufferedData => _buffer.Length > 0;
 
     public void AddHandler(uint id, PacketHandler handler, bool allowOverride = true)
     {
@@ -82,11 +85,24 @@ internal sealed class PacketParser
         (fromPlugins ? _pluginsBuffer : _buffer).Enqueue(data);
     }
 
+    public void ClearBuffers()
+    {
+        lock (_buffer)
+        {
+            _buffer.Clear();
+        }
+
+        lock (_pluginsBuffer)
+        {
+            _pluginsBuffer.Clear();
+        }
+    }
+
     #endregion
 
     #region Privates
 
-    private int ParsePackets(World world, CircularBuffer stream, bool allowPlugins)
+    private int ParsePackets(World world, CircularBuffer stream, bool allowPlugins, int maxPackets, long deadlineTicks)
     {
         int packetsCount = 0;
 
@@ -94,26 +110,29 @@ internal sealed class PacketParser
         {
             ref byte[] packetBuffer = ref _readingBuffer;
 
-            while (stream.Length > 0)
+            while (stream.Length > 0 && packetsCount < maxPackets)
             {
+                if (deadlineTicks != long.MaxValue && Stopwatch.GetTimestamp() >= deadlineTicks)
+                    break;
+
                 if (
                     !GetPacketInfo(
                         stream,
                         stream.Length,
-                        out byte packetID,
+                        out byte packetId,
                         out int offset,
-                        out int packetlength
+                        out int packetLength
                     )
                 )
                 {
                     Log.Warn(
-                        $"Invalid ID: {packetID:X2} | off: {offset} | len: {packetlength} | stream.pos: {stream.Length}"
+                        $"Invalid ID: {packetId:X2} | off: {offset} | len: {packetLength} | stream.pos: {stream.Length}"
                     );
 
                     break;
                 }
 
-                if (stream.Length < packetlength)
+                if (stream.Length < packetLength)
                 {
                     // NOT an error, and not even unusual: a packet split across TCP reads
                     // is normal reassembly, and the loop simply resumes when the rest
@@ -125,7 +144,7 @@ internal sealed class PacketParser
                     if (CUOEnviroment.Debug)
                     {
                         Log.Debug(
-                            $"Need more data ID: {packetID:X2} | off: {offset} | len: {packetlength} | stream.pos: {stream.Length}"
+                            $"Need more data ID: {packetId:X2} | off: {offset} | len: {packetLength} | stream.pos: {stream.Length}"
                         );
                     }
 
@@ -133,29 +152,39 @@ internal sealed class PacketParser
                     break;
                 }
 
-                while (packetlength > packetBuffer.Length)
+                while (packetLength > packetBuffer.Length)
                 {
-                    Profiler.EnterContext("PACKET_BUFFER_RESIZE");
-                    int oldSize = packetBuffer.Length;
                     int newSize = packetBuffer.Length * 2;
-
                     Log.Warn(
-                        $"PacketHandler buffer resize from {oldSize} to {newSize} for packet length {packetlength} (may cause spike)");
-
+                        $"PacketHandler buffer resize from {packetBuffer.Length} to {newSize} for packet length {packetLength} (may cause spike)");
                     Array.Resize(ref packetBuffer, newSize);
-                    Profiler.ExitContext("PACKET_BUFFER_RESIZE");
                 }
 
-                _ = stream.Dequeue(packetBuffer, 0, packetlength);
+                _ = stream.Dequeue(packetBuffer, 0, packetLength);
 
-                PacketLogger.Default?.Log(packetBuffer.AsSpan(0, packetlength), false);
+                // Timestamp rather than a Stopwatch instance: this runs per packet, and only the delta is needed.
+                bool measureProcessing = PacketLogger.Default?.Enabled == true;
+                long processingStart = measureProcessing ? Stopwatch.GetTimestamp() : 0;
 
-                if (!allowPlugins || Plugin.ProcessRecvPacket(packetBuffer, ref packetlength))
+                // A specialized profiler overload to avoid string heap allocations in hot path
+                Profiler.EnterPacketContext(packetId);
+                if (!allowPlugins || Plugin.ProcessRecvPacket(packetBuffer, ref packetLength))
                 {
-                    AnalyzePacket(world, packetBuffer.AsSpan(0, packetlength), offset);
-
+                    AnalyzePacket(world, packetBuffer.AsSpan(0, packetLength), offset);
                     ++packetsCount;
                 }
+                Profiler.ExitPacketContext(packetId);
+
+                // Note - this will *not* catch a packet that crashes the game - this is an extremely unusual case.
+                // Additionally, if a plugin misbehaves, it may also corrupt the packet buffer, so this may be suboptimal.
+                //
+                // That said, processing time is important to log, and since the logger can be called from multiple threads, it's better to keep a packet's metadata in one call
+                // rather than composing it by appending processing time later.
+                PacketLogger.Default?.Log(
+                    packetBuffer.AsSpan(0, packetLength),
+                    false,
+                    measureProcessing ? Stopwatch.GetElapsedTime(processingStart).TotalMilliseconds : null
+                );
             }
         }
 

@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: BSD-2-Clause
+// SPDX-License-Identifier: BSD-2-Clause
 
 using ClassicUO.Renderer.Effects;
 using FontStashSharp.Interfaces;
@@ -49,14 +49,34 @@ namespace ClassicUO.Renderer
         );
         private readonly RasterizerState _rasterizerState;
         private SamplerState _sampler;
+
+        /// <summary>
+        /// Sampler for <see cref="SpareTextureSlot"/>. Point by default, matching the slots either
+        /// side of it, so a caller that never asks for anything else is unaffected.
+        /// </summary>
+        private SamplerState _spareSampler = SamplerState.PointClamp;
+
         private bool _started;
         private DepthStencilState _stencil;
+
+        // Near/far planes used to build the orthographic projection. The world sprite depth
+        // (Position.Z) is mapped linearly from [near, far] into the depth buffer's [0,1] range.
+        // Defaults match the legacy short range; the world pass narrows them so the tile depth
+        // values fill the whole 24-bit buffer instead of only a third of it (see SetProjectionDepthRange).
+        private float _projectionZNear = short.MinValue;
+        private float _projectionZFar = short.MaxValue;
         private Matrix _transformMatrix;
         private readonly DynamicVertexBuffer _vertexBuffer;
         private readonly BasicUOEffect _basicUOEffect;
         private Texture2D[] _textureInfo;
         private PositionNormalTextureColor4[] _vertexInfo;
 
+        /// <summary>
+        /// The one texture slot no built-in shader binds. Slot 0 is the sprite being drawn and slots
+        /// 1 and 2 hold the hue lookup tables, bound once at startup and never rebound - taking
+        /// either of those for scratch use breaks hueing for the rest of the session.
+        /// </summary>
+        public const int SpareTextureSlot = 3;
 
         public UltimaBatcher2D(GraphicsDevice device)
         {
@@ -754,6 +774,77 @@ namespace ClassicUO.Renderer
             }
         }
 
+        /// <summary>
+        /// Tiled draw where the tile itself is scaled by <paramref name="scale"/>. The default
+        /// <see cref="DrawTiled(Texture2D, Rectangle, Rectangle, Vector3)"/> always steps by the native
+        /// texture size, which repeats the texture (and any edges baked into it) across a scaled area.
+        /// This variant steps by the scaled tile size so a scaled control renders one scaled tile, with
+        /// edges landing on the scaled bounds instead of the native ones.
+        /// </summary>
+        public void DrawTiled
+        (
+            Texture2D texture,
+            Rectangle destinationRectangle,
+            Rectangle sourceRectangle,
+            Vector3 hue,
+            float scale
+        )
+        {
+            if (texture == null || texture.IsDisposed)
+            {
+                return;
+            }
+
+            if (scale <= 0f || Math.Abs(scale - 1f) < 0.0001f)
+            {
+                DrawTiled(texture, destinationRectangle, sourceRectangle, hue);
+                return;
+            }
+
+            int tileW = Math.Max(1, (int)(sourceRectangle.Width * scale));
+            int tileH = Math.Max(1, (int)(sourceRectangle.Height * scale));
+
+            var scaleVec = new Vector2(scale, scale);
+            var pos = new Vector2(destinationRectangle.X, destinationRectangle.Y);
+
+            int h = destinationRectangle.Height;
+            Rectangle rect = sourceRectangle;
+
+            while (h > 0)
+            {
+                // Source height for this row, scaled down from the remaining destination height so the
+                // final (partial) tile only draws the part of the texture that fits.
+                rect.Height = h >= tileH ? sourceRectangle.Height : Math.Clamp((int)(h / scale), 1, sourceRectangle.Height);
+
+                pos.X = destinationRectangle.X;
+                int w = destinationRectangle.Width;
+
+                while (w > 0)
+                {
+                    rect.Width = w >= tileW ? sourceRectangle.Width : Math.Clamp((int)(w / scale), 1, sourceRectangle.Width);
+
+                    Draw
+                    (
+                        texture,
+                        pos,
+                        rect,
+                        hue,
+                        0f,
+                        Vector2.Zero,
+                        scaleVec,
+                        SpriteEffects.None,
+                        0f
+                    );
+
+                    w -= tileW;
+                    pos.X += tileW;
+                }
+
+                h -= tileH;
+                pos.Y += tileH;
+            }
+        }
+
         public bool DrawRectangle
         (
             Texture2D texture,
@@ -800,7 +891,8 @@ namespace ClassicUO.Renderer
             Vector2 start,
             Vector2 end,
             Vector3 color,
-            float stroke
+            float stroke,
+            float depth
         )
         {
             // Skip if texture is null or disposed
@@ -822,12 +914,35 @@ namespace ClassicUO.Renderer
                 Vector2.Zero,
                 new Vector2(length, stroke),
                 SpriteEffects.None,
-                0
+                depth
             );
         }
 
-
-
+        public void Draw
+        (
+            Texture2D texture,
+            Rectangle destinationRectangle,
+            Vector3 color,
+            float layerDepth
+        ) =>
+            AddSprite(
+                texture,
+                0.0f,
+                0.0f,
+                1.0f,
+                1.0f,
+                destinationRectangle.X,
+                destinationRectangle.Y,
+                destinationRectangle.Width,
+                destinationRectangle.Height,
+                color,
+                0.0f,
+                0.0f,
+                0.0f,
+                1.0f,
+                layerDepth,
+                0
+            );
 
         public void Draw
         (
@@ -1484,7 +1599,7 @@ namespace ClassicUO.Renderer
             GraphicsDevice.SamplerStates[0] = _sampler;
             GraphicsDevice.SamplerStates[1] = SamplerState.PointClamp;
             GraphicsDevice.SamplerStates[2] = SamplerState.PointClamp;
-            GraphicsDevice.SamplerStates[3] = SamplerState.PointClamp;
+            GraphicsDevice.SamplerStates[SpareTextureSlot] = _spareSampler;
 
             GraphicsDevice.Indices = _indexBuffer;
             GraphicsDevice.SetVertexBuffer(_vertexBuffer);
@@ -1501,8 +1616,8 @@ namespace ClassicUO.Renderer
                 GraphicsDevice.Viewport.Width,
                 GraphicsDevice.Viewport.Height,
                 0,
-                short.MinValue,
-                short.MaxValue,
+                _projectionZNear,
+                _projectionZFar,
                 out matrix
             );
             Matrix.Multiply(ref _transformMatrix, ref matrix, out matrix);
@@ -1684,11 +1799,48 @@ namespace ClassicUO.Renderer
             _stencil = stencil ?? Stencil;
         }
 
+        /// <summary>
+        /// Overrides the near/far planes of the orthographic projection so that sprite depth
+        /// (Position.Z) values in [near, far] fill the entire depth buffer. Narrowing the range to
+        /// the world's actual depth span reclaims Z-buffer precision and reduces z-fighting.
+        /// Call <see cref="ResetProjectionDepthRange"/> to restore the default range.
+        /// </summary>
+        public void SetProjectionDepthRange(float near, float far)
+        {
+            if (_projectionZNear == near && _projectionZFar == far)
+            {
+                return;
+            }
+
+            Flush();
+
+            _projectionZNear = near;
+            _projectionZFar = far;
+        }
+
+        /// <summary>
+        /// Restores the default (legacy short-range) projection depth planes.
+        /// </summary>
+        public void ResetProjectionDepthRange() => SetProjectionDepthRange(short.MinValue, short.MaxValue);
+
         public void SetSampler(SamplerState sampler)
         {
             Flush();
 
             _sampler = sampler ?? SamplerState.PointClamp;
+        }
+
+        /// <summary>
+        /// Sets the sampler for <see cref="SpareTextureSlot"/>, the one slot no built-in shader
+        /// binds. The other three carry the draw texture and the two hue lookup tables, which are
+        /// index lookups and must stay point-sampled.
+        /// </summary>
+        /// <param name="sampler">The sampler to use, or null to restore point sampling.</param>
+        public void SetSpareSampler(SamplerState sampler)
+        {
+            Flush();
+
+            _spareSampler = sampler ?? SamplerState.PointClamp;
         }
 
         private unsafe int UpdateVertexBuffer(int start, int count)
@@ -1804,5 +1956,11 @@ namespace ClassicUO.Renderer
 
         [FileEmbed.FileEmbed("shaders/xBR.fxc")]
         public static partial ReadOnlySpan<byte> GetXBRShader();
+
+        [FileEmbed.FileEmbed("shaders/FSR.fxc")]
+        public static partial ReadOnlySpan<byte> GetFSRShader();
+
+        [FileEmbed.FileEmbed("shaders/ScreenOverlay.fxc")]
+        public static partial ReadOnlySpan<byte> GetScreenOverlayShader();
     }
 }

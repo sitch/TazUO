@@ -1,18 +1,17 @@
 // SPDX-License-Identifier: BSD-2-Clause
 
-using ClassicUO.Assets;
-using ClassicUO.Configuration;
-using ClassicUO.Game.Managers;
 using ClassicUO.Renderer;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using System;
+using ClassicUO.Game.Managers.SpellVisualRange;
 
 namespace ClassicUO.Game.GameObjects
 {
     public sealed partial class Land
     {
-        private const float LAND_DEPTH_OFFSET = 0.5f;
+        // Land sits below statics within a tile cell so ground decals/effects can be layered between them.
+        private const float LAND_DEPTH_OFFSET = RenderDepth.Land;
         private const int Z_TO_PIXEL_MULTIPLIER = 4;
 
         private static float _cachedWaterSin;
@@ -50,7 +49,7 @@ namespace ClassicUO.Game.GameObjects
                 SpellVisualRangeManager.Instance.LastCursorTileLoc = new Vector2(X, Y);
             }
 
-            if (SpellVisualRangeManager.Instance.IsTargetingAfterCasting())
+            if (SpellVisualRangeManager.Instance.ShouldShowSpellIndicators())
             {
                 hue = SpellVisualRangeManager.Instance.ProcessHueForTile(hue, this);
             }

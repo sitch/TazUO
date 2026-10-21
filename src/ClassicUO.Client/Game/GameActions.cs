@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: BSD-2-Clause
 using System;
+using ClassicUO.Common.Enums;
 using ClassicUO.Configuration;
 using ClassicUO.Game.Data;
 using ClassicUO.Game.GameObjects;
 using ClassicUO.Game.Managers;
+using ClassicUO.Game.Managers.Hotkeys;
+using ClassicUO.Game.Managers.SpellVisualRange;
 using ClassicUO.Game.Managers.Structs;
 using ClassicUO.Game.Scenes;
 using ClassicUO.Game.UI;
@@ -12,13 +15,14 @@ using ClassicUO.Game.UI.MyraWindows;
 using ClassicUO.Input;
 using ClassicUO.LegionScripting;
 using ClassicUO.Network;
-using ClassicUO.Resources;
 using ClassicUO.Utility;
 using ClassicUO.Utility.Logging;
 using Microsoft.Xna.Framework;
 using static ClassicUO.Network.AsyncNetClient;
 
 namespace ClassicUO.Game;
+
+using NewOptionsWindow = UI.MyraWindows.Options.OptionsWindow;
 
 internal static class GameActions
 {
@@ -32,7 +36,7 @@ internal static class GameActions
     {
         if (!player.IsDead)
         {
-            if (war && ProfileManager.CurrentProfile != null && ProfileManager.CurrentProfile.EnableMusic)
+            if (war && ProfileManager.GlobalSettings != null && ProfileManager.GlobalSettings.EnableMusic)
             {
                 Client.Game.Audio.PlayMusic((RandomHelper.GetValue(0, 3) % 3) + 38, true);
             }
@@ -63,9 +67,9 @@ internal static class GameActions
     {
         ScriptManagerWindow window = ScriptManagerWindow.Instance;
 
-        if (window != null && window.IsVisible)
+        if (window != null && window.IsVisible && !window.IsDisposed)
         {
-            window.IsVisible = false;
+            window.Dispose();
             return true;
         }
 
@@ -160,39 +164,33 @@ internal static class GameActions
     }
 
     /// <summary>
-    ///
+    /// Closes the currently opened settings window.
     /// </summary>
     /// <returns>False if no settings are open</returns>
-    internal static bool CloseSettings()
+    internal static bool CloseSettings() => CloseSingletonGump<NewOptionsWindow>();
+
+    private static bool CloseSingletonGump<TGump>() where TGump : class, IGui
     {
-        Gump g = UIManager.GetGump<ModernOptionsGump>();
+        TGump g = UIManager.GetGump<TGump>();
+        if (g == null)
+            return false;
 
-        if (g != null)
-        {
-            g.Dispose();
-            return true;
-        }
-
-        return false;
+        g.Dispose();
+        return true;
     }
 
-    internal static void OpenSettings(World world, int page = 0)
+    internal static void OpenSettings(World world, int page = 0) => ShowNewOptionsGump();
+
+    /// <summary>
+    /// Creates or opens the options window
+    /// </summary>
+    public static void ShowNewOptionsGump()
     {
-        ModernOptionsGump opt = UIManager.GetGump<ModernOptionsGump>();
-
-        if (opt == null)
-        {
-            var optionsGump = new ModernOptionsGump(world);
-
-            UIManager.Add(optionsGump);
-            optionsGump.ChangePage(page);
-            optionsGump.SetInScreen();
-        }
+        NewOptionsWindow existing = UIManager.GetGump<NewOptionsWindow>();
+        if (existing == null)
+            UIManager.Add(new NewOptionsWindow());
         else
-        {
-            opt.SetInScreen();
-            opt.BringOnTop();
-        }
+            existing.BringOnTop();
     }
 
     internal static void OpenStatusBar(World world)
@@ -548,6 +546,7 @@ internal static class GameActions
         return true;
     }
 
+    private static uint _lastAttackQuery;
     internal static void Attack(World world, uint serial)
     {
         if (ProfileManager.CurrentProfile is { EnabledCriminalActionQuery:true })
@@ -556,10 +555,28 @@ internal static class GameActions
 
             if (m != null && (world.Player.NotorietyFlag == NotorietyFlag.Innocent || world.Player.NotorietyFlag == NotorietyFlag.Ally) && m.NotorietyFlag == NotorietyFlag.Innocent && m != world.Player)
             {
+                bool shouldAdd = true;
+
+                UIManager.ForEach<QuestionGump>(g =>
+                {
+                    if (g.Type == QuestionGump.QuestionType.Attack && _lastAttackQuery == serial){
+                        shouldAdd = false;
+                        return;
+                    }
+
+                    if (g.Type == QuestionGump.QuestionType.Attack && _lastAttackQuery != serial)
+                        g.Dispose();
+                });
+
+                if (!shouldAdd)
+                    return;
+
+                _lastAttackQuery = serial;
+
                 var messageBox = new QuestionGump
                 (
                     world,
-                    ResGeneral.ThisMayFlagYouCriminal,
+                    TazLang.Get("this_may_flag_you_criminal"),
                     s =>
                     {
                         if (s)
@@ -567,7 +584,7 @@ internal static class GameActions
                             Socket.Send_AttackRequest(serial);
                         }
                     }
-                );
+                ){ Type = QuestionGump.QuestionType.Attack };
 
                 UIManager.Add(messageBox);
                 return;
@@ -583,7 +600,7 @@ internal static class GameActions
         Socket.Send_AttackRequest(serial);
     }
 
-    internal static void QueueOpenCorpse(uint serial) =>
+    internal static void QueueOpenCorpse(uint serial, bool ownCorpse = false) =>
         ObjectActionQueue.Instance.Enqueue(
             new ObjectActionQueueItem(() =>
             {
@@ -598,7 +615,8 @@ internal static class GameActions
                    )
                     ObjectActionQueueItem.DoubleClick(serial).Action(); // Using the 'Action' here to remain DRY.
             }),
-            ActionPriority.OpenCorpse
+            ownCorpse ? ActionPriority.Immediate :
+                World.Instance.Player.ManualOpenedCorpses.Contains(serial) ? ActionPriority.ManualUseItem : ActionPriority.OpenCorpse
         );
 
     internal static void DoubleClickQueued(uint serial) => ObjectActionQueue.Instance.Enqueue(ObjectActionQueueItem.DoubleClick(serial), ActionPriority.UseItem);
@@ -652,6 +670,10 @@ internal static class GameActions
                 if (!intercepted)
                     // Run the actual send only if the interceptor yielded control back, otherwise, the auto manager would have handled the 'send' part
                     Socket.Send_DoubleClick(serial);
+
+                // Even when manual queueing is disabled, keep the action queue timer in sync so forced-queue actions remain properly spaced.
+                if (!ignoreQueue)
+                    GlobalActionCooldown.BeginCooldown();
             }
         }
 
@@ -743,6 +765,13 @@ internal static class GameActions
 
     internal static void Print(World world, string message, ushort hue = 946, MessageType type = MessageType.Regular, byte font = 3, bool unicode = true)
     {
+        // World may be null if called before the world is initialized
+        if (world == null)
+        {
+            Log.Warn($"GameActions.Print called with null world: {message}");
+            return;
+        }
+
         if (type == MessageType.ChatSystem)
         {
             world.MessageManager.HandleMessage
@@ -781,7 +810,16 @@ internal static class GameActions
         MessageType type = MessageType.Regular,
         byte font = 3,
         bool unicode = true
-    ) => world.MessageManager.HandleMessage
+    )
+    {
+        // World may be null if called before the world is initialized
+        if (world == null)
+        {
+            Log.Warn($"GameActions.Print called with null world: {message}");
+            return;
+        }
+
+        world.MessageManager.HandleMessage
         (
             entity,
             message,
@@ -793,6 +831,7 @@ internal static class GameActions
             unicode,
             Settings.GlobalSettings.Language
         );
+    }
 
     internal static void SayParty(string message, uint serial = 0)
     {
@@ -844,7 +883,7 @@ internal static class GameActions
 
         if (amount <= -1 && item.Amount > 1 && item.ItemData.IsStackable)
         {
-            if (ProfileManager.CurrentProfile.HoldShiftToSplitStack == Keyboard.Shift)
+            if (ProfileManager.CurrentProfile.HoldShiftToSplitStack == HotKeys.IsPressed(HotKeyRegistrar.SplitStackId))
             {
                 SplitMenuGump gump = UIManager.GetGump<SplitMenuGump>(item);
 
@@ -876,7 +915,13 @@ internal static class GameActions
         Client.Game.UO.GameCursor.ItemHold.IsGumpTexture = isGump;
 
         if (!ProfileManager.CurrentProfile.QueueManualItemMoves || skipQueue)
+        {
             Socket.Send_PickUpRequest(item, (ushort)amount);
+
+            // Even when manual queueing is disabled, keep the action queue timer in sync so forced-queue actions remain properly spaced.
+            if (!skipQueue)
+                GlobalActionCooldown.BeginCooldown();
+        }
 
         ScriptingInfoGump.AddOrUpdateInfo("Last Picked Up Item", $"0x{item.Serial:X}");
         ScriptingInfoGump.AddOrUpdateInfo("Last Object Graphic", $"0x{item.Graphic:X}");
@@ -929,6 +974,11 @@ internal static class GameActions
                                             (sbyte)z,
                                             container);
             }
+
+            // Even when manual queueing is disabled, keep the action queue timer in sync so forced-queue actions remain properly spaced.
+            // 'force' drops come from the queue itself (MoveRequest.Execute), which already manages the cooldown.
+            if (!force)
+                GlobalActionCooldown.BeginCooldown();
         }
     }
 
@@ -949,7 +999,54 @@ internal static class GameActions
             Client.Game.UO.GameCursor.ItemHold.Enabled = false;
             Client.Game.UO.GameCursor.ItemHold.Dropped = true;
             Client.Game.UO.GameCursor.ItemHold.Clear();
+
+            // Even when manual queueing is disabled, keep the action queue timer in sync so forced-queue actions remain properly spaced.
+            GlobalActionCooldown.BeginCooldown();
         }
+    }
+
+    /// <summary>
+    /// Queues unequipping the item occupying <paramref name="layer"/> to the player's backpack, then
+    /// equipping the currently held item into that layer on <paramref name="container"/>. Used by the
+    /// paperdolls when a wearable is dropped onto an already-occupied layer.
+    /// </summary>
+    internal static void QueueEquipSwap(World world, uint container, Layer layer, uint existingSerial)
+    {
+        Item backpack = world.Player?.Backpack;
+        uint heldSerial = Client.Game.UO.GameCursor.ItemHold.Serial;
+
+        // Can't make room without somewhere to put the existing item.
+        if (backpack == null)
+            return;
+
+        // With manual moves off the held item already sits on the server's cursor, which would make
+        // the queued unequip's pickup fail. Drop it into the backpack to free the cursor; the queued
+        // equip then picks it back up. With manual moves on the pickup is deferred to the queue, so
+        // there is no server cursor to clear.
+        if (ProfileManager.CurrentProfile.QueueManualItemMoves)
+            Client.Game.UO.GameCursor.ItemHold.Clear();
+        else
+            DropItem(heldSerial, 0xFFFF, 0xFFFF, 0, backpack.Serial);
+
+        // The KR equip macro equips items the server already holds in a container, so it can only run
+        // once the held item has been dropped into the backpack above. It replaces whatever occupies
+        // the target layer server-side, so no separate unequip request is needed.
+        if (ProfileManager.ServerSettings?.UseKrEquipSwap == true)
+        {
+            Socket.Send_EquipMacroKR(stackalloc uint[] { heldSerial });
+            return;
+        }
+
+        if (existingSerial != 0)
+            ObjectActionQueue.Instance.Enqueue(
+                new MoveRequest(existingSerial, backpack.Serial).ToObjectActionQueueItem(),
+                ActionPriority.UnequipItem
+            );
+
+        ObjectActionQueue.Instance.Enqueue(
+            new MoveRequest(heldSerial, container, layer: layer, moveType: MoveType.Equip).ToObjectActionQueueItem(),
+            ActionPriority.EquipItem
+        );
     }
 
     internal static void ReplyGump(World world, uint local, uint server, int button, uint[] switches = null, Tuple<ushort, string>[] entries = null)
@@ -1044,18 +1141,58 @@ internal static class GameActions
         }
     }
 
-    internal static void QuickHeal(World world, uint target)
+    internal static void QuickHeal(World world, uint target) =>
+        QuickAction(world, target, ProfileManager.CurrentProfile.QuickHealAction);
+
+    internal static void QuickCure(World world, uint target) =>
+        QuickAction(world, target, ProfileManager.CurrentProfile.QuickCureAction);
+
+    /// <summary>
+    /// Performs the configured quick heal/cure <paramref name="action"/> on <paramref name="target"/>.
+    /// Bandages are applied via <see cref="UseBandageOnTarget"/>; spells are cast and the target is
+    /// auto-selected once the server sends the target cursor (see the party heal timer consumed by the
+    /// target cursor handler).
+    /// </summary>
+    internal static void QuickAction(World world, uint target, HealthBarQuickAction action)
     {
-        CastSpell(ProfileManager.CurrentProfile.QuickHealSpell);
+        if (action == HealthBarQuickAction.Bandage)
+        {
+            UseBandageOnTarget(world, target);
+
+            return;
+        }
+
+        CastSpell(action.GetSpellId());
         world.Party.PartyHealTimer = Time.Ticks + 50;
         world.Party.PartyHealTarget = target;
     }
 
-    internal static void QuickCure(World world, uint target)
+    /// <summary>
+    /// Applies a bandage to <paramref name="target"/> using the same server-compatibility path as the
+    /// bandage agent: servers that support the target-object packet get a single packet, while older
+    /// servers require double-clicking the bandage and then auto-targeting. The bandage graphic and
+    /// target type come from the bandage agent profile settings.
+    /// </summary>
+    /// <returns><see langword="false"/> when no bandage matching the configured graphic is available.</returns>
+    internal static bool UseBandageOnTarget(World world, uint target)
     {
-        CastSpell(ProfileManager.CurrentProfile.QuickCureSpell);
-        world.Party.PartyHealTimer = Time.Ticks + 50;
-        world.Party.PartyHealTarget = target;
+        Profile profile = ProfileManager.CurrentProfile;
+        ushort graphic = profile?.BandageAgentGraphic ?? 0x0E21;
+
+        Item bandage = world.Player?.FindItemByGraphic(graphic) ?? world.Player?.FindBandage(graphic);
+
+        if (bandage == null)
+            return false;
+
+        if (profile?.BandageAgentUseNewPacket ?? true)
+            Socket.Send_TargetSelectedObject(bandage.Serial, target);
+        else
+        {
+            TargetManager.SetAutoTarget(target, profile?.BandageAgentTargetType ?? TargetType.Beneficial);
+            DoubleClick(world, bandage.Serial);
+        }
+
+        return true;
     }
 
     internal static void CastSpell(int index)
@@ -1277,10 +1414,10 @@ internal static class GameActions
 
     // ===================================================
     [Obsolete("temporary workaround to not break assistants")]
-    internal static void UsePrimaryAbility() => UsePrimaryAbility(Client.Game.UO.World);
+    public static void UsePrimaryAbility() => UsePrimaryAbility(Client.Game.UO.World);
 
     [Obsolete("temporary workaround to not break assistants")]
-    internal static void UseSecondaryAbility() => UseSecondaryAbility(Client.Game.UO.World);
+    public static void UseSecondaryAbility() => UseSecondaryAbility(Client.Game.UO.World);
     // ===================================================
 
     internal static void QuestArrow(bool rightClick) => Socket.Send_ClickQuestArrow(rightClick);
@@ -1292,69 +1429,105 @@ internal static class GameActions
         Item backpack = world.Player.Backpack;
 
         if (backpack == null)
-        {
             return;
-        }
 
         if (bag == 0)
-        {
             bag = ProfileManager.CurrentProfile.GrabBagSerial == 0 ? backpack.Serial : ProfileManager.CurrentProfile.GrabBagSerial;
-        }
 
         if (!world.Items.Contains(bag))
         {
-            Print(world, ResGeneral.GrabBagNotFound);
+            Print(world, TazLang.Get("grab_bag_not_found"));
             ProfileManager.CurrentProfile.GrabBagSerial = 0;
             bag = backpack.Serial;
         }
 
         PickUp(world, serial, 0, 0, amount);
 
-            if (stack)
-                DropItem
-                (
-                    serial,
-                    0xFFFF,
-                    0xFFFF,
-                    0,
-                    bag
-                );
-            else
-                DropItem
-                (
-                    serial,
-                    0,
-                    0,
-                    0,
-                    bag
-                );
-        }
+        if (stack)
+            DropItem
+            (
+                serial,
+                0xFFFF,
+                0xFFFF,
+                0,
+                bag
+            );
+        else
+            DropItem
+            (
+                serial,
+                0,
+                0,
+                0,
+                bag
+            );
+    }
 
-    public static void RequestEquippedOPL(World world)
+    public static void RequestEquippedOPL(World world) => RequestEquippedOPL(world, world.Player);
+
+    /// <summary>
+    ///     Requests the tooltip property lists of every item a mobile has equipped, so information
+    ///     derived from them (such as equipment durability) can be tracked for that mobile.
+    /// </summary>
+    /// <param name="world">The active world.</param>
+    /// <param name="mobile">The mobile whose equipment should be requested. No-op when <see langword="null" />.</param>
+    public static void RequestEquippedOPL(World world, Mobile mobile)
     {
+        if (mobile == null)
+            return;
+
         foreach (Layer layer in Enum.GetValues(typeof(Layer)))
         {
-            Item item = world.Player.FindItemByLayer(layer);
+            Item item = mobile.FindItemByLayer(layer);
             if(item == null) continue;
 
             world.OPL.Contains(item); //Requests data if we don't have it
         }
     }
 
-    internal static bool Mount()
+    /// <summary>
+    ///     Double-clicks the player's saved mount to mount up.
+    /// </summary>
+    /// <param name="useQueue">
+    ///     If <see langword="true" />, routes through <see cref="DoubleClickQueued(uint, bool)" />.
+    ///     If <see langword="false" />, sends the double-click immediately, bypassing <see cref="ObjectActionQueue" />.
+    /// </param>
+    /// <returns>The outcome of the attempt.</returns>
+    internal static MountResult Mount(bool useQueue = true)
     {
-        if (World.Instance == null) return false;
+        if (World.Instance == null)
+            return MountResult.NoWorld;
 
-        if (ProfileManager.CurrentProfile.SavedMountSerial == 0) return false;
+        Profile profile = ProfileManager.CurrentProfile;
+        if (profile == null)
+            return MountResult.NoWorld; // Honestly, should never happen.
 
-        Entity mount = World.Instance.Get(ProfileManager.CurrentProfile.SavedMountSerial);
-        if (mount != null)
-        {
-            DoubleClickQueued(ProfileManager.CurrentProfile.SavedMountSerial, true);
-            ScriptRecorder.Instance.RecordMount(mount);
-            return true;
-        }
+        if (profile.SavedMountSerial == 0)
+            return MountResult.NoDesignatedMount;
 
-        return false;
+        Entity mount = World.Instance.Get(profile.SavedMountSerial);
+        if (mount == null)
+            return MountResult.MountNotFound;
+
+        if (mount.Distance > profile.MountDistance)
+            return MountResult.MountTooFar;
+
+        if (useQueue)
+            DoubleClickQueued(profile.SavedMountSerial, true);
+        else
+            DoubleClick(World.Instance, profile.SavedMountSerial, true, true);
+
+        ScriptRecorder.Instance.RecordMount(mount);
+        return MountResult.Success;
+    }
+
+    /// <summary>Outcome of a <see cref="Mount(bool)" /> attempt.</summary>
+    internal enum MountResult
+    {
+        NoWorld,
+        Success,
+        NoDesignatedMount,
+        MountNotFound,
+        MountTooFar
     }
 }

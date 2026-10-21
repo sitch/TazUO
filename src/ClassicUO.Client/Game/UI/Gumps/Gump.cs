@@ -2,11 +2,13 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using System.Xml;
 using ClassicUO.Configuration;
 using ClassicUO.Game.GameObjects;
 using ClassicUO.Game.Managers;
+using ClassicUO.Game.Managers.Hotkeys;
 using ClassicUO.Game.UI.Controls;
 using ClassicUO.Input;
 using ClassicUO.Renderer;
@@ -47,7 +49,7 @@ namespace ClassicUO.Game.UI.Gumps
         {
             base.OnMouseWheel(delta);
 
-            if (Keyboard.Alt && ProfileManager.CurrentProfile.EnableAlphaScrollingOnGumps)
+            if (HotKeys.IsPressed(HotKeyRegistrar.GumpOpacityId) && ProfileManager.CurrentProfile?.EnableAlphaScrollingOnGumps == true)
             {
                 if (delta == MouseEventType.WheelScrollUp && Alpha < 0.99)
                 {
@@ -109,12 +111,13 @@ namespace ClassicUO.Game.UI.Gumps
 
         public override void Dispose()
         {
+            if (IsDisposed)
+                return;
+
             Item it = World.Items.Get(LocalSerial);
 
             if (it != null && it.Opened)
-            {
                 it.Opened = false;
-            }
 
             base.Dispose();
         }
@@ -122,7 +125,7 @@ namespace ClassicUO.Game.UI.Gumps
         public override void OnMouseUp(int x, int y, MouseButtonType button)
         {
             base.OnMouseUp(x, y, button);
-            if (CanBeLocked && ((Keyboard.Ctrl && Keyboard.Alt) || Controller.Button_LeftTrigger) && UIManager.MouseOverControl != null && (UIManager.MouseOverControl == this || UIManager.MouseOverControl.RootParent == this))
+            if (CanBeLocked && (HotKeys.IsPressed(HotKeyRegistrar.GumpLockId) || Controller.Button_LeftTrigger) && UIManager.MouseOverControl != null && (UIManager.MouseOverControl == this || UIManager.MouseOverControl.RootParent == this))
             {
                 IsLocked ^= true;
             }
@@ -141,14 +144,16 @@ namespace ClassicUO.Game.UI.Gumps
 
         public void CenterXInScreen()
         {
-            Rectangle windowBounds = Client.Game.Window.ClientBounds;
-            X = (windowBounds.Width - Width) / 2;
+            // Width is already in logical UI space, so only the window bounds need converting.
+            // (The previous form multiplied Width by RenderScale, double-counting it and
+            // mis-centering whenever the game scale was not 1.0.)
+            X = (ScaleHelper.LogicalWindowWidth - Width) / 2;
         }
 
         public void CenterYInScreen()
         {
-            Rectangle windowBounds = Client.Game.Window.ClientBounds;
-            Y = (windowBounds.Height - Height) / 2;
+            // Height is already in logical UI space; see CenterXInScreen for the double-count fix.
+            Y = (ScaleHelper.LogicalWindowHeight - Height) / 2;
         }
 
         public void CenterXInViewPort()
@@ -172,16 +177,67 @@ namespace ClassicUO.Game.UI.Gumps
 
         public void SetInScreen()
         {
-            Rectangle windowBounds = Client.Game.Window.ClientBounds;
+            // Gump coordinates live in logical UI space; clamp against the logical window bounds so
+            // the dead space revealed by a scale-down (scale < 1) stays usable for gump placement.
+            // The physical window bounds are RenderScale smaller than the logical ones in that case,
+            // so clamping to them would trap gumps inside the shrunken world view.
+            int windowWidth = ScaleHelper.LogicalWindowWidth;
+            int windowHeight = ScaleHelper.LogicalWindowHeight;
 
             int halfWidth = Width / 2;
             int halfHeight = Height / 2;
 
-            int newX = (int)MathHelper.Clamp(X, -halfWidth, windowBounds.Width - halfWidth);
-            int newY = (int)MathHelper.Clamp(Y, -halfHeight, windowBounds.Height - halfHeight);
+            int newX = (int)MathHelper.Clamp(X, -halfWidth, windowWidth - halfWidth);
+            int newY = (int)MathHelper.Clamp(Y, -halfHeight, windowHeight - halfHeight);
 
             X = newX;
             Y = newY;
+        }
+
+        /// <summary>
+        /// Moves this gump to the first free slot at or below <paramref name="start"/>, stepping
+        /// down past any gump in <paramref name="others"/> it would overlap and wrapping into a new
+        /// column when it reaches the viewport edge. When <paramref name="anchor"/> is set and this
+        /// gump is <see cref="AnchorableGump"/>, it is also attached to the gump it lands beside.
+        /// </summary>
+        /// <param name="others">The gumps already on screen that this one should avoid.</param>
+        /// <param name="start">The preferred position, reused as the column/row origin when wrapping.</param>
+        /// <param name="anchor">Whether to anchor to the gump this one comes to rest beside.</param>
+        public void StackBelowExisting(IEnumerable<Gump> others, Point start, bool anchor = false)
+        {
+            int offset = anchor ? 0 : 2;
+            Location = start;
+
+            foreach (
+                Gump existing in others
+                    .Where(g => g != this && !g.IsDisposed)
+                    .OrderBy(g => g.ScreenCoordinateX)
+                    .ThenBy(g => g.ScreenCoordinateY)
+            )
+            {
+                if (!existing.Bounds.Intersects(Bounds))
+                {
+                    continue;
+                }
+
+                Y = existing.Bounds.Bottom + offset;
+
+                if (Y >= Client.Game.Scene.Camera.Bounds.Bottom - 100)
+                {
+                    Y = start.Y;
+                    X = existing.Bounds.Right + offset;
+                }
+
+                if (X >= Client.Game.Scene.Camera.Bounds.Right - 100)
+                {
+                    X = start.X;
+                }
+
+                if (anchor && this is AnchorableGump anchorable)
+                {
+                    anchorable.TryAttacheToExist();
+                }
+            }
         }
 
         public virtual void Restore(XmlElement xml)
@@ -219,14 +275,14 @@ namespace ClassicUO.Game.UI.Gumps
                 position.Y = -halfHeight;
             }
 
-            if (X > Client.Game.Window.ClientBounds.Width - (Width - halfWidth))
+            if (X > ScaleHelper.LogicalWindowWidth - (Width - halfWidth))
             {
-                position.X = Client.Game.Window.ClientBounds.Width - (Width - halfWidth);
+                position.X = ScaleHelper.LogicalWindowWidth - (Width - halfWidth);
             }
 
-            if (Y > Client.Game.Window.ClientBounds.Height - (Height - halfHeight))
+            if (Y > ScaleHelper.LogicalWindowHeight - (Height - halfHeight))
             {
-                position.Y = Client.Game.Window.ClientBounds.Height - (Height - halfHeight);
+                position.Y = ScaleHelper.LogicalWindowHeight - (Height - halfHeight);
             }
 
             Location = position;

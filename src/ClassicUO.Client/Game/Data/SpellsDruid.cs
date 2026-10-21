@@ -7,8 +7,6 @@ namespace ClassicUO.Game.Data
     {
         private static readonly Dictionary<int, SpellDefinition> _spellsDict;
 
-        private static string[] _spRegsChars;
-
         static SpellsDruid()
         {
             _spellsDict = new Dictionary<int, SpellDefinition>
@@ -25,6 +23,7 @@ namespace ClassicUO.Game.Data
                         15,
                         20,
                         TargetType.Neutral,
+                        0,
                         Reagents.FertileDirt,
                         Reagents.SpringWater
                     )
@@ -40,6 +39,7 @@ namespace ClassicUO.Game.Data
                         30,
                         30,
                         TargetType.Beneficial,
+                        0,
                         Reagents.SpringWater,
                         Reagents.FenMoss
                     )
@@ -55,6 +55,7 @@ namespace ClassicUO.Game.Data
                         45,
                         40,
                         TargetType.Neutral,
+                        0,
                         Reagents.Pumice,
                         Reagents.DestroyingAngel
                     )
@@ -70,6 +71,7 @@ namespace ClassicUO.Game.Data
                         30,
                         40,
                         TargetType.Neutral,
+                        0,
                         Reagents.SpringWater,
                         Reagents.FenMoss
                     )
@@ -85,6 +87,7 @@ namespace ClassicUO.Game.Data
                         40,
                         40,
                         TargetType.Harmful,
+                        0,
                         Reagents.SpringWater,
                         Reagents.PetrifiedWood,
                         Reagents.Pumice
@@ -101,6 +104,7 @@ namespace ClassicUO.Game.Data
                         45,
                         60,
                         TargetType.Neutral,
+                        0,
                         Reagents.FertileDirt,
                         Reagents.Pumice,
                         Reagents.SpringWater
@@ -117,6 +121,7 @@ namespace ClassicUO.Game.Data
                         30,
                         20,
                         TargetType.Harmful,
+                        0,
                         Reagents.FenMoss,
                         Reagents.Pumice,
                         Reagents.DestroyingAngel
@@ -133,6 +138,7 @@ namespace ClassicUO.Game.Data
                         75,
                         94,
                         TargetType.Harmful,
+                        0,
                         Reagents.FertileDirt,
                         Reagents.Pumice
                     )
@@ -148,6 +154,7 @@ namespace ClassicUO.Game.Data
                         50,
                         80,
                         TargetType.Neutral,
+                        0,
                         Reagents.FenMoss,
                         Reagents.PetrifiedWood
                     )
@@ -163,6 +170,7 @@ namespace ClassicUO.Game.Data
                         20,
                         65,
                         TargetType.Harmful,
+                        0,
                         Reagents.FenMoss,
                         Reagents.Pumice
                     )
@@ -178,6 +186,7 @@ namespace ClassicUO.Game.Data
                         60,
                         75,
                         TargetType.Neutral,
+                        0,
                         Reagents.DestroyingAngel,
                         Reagents.PetrifiedWood,
                         Reagents.SpringWater
@@ -194,6 +203,7 @@ namespace ClassicUO.Game.Data
                         15,
                         20,
                         TargetType.Neutral,
+                        0,
                         Reagents.Pumice,
                         Reagents.SpringWater
                     )
@@ -209,6 +219,7 @@ namespace ClassicUO.Game.Data
                         32,
                         105,
                         TargetType.Neutral,
+                        0,
                         Reagents.FenMoss,
                         Reagents.FertileDirt,
                         Reagents.Pumice
@@ -225,6 +236,7 @@ namespace ClassicUO.Game.Data
                         40,
                         70,
                         TargetType.Neutral,
+                        0,
                         Reagents.FenMoss,
                         Reagents.Pumice,
                         Reagents.FertileDirt
@@ -241,6 +253,7 @@ namespace ClassicUO.Game.Data
                         55,
                         89,
                         TargetType.Neutral,
+                        0,
                         Reagents.PetrifiedWood,
                         Reagents.FenMoss,
                         Reagents.SpringWater
@@ -257,6 +270,7 @@ namespace ClassicUO.Game.Data
                         10,
                         1,
                         TargetType.Neutral,
+                        0,
                         Reagents.DestroyingAngel,
                         Reagents.Pumice
                     )
@@ -273,6 +287,7 @@ namespace ClassicUO.Game.Data
                         13,
                         20,
                         TargetType.Neutral,
+                        0,
                         Reagents.FertileDirt,
                         Reagents.PetrifiedWood
                     )
@@ -287,6 +302,7 @@ namespace ClassicUO.Game.Data
                         10,
                         30,
                         TargetType.Beneficial,
+                        0,
                         Reagents.PetrifiedWood,
                         Reagents.FertileDirt
                     )
@@ -302,6 +318,7 @@ namespace ClassicUO.Game.Data
                         60,
                         85,
                         TargetType.Neutral,
+                        0,
                         Reagents.FertileDirt,
                         Reagents.SpringWater,
                         Reagents.FenMoss
@@ -317,6 +334,7 @@ namespace ClassicUO.Game.Data
                         23,
                         70,
                         TargetType.Harmful,
+                        0,
                         Reagents.PetrifiedWood,
                         Reagents.Pumice
                     )

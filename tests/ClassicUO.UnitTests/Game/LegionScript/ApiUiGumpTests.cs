@@ -1,16 +1,17 @@
-using ClassicUO.Game;
 using ClassicUO.Game.UI.Gumps;
 using ClassicUO.LegionScripting;
 using ClassicUO.LegionScripting.ApiClasses;
 using FluentAssertions;
 using IronPython.Hosting;
 using Microsoft.Scripting.Hosting;
+using ClassicUO.UnitTests.Fixtures;
 using Xunit;
 
 namespace ClassicUO.UnitTests.Game.LegionScript;
 
 public class ApiUiGumpTests
 {
+    [Collection(MainThreadCollection.Name)]
     public class CreateGump
     {
         [Fact]

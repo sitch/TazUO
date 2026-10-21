@@ -19,11 +19,24 @@ namespace ClassicUO.Game
     public sealed class Pathfinder
     {
         private const int PATHFINDER_MAX_NODES = 150000;
+
+        // Node budget for the A* search. User-configurable; falls back to the default
+        // when no profile is loaded (e.g. during early startup).
+        private static int MaxNodes => ProfileManager.CurrentProfile?.PathfindingMaxNodes > 0
+            ? ProfileManager.CurrentProfile.PathfindingMaxNodes
+            : PATHFINDER_MAX_NODES;
         private static PathNode _goalNode;
         private static int _pathfindDistance;
         private static readonly PriorityQueue _openSet = new();
         private static readonly Dictionary<(int x, int y, int z), PathNode> _closedSet = new();
         private static readonly List<PathNode> _path = new();
+
+        // True when _path holds pooled PathNodes that are NOT tracked in _openSet/_closedSet
+        // (i.e. populated by StartComputedPath). In that case CleanupPathfinding must return
+        // them to the pool itself. For normal A* paths the nodes are also in _closedSet and
+        // get returned there, so this stays false to avoid a double-return.
+        private static bool _ownsPathNodes;
+
         private static int _pointIndex;
         private static bool _run;
         private static readonly int[] _offsetX =
@@ -43,6 +56,16 @@ namespace ClassicUO.Game
         private static int _endPointZ;
         private static readonly List<PathObject> _reusableList = new();
 
+        // Extra A* cost applied to tiles adjacent to an impassable multi (house wall), giving
+        // paths a soft 1-tile standoff from houses. 0 disables it. Cached per-search from the
+        // profile so it can't change mid-search.
+        private int _multiBufferPenalty;
+
+        // Per-search memoization of "does this tile hold a blocking multi component?" so the
+        // buffer check doesn't re-walk a tile's object list once per neighbouring node. Cleared
+        // by CleanupPathfinding at the start of every search.
+        private static readonly Dictionary<(int x, int y), bool> _blockingMultiCache = new();
+
         public Point StartPoint => _startPoint;
         public Point EndPoint => _endPoint;
         public int PathSize => _path.Count;
@@ -59,12 +82,19 @@ namespace ClassicUO.Game
 
         private World _world;
 
-        public bool UseLongDistancePathfinding;
+        /// <summary>
+        /// Fired when a step of a path from <see cref="StartComputedPath"/> is rejected at
+        /// the client or server — typically a dynamic item (lamp post, rock, placed door) that
+        /// isn't in statics.mul. Hooked by WorldMapPathfinder to mark the tile and replan.
+        /// Arguments: (blocked tile X, blocked tile Y).
+        /// </summary>
+        public event Action<int, int> OnComputedPathStepFailed;
+
+        private bool _computedPathActive;
 
         public Pathfinder(World world)
         {
             _world = world;
-            _ = Client.Settings.GetAsyncOnMainThread(SettingsScope.Global, Constants.SqlSettings.USE_LONG_DISTANCE_PATHING, false, (b) => UseLongDistancePathfinding = b);
         }
 
         public static bool ObjectBlocksLOS(GameObject obj, int losMinZ, int losMaxZ)
@@ -251,7 +281,8 @@ namespace ClassicUO.Game
                                 {
                                     dropFlags = true;
                                 }
-                                else if (ProfileManager.CurrentProfile.SmoothDoors && item2.ItemData.IsDoor)
+                                else if (ProfileManager.CurrentProfile.SmoothDoors && item2.ItemData.IsDoor
+                                    && (ProfileManager.CurrentProfile.AutoOpenDoorsIfHidden || !_world.Player.IsHidden))
                                 {
                                     dropFlags = true;
                                 }
@@ -721,6 +752,63 @@ namespace ClassicUO.Game
             //return (Math.Abs(_endPoint.X - point.X) + Math.Abs(_endPoint.Y - point.Y)) * cost;
             Math.Max(Math.Abs(_endPoint.X - point.X), Math.Abs(_endPoint.Y - point.Y));
 
+        /// <summary>
+        /// True when the tile holds a multi component that blocks movement (a house wall or
+        /// other impassable piece). Floors/roofs are walkable surfaces and don't count, and
+        /// house-preview pieces are ignored. Memoized per search via <see cref="_blockingMultiCache"/>.
+        /// </summary>
+        private bool TileHasBlockingMulti(int x, int y)
+        {
+            (int x, int y) key = (x, y);
+
+            if (_blockingMultiCache.TryGetValue(key, out bool cached))
+            {
+                return cached;
+            }
+
+            bool result = false;
+            GameObject tile = _world.Map.GetTile(x, y, false);
+
+            if (tile != null)
+            {
+                GameObject obj = tile;
+
+                while (obj.TPrevious != null)
+                {
+                    obj = obj.TPrevious;
+                }
+
+                for (; obj != null; obj = obj.TNext)
+                {
+                    if (obj is Multi m && !m.IsHousePreview && (m.ItemData.IsImpassable || m.ItemData.IsWall))
+                    {
+                        result = true;
+                        break;
+                    }
+                }
+            }
+
+            _blockingMultiCache[key] = result;
+            return result;
+        }
+
+        /// <summary>
+        /// True when any of the eight tiles surrounding (x, y) holds a blocking multi, i.e. the
+        /// tile sits within a 1-tile buffer around a house. Used to add a soft avoidance cost.
+        /// </summary>
+        private bool IsWithinMultiBuffer(int x, int y)
+        {
+            for (int i = 0; i < 8; i++)
+            {
+                if (TileHasBlockingMulti(x + _offsetX[i], y + _offsetY[i]))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
         private static int GetTurnPenalty(PathNode parent, int direction) =>
             // The turn penalty prevents unnecessary zig-zagging that takes extra
             // time (turning pauses movement briefly) and makes the movement look
@@ -749,6 +837,14 @@ namespace ClassicUO.Game
             // concern here to warrent the 8x cost.
             int turnPenalty = GetTurnPenalty(parent, direction);
             int newDistFromStart = parent.DistFromStartCost + cost + Math.Abs(z - parent.Z) + turnPenalty;
+
+            // Soft 1-tile buffer around houses: nudge the search away from tiles that border an
+            // impassable multi so paths don't scrape along house walls. It's a cost, not a block,
+            // so tight town streets and destinations right next to a house stay reachable.
+            if (_multiBufferPenalty > 0 && IsWithinMultiBuffer(x, y))
+            {
+                newDistFromStart += _multiBufferPenalty;
+            }
 
             var updatedNode = PathNode.Get();
 
@@ -855,7 +951,7 @@ namespace ClassicUO.Game
             return null;
         }
 
-        private bool FindPath(int maxNodes, bool ignoreAutowalkState)
+        private bool FindPath(int maxNodes, bool ignoreAutowalkState, bool run = true)
         {
             var startNode = PathNode.Get();
 
@@ -873,10 +969,7 @@ namespace ClassicUO.Game
 
             int closedNodesCount = 0;
 
-            if (startNode.DistFromGoalCost > 14)
-            {
-                _run = true;
-            }
+            _run = run;
 
             while (ignoreAutowalkState || AutoWalking)
             {
@@ -897,11 +990,6 @@ namespace ClassicUO.Game
                 if (_goalNode is not null)
                 {
                     ReconstructPath(_goalNode);
-
-#if DEBUG
-                    foreach (PathNode step in _path) World.Instance.Map.GetTile(step.X, step.Y).Hue = 32;
-#endif
-
                     return true;
                 }
 
@@ -946,9 +1034,98 @@ namespace ClassicUO.Game
             }
         }
 
+        /// <summary>
+        /// Loads a pre-computed path (from WorldMapPathfinder) into the walker and starts walking.
+        /// Must be called on the main thread.
+        /// Each point is (x, y, z, direction) for a single step.
+        /// </summary>
+        public void StartComputedPath(IReadOnlyList<(int X, int Y, int Z, int Direction)> points, bool run = true)
+        {
+            if (_world.Player == null || _world.Player.IsParalyzed || points == null || points.Count == 0)
+                return;
+
+            CleanupPathfinding();
+            _pointIndex = 0;
+            _goalNode = null;
+            _run = run;
+            _startPoint.X = _world.Player.X;
+            _startPoint.Y = _world.Player.Y;
+
+            // Prepend player's current tile as _path[0] so _path[1] is the first real step —
+            // matching the convention used by WalkTo where _pointIndex starts at 1.
+            var startNode = PathNode.Get();
+            startNode.X = _world.Player.X;
+            startNode.Y = _world.Player.Y;
+            startNode.Z = _world.Player.Z;
+            startNode.Direction = (int)_world.Player.Direction;
+            startNode.IsValid = true;
+            _path.Add(startNode);
+
+            foreach (var p in points)
+            {
+                var node = PathNode.Get();
+                node.X = p.X;
+                node.Y = p.Y;
+                node.Z = p.Z;
+                node.Direction = p.Direction;
+                node.IsValid = true;
+                _path.Add(node);
+            }
+
+            // These nodes never enter the open/closed sets, so CleanupPathfinding
+            // would otherwise leak them. Mark _path as owning pooled nodes.
+            _ownsPathNodes = true;
+
+            if (_path.Count > 1)
+            {
+                _endPoint.X = _path[_path.Count - 1].X;
+                _endPoint.Y = _path[_path.Count - 1].Y;
+                _endPointZ = _path[_path.Count - 1].Z;
+                _pointIndex = 1;
+                AutoWalking = true;
+                _computedPathActive = true;
+                ProcessAutoWalk();
+            }
+        }
+
+        /// <summary>
+        /// Appends additional pre-computed steps onto the path currently being walked by
+        /// <see cref="StartComputedPath"/>, without restarting the walk. Used by the WorldMap
+        /// to chain pathfinding segments (A-&gt;B-&gt;C). Must be called on the main thread.
+        /// Returns <c>false</c> when there is no active computed path to extend (the caller
+        /// should then start a fresh path instead).
+        /// </summary>
+        public bool AppendComputedPath(IReadOnlyList<(int X, int Y, int Z, int Direction)> points)
+        {
+            if (!_computedPathActive || !AutoWalking || points == null || points.Count == 0)
+                return false;
+
+            foreach (var p in points)
+            {
+                var node = PathNode.Get();
+                node.X = p.X;
+                node.Y = p.Y;
+                node.Z = p.Z;
+                node.Direction = p.Direction;
+                node.IsValid = true;
+                _path.Add(node);
+            }
+
+            // The appended nodes are owned by _path just like the originals (StartComputedPath
+            // already set _ownsPathNodes), so CleanupPathfinding will return them to the pool.
+            _endPoint.X = _path[_path.Count - 1].X;
+            _endPoint.Y = _path[_path.Count - 1].Y;
+            _endPointZ = _path[_path.Count - 1].Z;
+
+            // Nudge the walker in case it had already caught up to the previous end and idled.
+            ProcessAutoWalk();
+            return true;
+        }
+
         public List<(int X, int Y, int Z)> GetPathTo(int x, int y, int z, int distance)
         {
             _zLevelDiff = ProfileManager.CurrentProfile.PathfindingZLevelDiff;
+            _multiBufferPenalty = ProfileManager.CurrentProfile.PathfindingMultiBuffer;
 
             CleanupPathfinding();
             _pointIndex = 0;
@@ -961,7 +1138,7 @@ namespace ClassicUO.Game
             _endPointZ = z;
             _pathfindDistance = distance;
 
-            if (!FindPath(PATHFINDER_MAX_NODES, ignoreAutowalkState: true))
+            if (!FindPath(MaxNodes, ignoreAutowalkState: true))
             {
                 return null;
             }
@@ -976,7 +1153,7 @@ namespace ClassicUO.Game
             return result;
         }
 
-        public bool WalkTo(int x, int y, int z, int distance)
+        public bool WalkTo(int x, int y, int z, int distance, bool run = true)
         {
             if (_world.Player == null /*|| World.Player.Stamina == 0*/ || _world.Player.IsParalyzed)
             {
@@ -984,13 +1161,14 @@ namespace ClassicUO.Game
             }
 
             _zLevelDiff = ProfileManager.CurrentProfile.PathfindingZLevelDiff;
+            _multiBufferPenalty = ProfileManager.CurrentProfile.PathfindingMultiBuffer;
 
             EventSink.InvokeOnPathFinding(null, new Vector4(x, y, z, distance));
 
             CleanupPathfinding();
             _pointIndex = 0;
             _goalNode = null;
-            _run = false;
+            _run = run;
             _startPoint.X = _world.Player.X;
             _startPoint.Y = _world.Player.Y;
             _endPoint.X = x;
@@ -999,7 +1177,7 @@ namespace ClassicUO.Game
             _pathfindDistance = distance;
             AutoWalking = true;
 
-            if (FindPath(PATHFINDER_MAX_NODES, ignoreAutowalkState: false))
+            if (FindPath(MaxNodes, false, run))
             {
                 _pointIndex = 1;
                 ProcessAutoWalk();
@@ -1009,83 +1187,30 @@ namespace ClassicUO.Game
                 AutoWalking = false;
             }
 
-            bool status = _path.Count != 0;
-
-            if(UseLongDistancePathfinding && !status)
-                if (LongDistancePathfinder.WalkLongDistance(x, y))
-                    return true;
-
-            return status;
+            return _path.Count != 0;
         }
 
         /// <summary>
-        /// Commit a pre-computed sequence of tiles as the auto-walk path.
-        /// The first element MUST be the player's current position;
-        /// consecutive elements must be 1-tile cardinal/diagonal steps.
+        /// Recomputes the active auto-walk path from the player's current position to the
+        /// same target that <see cref="WalkTo"/> was last called with. Intended to be called
+        /// when world geometry changes underneath a walk in progress — most notably when a
+        /// house/multi is loaded via packet and its (previously absent) components now block
+        /// tiles the current path runs through. Re-running the A* search from where the player
+        /// stands lets it route around the newly-appeared blocker.
         ///
-        /// Used by LongDistancePathfinder to hand off a fully-generated
-        /// path to the regular ProcessAutoWalk step engine, replacing
-        /// the chunk-by-chunk walking that produces visible stutter and
-        /// backtracks. The auto-walker's own throttling
-        /// (MAX_STEP_COUNT + Walker.LastStepRequestTime) paces the
-        /// long path smoothly with no inter-chunk pauses.
-        ///
-        /// Returns true if the path was accepted and auto-walk started.
-        /// Caller is responsible for the path validity — we don't
-        /// re-verify each step's walkability here, the original A* did
-        /// that.
+        /// No-op unless a local A* auto-walk is currently in progress. Computed paths
+        /// (WorldMap navigation via <see cref="StartComputedPath"/>) are skipped — they have
+        /// their own dynamic-block replanning via <see cref="OnComputedPathStepFailed"/>.
         /// </summary>
-        public bool WalkTiles(IList<(int X, int Y, int Z)> tiles, bool run = true)
+        public void RecalculatePath()
         {
-            if (_world.Player == null || _world.Player.IsParalyzed)
-                return false;
-            if (tiles == null || tiles.Count < 2)
-                return false;
-
-            CleanupPathfinding();
-
-            // First node is the start; subsequent nodes get a Direction
-            // computed from the delta to the previous tile.
-            PathNode prev = null;
-            for (int i = 0; i < tiles.Count; i++)
+            if (!AutoWalking || _computedPathActive || _world.Player == null || _world.Player.IsParalyzed)
             {
-                (int tx, int ty, int tz) = tiles[i];
-                PathNode node = PathNode.Get();
-                node.X = tx;
-                node.Y = ty;
-                node.Z = tz;
-                if (i > 0)
-                {
-                    (int px, int py, _) = tiles[i - 1];
-                    node.Direction = DeltaToDirection(tx - px, ty - py);
-                }
-                node.Parent = prev;
-                _path.Add(node);
-                prev = node;
+                return;
             }
 
-            _pointIndex = 1;
-            _run = run;
-            AutoWalking = true;
-            ProcessAutoWalk();
-            return true;
-        }
-
-        // UO Direction enum: North=0, Right=1, East=2, Down=3,
-        // South=4, Left=5, West=6, Up=7. Map a single-tile (dx, dy)
-        // step to that. Anything else (no movement, >1 step) maps to
-        // North as a safe default; callers should pass clean steps.
-        private static int DeltaToDirection(int dx, int dy)
-        {
-            if (dx == 0 && dy < 0) return 0; // N
-            if (dx > 0 && dy < 0) return 1;  // NE / Right
-            if (dx > 0 && dy == 0) return 2; // E
-            if (dx > 0 && dy > 0) return 3;  // SE / Down
-            if (dx == 0 && dy > 0) return 4; // S
-            if (dx < 0 && dy > 0) return 5;  // SW / Left
-            if (dx < 0 && dy == 0) return 6; // W
-            if (dx < 0 && dy < 0) return 7;  // NW / Up
-            return 0;
+            // Re-run from the player's present position to the previously requested target.
+            WalkTo(_endPoint.X, _endPoint.Y, _endPointZ, _pathfindDistance);
         }
 
         public void ProcessAutoWalk()
@@ -1105,7 +1230,21 @@ namespace ClassicUO.Game
 
                     if (!_world.Player.Walk((Direction)p.Direction, _run))
                     {
-                        StopAutoWalk();
+                        // For computed paths (WorldMap nav), give the pathfinder a chance to replan
+                        // around the blocked tile — likely a dynamic item not in statics.mul.
+                        // Tear down first so the hook can safely issue a new StartComputedPath.
+                        if (_computedPathActive && OnComputedPathStepFailed != null)
+                        {
+                            var hook = OnComputedPathStepFailed;
+                            int blockedX = p.X;
+                            int blockedY = p.Y;
+                            StopAutoWalk();
+                            hook.Invoke(blockedX, blockedY);
+                        }
+                        else
+                        {
+                            StopAutoWalk();
+                        }
                     }
                 }
                 else
@@ -1119,6 +1258,7 @@ namespace ClassicUO.Game
         {
             AutoWalking = false;
             _run = false;
+            _computedPathActive = false;
             CleanupPathfinding();
         }
 
@@ -1141,8 +1281,22 @@ namespace ClassicUO.Game
 
             _closedSet.Clear();
 
+            // Computed paths (StartComputedPath) own their pooled nodes directly because
+            // they never pass through the closed set. Return them here. Normal A* paths
+            // share their nodes with _closedSet (already returned above), so skip them.
+            if (_ownsPathNodes)
+            {
+                foreach (PathNode node in _path)
+                {
+                    node?.Return();
+                }
+
+                _ownsPathNodes = false;
+            }
+
             _path.Clear();
             _goalNode = null;
+            _blockingMultiCache.Clear();
         }
 
         private enum PATH_STEP_STATE

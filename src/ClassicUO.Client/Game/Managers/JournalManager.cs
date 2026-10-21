@@ -20,10 +20,15 @@ namespace ClassicUO.Game.Managers
 
         public void Add(string text, ushort hue, string name, TextType type, bool isunicode = true, MessageType messageType = MessageType.Regular)
         {
+            if (string.IsNullOrWhiteSpace(text))
+                return;
+
             if (JournalFilterManager.Instance.IgnoreMessage(text))
                 return;
 
-            JournalEntry entry = Entries.Count >= Constants.MAX_JOURNAL_HISTORY_COUNT ? Entries.RemoveFromFront() : new JournalEntry();
+            // RemoveFromFront can return null if the (non-thread-safe) deque state was torn by a
+            // concurrent reader, so fall back to a fresh entry instead of crashing on the assignment below.
+            JournalEntry entry = Entries.Count >= Constants.MAX_JOURNAL_HISTORY_COUNT ? Entries.RemoveFromFront() ?? new JournalEntry() : new JournalEntry();
 
             byte font = (byte) (isunicode ? 0 : 9);
 
@@ -68,7 +73,21 @@ namespace ClassicUO.Game.Managers
                 output = $"[{timeNow:G}]  {name}: {text}";
             }
 
-            _fileWriter?.WriteLine(output);
+            if (_fileWriter == null)
+                return;
+
+            try
+            {
+                _fileWriter.WriteLine(output);
+            }
+            catch (Exception ex)
+            {
+                // The log location can disappear mid-session (removable or network drive). Stop writing
+                // rather than letting the IO failure bubble up through the packet/message path.
+                Log.Error(ex.ToString());
+                _writerHasException = true;
+                CloseWriter();
+            }
         }
 
         private void CreateWriter()
@@ -126,9 +145,19 @@ namespace ClassicUO.Game.Managers
 
         public void CloseWriter()
         {
-            _fileWriter?.Flush();
-            _fileWriter?.Dispose();
-            _fileWriter = null;
+            try
+            {
+                _fileWriter?.Dispose();
+            }
+            catch (Exception ex)
+            {
+                // Flushing to an unavailable device throws; the writer is being discarded anyway.
+                Log.Error(ex.ToString());
+            }
+            finally
+            {
+                _fileWriter = null;
+            }
         }
 
         public void Clear() =>

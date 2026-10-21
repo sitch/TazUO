@@ -3,6 +3,7 @@ using ClassicUO.Game.GameObjects;
 using ClassicUO.Game.Managers;
 using ClassicUO.Game.UI.Gumps;
 using ClassicUO.LegionScripting.ApiClasses;
+using ClassicUO.Utility;
 
 namespace ClassicUO.LegionScripting.ApiClasses;
 
@@ -17,6 +18,11 @@ public class ApiItem : ApiEntity
     public bool Opened => GetItem()?.Opened ?? false;
     public uint Container => GetItem()?.Container ?? 0;
     public uint RootContainer => GetItem()?.RootContainer ?? 0;
+
+    /// <summary>
+    /// If this item is a corpse, the serial of the parent mobile it belongs to.
+    /// </summary>
+    public uint CorpseParent => GetItem()?.CorpseParent ?? 0;
     public bool OnGround => GetItem()?.OnGround ?? false;
 
     /// <summary>
@@ -71,7 +77,7 @@ public class ApiItem : ApiEntity
     public bool MatchesHighlight;
 
     /// <summary>
-    /// If this item is a container ( item.IsContainer ) and is open, this will return the grid container or container gump for it.
+    /// If this item is a container ( item.IsContainer ) and is open, this will return the grid container, container gump, or grid loot gump for it.
     /// </summary>
     /// <returns></returns>
     public ApiUiBaseControl GetContainerGump()
@@ -79,10 +85,27 @@ public class ApiItem : ApiEntity
         Item item = GetItem();
         if (item == null) return null;
 
-        Gump result = MainThreadQueue.InvokeOnMainThread(() => UIManager.GetGump(item.Serial));
+        Gump result = MainThreadQueue.InvokeOnMainThread(() => FindContainerGump(item.Serial));
 
-        if (result is GridContainer || result is ContainerGump)
-            return new ApiUiBaseControl(result);
+        return result != null ? new ApiUiBaseControl(result) : null;
+    }
+
+    /// <summary>
+    /// Finds the open container window for <paramref name="serial"/>, skipping other gumps that share
+    /// its serial. UIManager.GetGump(serial) returns the first gump of any type with that LocalSerial,
+    /// and a ground item's NameOverheadGump carries the item's serial too, so it can be found instead
+    /// of the container window. Must run on the main thread.
+    /// </summary>
+    /// <param name="serial">The container item's serial.</param>
+    /// <returns>The GridContainer, ContainerGump or GridLootGump for the item, or null if none is open.</returns>
+    private static Gump FindContainerGump(uint serial)
+    {
+        for (var node = UIManager.Gumps.Last; node != null; node = node.Previous)
+        {
+            if (node.Value is Gump gump && !gump.IsDisposed && gump.LocalSerial == serial &&
+                (gump is GridContainer || gump is ContainerGump || gump is GridLootGump))
+                return gump;
+        }
 
         return null;
     }
@@ -108,15 +131,14 @@ public class ApiItem : ApiEntity
     public override string __class__ => "ApiItem";
 
     protected Item item;
-    protected Item GetItemUnsafe() => Client.Game.UO.World.Items.TryGetValue(Serial, out item) ? item : null;
+    protected Item GetItemUnsafe()
+        => ResolveCached(ref item, Serial, static s => Client.Game.UO.World.Items.TryGetValue(s, out Item i) ? i : null);
+
     protected Item GetItem()
     {
-        if (item != null && item.Serial == Serial) return item;
+        if (item != null && !item.IsDestroyed && item.Serial == Serial) return item;
 
-        return MainThreadQueue.InvokeOnMainThread(() =>
-        {
-            return item = GetItemUnsafe();
-        });
+        return MainThreadQueue.InvokeOnMainThread(GetItemUnsafe);
     }
 
     /// <summary>
@@ -126,26 +148,5 @@ public class ApiItem : ApiEntity
     /// <param name="wait">True or false to wait for name and props</param>
     /// <param name="timeout">Timeout in seconds</param>
     /// <returns>Item name and properties, or empty string if we don't have them.</returns>
-    public string NameAndProps(bool wait = false, int timeout = 10)
-    {
-        if (wait)
-        {
-            System.DateTime expire = System.DateTime.UtcNow.AddSeconds(timeout);
-
-            while (!MainThreadQueue.InvokeOnMainThread(() => Client.Game.UO.World.OPL.Contains(Serial)) && System.DateTime.UtcNow < expire)
-            {
-                System.Threading.Thread.Sleep(100);
-            }
-        }
-
-        return MainThreadQueue.InvokeOnMainThread(() =>
-        {
-            if (Client.Game.UO.World.OPL.TryGetNameAndData(Serial, out string n, out string d))
-            {
-                return n + "\n" + d;
-            }
-
-            return string.Empty;
-        });
-    }
+    public string NameAndProps(bool wait = false, int timeout = 10) => GetNameAndProps(wait, timeout);
 }
