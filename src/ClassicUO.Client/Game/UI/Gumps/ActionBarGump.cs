@@ -32,7 +32,7 @@ namespace ClassicUO.Game.UI.Gumps
         private const int MIN_CELL_SIZE = 30;
         private const int MAX_CELL_SIZE = 80;
         private const int MIN_DIMENSION = 1;
-        private const int MAX_DIMENSION = 30;
+        private const int MAX_DIMENSION = 40;
 
         /// <summary>Prefix shared by every cell hotkey id of every action bar (the bar id follows).</summary>
         private const string HotkeyIdPrefix = "actionbar:";
