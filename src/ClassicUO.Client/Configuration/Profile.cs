@@ -851,7 +851,11 @@ namespace ClassicUO.Configuration
         public bool UseWASDInsteadArrowKeys { get; set => SetProperty(ref field, value); }
         public int NearbyLootGumpHeight { get; set => SetProperty(ref field, value); } = 550;
         public bool ForceTooltipsOnOldClients { get; set => SetProperty(ref field, value); } = true;
-        public bool MergeSingleClickIntoTooltip { get; set => SetProperty(ref field, value); } = false;
+        // Default on: In Mani Ylem sends quality, charges and [Unidentified] only on the
+        // single-click label channel, so with this off a character's tooltips show just
+        // the bare name. New characters copy Data/Profiles/default.json, which predated
+        // this option and so silently gave every alt the "false" fallback.
+        public bool MergeSingleClickIntoTooltip { get; set => SetProperty(ref field, value); } = true;
         // Default on: LoadAndApply no-ops when the shard profile JSON is absent, so
         // this is inert anywhere but In Mani Ylem, and new characters here get the
         // calibrated cast/recovery values without a per-character toggle.
