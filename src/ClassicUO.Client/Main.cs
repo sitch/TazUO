@@ -520,11 +520,22 @@ namespace ClassicUO
 
                     if (copy)
                     {
+                        // Copy beside the target and rename over it, never overwrite in
+                        // place. Another client still running the previous build has these
+                        // libraries memory-mapped; File.Copy truncates and rewrites that same
+                        // inode, and the other client dies with SIGBUS on its next touch of
+                        // the mapping. A rename leaves it holding the old, unlinked file.
+                        string temp = path + ".new";
+
                         try
                         {
-                            File.Copy(file, path, overwrite: true);
+                            File.Copy(file, temp, overwrite: true);
+                            File.Move(temp, path, overwrite: true);
                         }
-                        catch { }
+                        catch
+                        {
+                            try { File.Delete(temp); } catch { }
+                        }
                     }
                 }
         }
