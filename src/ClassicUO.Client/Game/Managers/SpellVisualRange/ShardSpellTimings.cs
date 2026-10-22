@@ -9,9 +9,27 @@ namespace ClassicUO.Game.Managers.SpellVisualRange
 {
     internal static class ShardSpellTimings
     {
-        private const double FALLBACK_CIRCLE1_CAST_SEC = 0.65;
+        // The cast bar starts when the server echoes the power words, so it wants the server's own
+        // cast delay: pre-AOS 0.5 s + 0.25 s per circle, which words -> target cursor matches to
+        // the hundredth here (cast_timer_check.py).
+        private const double FALLBACK_CIRCLE1_CAST_SEC = 0.5;
         private const double CAST_INCREMENT_PER_CIRCLE_SEC = 0.25;
         private const double FALLBACK_RECOVERY_SEC = 0.7;
+
+        // server_calibrate.py times the cast request -> target cursor, which is the cast delay
+        // plus one round trip (0.107-0.131 s across the eight circles' averages). The bar never
+        // sees that round trip, so it comes off every calibrated sample.
+        private const double CALIBRATION_ROUND_TRIP_SEC = 0.12;
+
+        // Pre-AOS RunUO summons add a flat 6 s to the circle's cast delay. Measured here on the
+        // elementals: power words to "(summoned)" ~8 s against 2.25 s for an ordinary circle-8
+        // spell. Summons open no target cursor, so the calibration script cannot time them and
+        // they always fall back; without this the cast bar finished ~6 s before the summon.
+        private const double SUMMON_EXTRA_CAST_SEC = 6.0;
+
+        // Blade Spirits, Summon Creature, Energy Vortex, Air Elemental, Summon Daemon,
+        // Earth / Fire / Water Elemental.
+        private static readonly HashSet<int> SummonSpellIds = new() { 33, 40, 58, 60, 61, 62, 63, 64 };
 
         public static void LoadAndApply(Dictionary<int, SpellRangeInfo> cache)
         {
@@ -79,11 +97,13 @@ namespace ClassicUO.Game.Managers.SpellVisualRange
 
                     if (castBySpell.TryGetValue(key, out (double? avg, int samples) sample) && sample.samples > 0 && sample.avg.HasValue)
                     {
-                        entry.CastTime = sample.avg.Value;
+                        entry.CastTime = Math.Max(0.0, sample.avg.Value - CALIBRATION_ROUND_TRIP_SEC);
                     }
                     else
                     {
                         entry.CastTime = FALLBACK_CIRCLE1_CAST_SEC + CAST_INCREMENT_PER_CIRCLE_SEC * (circle - 1);
+                        if (SummonSpellIds.Contains(entry.ID))
+                            entry.CastTime += SUMMON_EXTRA_CAST_SEC;
                         extrapolatedCount++;
                     }
 
