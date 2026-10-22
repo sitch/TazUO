@@ -21,15 +21,17 @@ namespace ClassicUO.Game.Managers.SpellVisualRange
         // sees that round trip, so it comes off every calibrated sample.
         private const double CALIBRATION_ROUND_TRIP_SEC = 0.12;
 
-        // Pre-AOS RunUO summons add a flat 6 s to the circle's cast delay. Measured here on the
-        // elementals: power words to "(summoned)" ~8 s against 2.25 s for an ordinary circle-8
-        // spell. Summons open no target cursor, so the calibration script cannot time them and
-        // they always fall back; without this the cast bar finished ~6 s before the summon.
-        private const double SUMMON_EXTRA_CAST_SEC = 6.0;
+        // Summons, Recall and Gate Travel take a flat 6 s longer than the circle's delay on this
+        // shard (pre-AOS RunUO does it for summons). Measured from the journal, power words to
+        // "(summoned)" / the rune cursor: elementals ~8 s against 2.25 s for an ordinary circle 8,
+        // Recall 7 s every time against 1.25 s, Gate Travel 8 s against 2.0 s. Mark is ordinary.
+        // None of these are in the calibration (summons open no cursor, travel needs a rune), so
+        // they always fall back; without this the cast bar finished ~6 s before the spell did.
+        private const double LONG_CAST_EXTRA_SEC = 6.0;
 
-        // Blade Spirits, Summon Creature, Energy Vortex, Air Elemental, Summon Daemon,
-        // Earth / Fire / Water Elemental.
-        private static readonly HashSet<int> SummonSpellIds = new() { 33, 40, 58, 60, 61, 62, 63, 64 };
+        // Recall, Blade Spirits, Summon Creature, Gate Travel, Energy Vortex, Air Elemental,
+        // Summon Daemon, Earth / Fire / Water Elemental.
+        private static readonly HashSet<int> LongCastSpellIds = new() { 32, 33, 40, 52, 58, 60, 61, 62, 63, 64 };
 
         public static void LoadAndApply(Dictionary<int, SpellRangeInfo> cache)
         {
@@ -102,8 +104,8 @@ namespace ClassicUO.Game.Managers.SpellVisualRange
                     else
                     {
                         entry.CastTime = FALLBACK_CIRCLE1_CAST_SEC + CAST_INCREMENT_PER_CIRCLE_SEC * (circle - 1);
-                        if (SummonSpellIds.Contains(entry.ID))
-                            entry.CastTime += SUMMON_EXTRA_CAST_SEC;
+                        if (LongCastSpellIds.Contains(entry.ID))
+                            entry.CastTime += LONG_CAST_EXTRA_SEC;
                         extrapolatedCount++;
                     }
 
