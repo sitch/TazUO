@@ -48,7 +48,6 @@ namespace ClassicUO
 
         private bool _ignoreNextTextInput;
         private bool _pendingMouseMotion;
-        private bool _allowScreenSaver;
         private readonly float[] _intervalFixedUpdate = new float[2];
         private double _totalElapsed, _currentFpsTime;
         private uint _totalFrames;
@@ -547,21 +546,13 @@ namespace ClassicUO
             Mouse.Update();
             Profiler.ExitContext("Mouse");
 
-            // FNA re-disables the screen saver on every focus-gain and mouse-enter unless
-            // FNA_ALLOW_SCREENSAVER is set (a sitch/FNA patch). Undoing each disable a
-            // frame later is not enough: the Inhibit/UnInhibit pair restarts hypridle's
-            // idle timers, so the display never slept in game. The hint is only touched
-            // when the option changes, and keeps its last value on the login screen.
-            if (ProfileManager.CurrentProfile != null && ProfileManager.CurrentProfile.AllowScreenSaver != _allowScreenSaver)
+            // FNA re-disables the screen saver on every focus-gain and mouse-enter, so
+            // giving it back has to happen per frame rather than once at startup. Both
+            // SDL calls early-out when the flag already matches, so the steady state is
+            // one bool check per frame and no D-Bus traffic.
+            if (ProfileManager.CurrentProfile != null && ProfileManager.CurrentProfile.AllowScreenSaver)
             {
-                _allowScreenSaver = ProfileManager.CurrentProfile.AllowScreenSaver;
-                SDL_SetHint("FNA_ALLOW_SCREENSAVER", _allowScreenSaver ? "1" : "0");
-
-                // Release the inhibit FNA took at window creation or the last focus-gain.
-                if (_allowScreenSaver)
-                {
-                    SDL_EnableScreenSaver();
-                }
+                SDL_EnableScreenSaver();
             }
 
             if (_pendingMouseMotion && Scene != null)

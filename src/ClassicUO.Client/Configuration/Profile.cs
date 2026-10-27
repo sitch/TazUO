@@ -865,7 +865,7 @@ namespace ClassicUO.Configuration
         // inhibit, so the desktop never dims while the client is up. The usual
         // SDL_VIDEO_ALLOW_SCREENSAVER=1 escape hatch cannot undo it: SDL reads that
         // hint once during video init, before FNA's call. When this is on, the update
-        // loop sets FNA_ALLOW_SCREENSAVER (sitch/FNA), which skips FNA's calls.
+        // loop hands the screen saver back every frame instead.
         public bool AllowScreenSaver { get; set => SetProperty(ref field, value); } = false;
         public bool NearbyLootOpensHumanCorpses { get; set => SetProperty(ref field, value); }
         [Obsolete("Remove after 10/12/26")]
