@@ -1947,9 +1947,7 @@ public class WorldMapGump : ResizableGump
                     {
                         Texture2D texture = CurLoader.CreateTextureFromICO_Cur(ms);
 
-                        string iconKey = Path.GetFileNameWithoutExtension(icon).ToLower();
-                        _markerIcons.Add(iconKey, texture);
-                        _markerIconPaths[iconKey] = icon;
+                        RegisterMarkerIcon(texture, icon);
                     }
                     catch (Exception ee)
                     {
@@ -1973,9 +1971,7 @@ public class WorldMapGump : ResizableGump
                     {
                         var texture = Texture2D.FromStream(Client.Game.GraphicsDevice, ms);
 
-                        string iconKey = Path.GetFileNameWithoutExtension(icon).ToLower();
-                        _markerIcons.Add(iconKey, texture);
-                        _markerIconPaths[iconKey] = icon;
+                        RegisterMarkerIcon(texture, icon);
                     }
                     catch (Exception ee)
                     {
@@ -2218,6 +2214,33 @@ public class WorldMapGump : ResizableGump
         }
 
         //);
+    }
+
+    /// <summary>
+    /// Registers a loaded marker icon, replacing any icon with the same name. The same icon name
+    /// can exist in multiple search directories (for example a global icon and a server-specific
+    /// override), so later directories take precedence. The replaced texture must be disposed or
+    /// every reload leaks GPU memory.
+    /// </summary>
+    private static void RegisterMarkerIcon(Texture2D texture, string iconPath)
+    {
+        string iconKey = Path.GetFileNameWithoutExtension(iconPath).ToLower();
+
+        if (_markerIcons.TryGetValue(iconKey, out Texture2D existing))
+        {
+            if (existing != null && !existing.IsDisposed)
+            {
+                existing.Dispose();
+            }
+
+            _markerIcons[iconKey] = texture;
+        }
+        else
+        {
+            _markerIcons.Add(iconKey, texture);
+        }
+
+        _markerIconPaths[iconKey] = iconPath;
     }
 
     private void AddMarkerOnPlayer()
@@ -4007,7 +4030,9 @@ public class WorldMapGump : ResizableGump
 
     public override void OnMouseUp(int x, int y, MouseButtonType button)
     {
-        bool allowTarget = _allowPositionalTarget && World.TargetManager.IsTargeting && World.TargetManager.TargetingState == CursorTarget.Position;
+        bool allowTarget = _allowPositionalTarget
+                           && World.TargetManager.IsTargeting
+                           && World.TargetManager.TargetingState is CursorTarget.Position or CursorTarget.Internal;
         if (allowTarget && button == MouseButtonType.Left)
         {
             HandlePositionTarget();
@@ -4274,37 +4299,8 @@ public class WorldMapGump : ResizableGump
         }, houseMultis);
     }
 
-    /// <summary>
-    /// Shallow-copies Multi component fields from every loaded player house into a flat
-    /// list of plain structs. Runs on the main thread where live World data is safe to
-    /// iterate, but does NO filtering and NO map-file I/O — just field reads (~20 ns each).
-    /// The background thread (WorldMapPathfinder) does the flag checks and Z lookups.
-    /// </summary>
     private List<WorldMapPathfinder.HouseMultiSnapshot> BuildHouseMultiSnapshot()
-    {
-        var houseManager = _world?.HouseManager;
-        if (houseManager == null)
-            return null;
-
-        var list = new List<WorldMapPathfinder.HouseMultiSnapshot>(256);
-        foreach (var house in houseManager.Houses)
-        {
-            foreach (var multi in house.Components)
-            {
-                list.Add(new WorldMapPathfinder.HouseMultiSnapshot
-                {
-                    X = multi.X,
-                    Y = multi.Y,
-                    Z = multi.Z,
-                    Graphic = multi.Graphic,
-                    State = (int)multi.State,
-                    IsHousePreview = multi.IsHousePreview,
-                    IsDestroyed = multi.IsDestroyed,
-                });
-            }
-        }
-        return list;
-    }
+        => WorldMapPathfinder.CaptureHouseMultis(_world?.HouseManager);
 
     public override void OnMouseOver(int x, int y)
     {

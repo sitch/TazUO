@@ -38,6 +38,6 @@ internal static class DenyWalk
         if (!world.Player.TryOpenDoors())
             world.Player.TryOpenDoors(includeOpen: true);
 
-        world.Weather.Reset();
+        // The weather is kept: a denied step doesn't change it, and the server won't resend what it already sent.
     }
 }
