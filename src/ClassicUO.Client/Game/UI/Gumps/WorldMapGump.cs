@@ -4474,6 +4474,21 @@ public class WorldMapGump : ResizableGump
         _last_position.Y = ScreenCoordinateY;
     }
 
+    /// <summary>
+    /// A locked map is part of the backdrop: it drops to the Under layer beside the
+    /// game viewport, so containers, the journal and every other gump draw over it
+    /// even right after the map has been clicked. Unlocking restores normal stacking.
+    /// </summary>
+    protected override void SetLockStatus(bool locked)
+    {
+        base.SetLockStatus(locked);
+        LayerOrder = locked ? UILayer.Under : UILayer.Default;
+
+        // The constructor calls this before the gump is registered; re-sort only once it is.
+        if (UIManager.Gumps.Contains(this))
+            UIManager.MakeTopMostGump(this);
+    }
+
     #endregion
 
     #region Helpers

@@ -233,6 +233,9 @@ namespace ClassicUO.Game.UI.Gumps
                 return;
             }
 
+            // The lock is toggled from the options window with no callback into this gump.
+            UpdateFrameVisibility();
+
             if (Mouse.IsDragging)
             {
                 Point offset = Mouse.LDragOffset;
@@ -375,9 +378,23 @@ namespace ClassicUO.Game.UI.Gumps
             Width = _scene.Camera.Bounds.Width + borderOffset;
             Height = _scene.Camera.Bounds.Height + borderOffset;
 
-            // Update border and button visibility
-            _borderControl.IsVisible = !isFullSize;
-            _button.IsVisible = !isFullSize;
+            UpdateFrameVisibility();
+        }
+
+        /// <summary>
+        /// The border and resize grip show only while the viewport can actually be moved or
+        /// resized: full-size mode has no frame, and neither does a locked viewport. The
+        /// BORDER_WIDTH gutter is kept either way, so locking never shifts the camera.
+        /// </summary>
+        private void UpdateFrameVisibility()
+        {
+            Profile profile = ProfileManager.CurrentProfile;
+            bool isFullSize = profile != null && profile.GameWindowFullSize;
+            bool locked = profile != null && profile.GameWindowLock;
+
+            CanMove = !locked;
+            _borderControl.IsVisible = !isFullSize && !locked;
+            _button.IsVisible = !isFullSize && !locked;
         }
 
         private void Resize()
@@ -389,11 +406,9 @@ namespace ClassicUO.Game.UI.Gumps
 
             _borderControl.Width = _scene.Camera.Bounds.Width + borderOffset;
             _borderControl.Height = _scene.Camera.Bounds.Height + borderOffset;
-            _borderControl.IsVisible = !isFullSize;  // Hide border in full-size mode
-
             _button.X = Width - (_button.Width);
             _button.Y = Height - (_button.Height);
-            _button.IsVisible = !isFullSize;  // Hide resize button in full-size mode
+            UpdateFrameVisibility();
 
             // Update system chat control position and size
             // Note: Width/Height already includes borderOffset from ClampViewportToWindowBounds
