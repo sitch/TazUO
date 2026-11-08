@@ -5300,6 +5300,58 @@ namespace ClassicUO.LegionScripting
         });
 
         /// <summary>
+        /// In Mani Ylem mod: draw fine lines on the boundaries of the server's resource banks
+        /// (8x8 blocks of the map), following the land's slope, within `radius` tiles of the player.
+        /// Over a cave, where the rock overhead is not drawn, the lines lie at the player's height.
+        /// Example:
+        /// ```py
+        /// API.ShowBlockGrid(True)          # white, 8x8, 24 tiles around you
+        /// API.ShowBlockGrid(False)
+        /// ```
+        /// </summary>
+        /// <param name="show">True to draw the grid, False to hide it (countdowns still draw)</param>
+        /// <param name="hue">Line hue</param>
+        /// <param name="size">Block size in tiles</param>
+        /// <param name="radius">How far from the player to draw, in tiles</param>
+        /// <param name="thickness">Line width in pixels</param>
+        public void ShowBlockGrid(bool show, ushort hue = 1153, int size = 8, int radius = 24, int thickness = 1) => OnMain(() =>
+        {
+            BlockGridManager.Instance.SetGrid(show, hue, size, radius, thickness);
+        });
+
+        /// <summary>
+        /// In Mani Ylem mod: show a countdown at the centre of block (bx, by) (tiles bx*8.. by*8..)
+        /// until its bank is back. The client counts down on its own; set it once. Seconds of 0
+        /// or less removes it.
+        /// Example:
+        /// ```py
+        /// API.SetBlockTimer(4000 // 8, 288 // 8, 1200, 2213)
+        /// ```
+        /// </summary>
+        /// <param name="bx">Block x (tile x // block size)</param>
+        /// <param name="by">Block y (tile y // block size)</param>
+        /// <param name="seconds">Seconds until the bank is back</param>
+        /// <param name="hue">Text hue</param>
+        /// <param name="map">Defaults to current map</param>
+        public void SetBlockTimer(int bx, int by, double seconds, ushort hue = 1153, int map = -1) => OnMain(() =>
+        {
+            if (map < 0)
+            {
+                if (World?.Map == null)
+                    return;
+
+                map = World.Map.Index;
+            }
+
+            BlockGridManager.Instance.SetTimer(map, bx, by, seconds, hue);
+        });
+
+        /// <summary>
+        /// In Mani Ylem mod: remove every block countdown set with SetBlockTimer.
+        /// </summary>
+        public void ClearBlockTimers() => OnMain(() => BlockGridManager.Instance.ClearTimers());
+
+        /// <summary>
         /// Remove a marked tile. See MarkTile for more info.
         /// </summary>
         /// <param name="x"></param>

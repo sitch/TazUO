@@ -1432,6 +1432,12 @@ namespace ClassicUO.Game.Scenes
             DrawSelection(batcher);
             batcher.End();
 
+            // In Mani Ylem mod: the bank grid and its countdowns, after the lights so night
+            // doesn't swallow them.
+            batcher.Begin(null, Camera.ViewTransformMatrix);
+            DrawBlockGrid(batcher);
+            batcher.End();
+
             gd.Viewport = rViewport;
 
             gd.Clear(ClearOptions.Stencil, Color.Transparent, 0f, 0);

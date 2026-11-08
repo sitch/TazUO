@@ -4127,6 +4127,67 @@ Mark a tile with a specific hue.
 
 ---
 
+### ShowBlockGrid
+`(show, hue, size, radius, thickness)`
+In Mani Ylem mod: draw fine lines on the boundaries of the server's resource banks
+(8x8 blocks of the map), following the land's slope, within `radius` tiles of the player.
+Over a cave, where the rock overhead is not drawn, the lines lie at the player's height.
+
+**Example:**
+
+```py
+API.ShowBlockGrid(True)          # white, 8x8, 24 tiles around you
+API.ShowBlockGrid(False)
+```
+
+**Parameters:**
+
+| Name | Type | Optional | Description |
+| --- | --- | --- | --- |
+| `show` | `bool` | ❌ No | True to draw the grid, False to hide it (countdowns still draw) |
+| `hue` | `ushort` | ✅ Yes | Line hue |
+| `size` | `int` | ✅ Yes | Block size in tiles |
+| `radius` | `int` | ✅ Yes | How far from the player to draw, in tiles |
+| `thickness` | `int` | ✅ Yes | Line width in pixels |
+
+**Return Type:** `void` *(Does not return anything)*
+
+---
+
+### SetBlockTimer
+`(bx, by, seconds, hue, map)`
+In Mani Ylem mod: show a countdown at the centre of block (bx, by) (tiles bx*8.. by*8..)
+until its bank is back. The client counts down on its own; set it once. Seconds of 0
+or less removes it.
+
+**Example:**
+
+```py
+API.SetBlockTimer(4000 // 8, 288 // 8, 1200, 2213)
+```
+
+**Parameters:**
+
+| Name | Type | Optional | Description |
+| --- | --- | --- | --- |
+| `bx` | `int` | ❌ No | Block x (tile x // block size) |
+| `by` | `int` | ❌ No | Block y (tile y // block size) |
+| `seconds` | `double` | ❌ No | Seconds until the bank is back |
+| `hue` | `ushort` | ✅ Yes | Text hue |
+| `map` | `int` | ✅ Yes | Defaults to current map |
+
+**Return Type:** `void` *(Does not return anything)*
+
+---
+
+### ClearBlockTimers
+
+In Mani Ylem mod: remove every block countdown set with SetBlockTimer.
+
+**Return Type:** `void` *(Does not return anything)*
+
+---
+
 ### RemoveMarkedTile
 `(x, y, map)`
 Remove a marked tile. See MarkTile for more info.

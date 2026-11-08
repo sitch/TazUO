@@ -4087,6 +4087,41 @@ def MarkTile(x: "int", y: "int", hue: "int", map: "int" = -1) -> None:
     """
     pass
 
+def ShowBlockGrid(show: "bool", hue: "int" = 1153, size: "int" = 8, radius: "int" = 24, thickness: "int" = 1) -> None:
+    """
+    In Mani Ylem mod: draw fine lines on the boundaries of the server's resource banks
+    (8x8 blocks of the map), following the land's slope, within `radius` tiles of the player.
+    Over a cave, where the rock overhead is not drawn, the lines lie at the player's height.
+    
+    **Example:**
+    
+    ```py
+    API.ShowBlockGrid(True)          # white, 8x8, 24 tiles around you
+    API.ShowBlockGrid(False)
+    ```
+    """
+    pass
+
+def SetBlockTimer(bx: "int", by: "int", seconds: "float", hue: "int" = 1153, map: "int" = -1) -> None:
+    """
+    In Mani Ylem mod: show a countdown at the centre of block (bx, by) (tiles bx*8.. by*8..)
+    until its bank is back. The client counts down on its own; set it once. Seconds of 0
+    or less removes it.
+    
+    **Example:**
+    
+    ```py
+    API.SetBlockTimer(4000 // 8, 288 // 8, 1200, 2213)
+    ```
+    """
+    pass
+
+def ClearBlockTimers() -> None:
+    """
+    In Mani Ylem mod: remove every block countdown set with SetBlockTimer.
+    """
+    pass
+
 def RemoveMarkedTile(x: "int", y: "int", map: "int" = -1) -> None:
     """
     Remove a marked tile. See MarkTile for more info.
