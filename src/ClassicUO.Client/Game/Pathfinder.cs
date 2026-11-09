@@ -281,8 +281,13 @@ namespace ClassicUO.Game
                                 {
                                     dropFlags = true;
                                 }
+                                // A closed door is opened on approach, and an open one this
+                                // client opened can be shut if it's in the way, so both pass.
+                                // Someone else's open door blocks like the server says it
+                                // does: walking into it would only get the step denied.
                                 else if (ProfileManager.CurrentProfile.SmoothDoors && item2.ItemData.IsDoor
-                                    && (ProfileManager.CurrentProfile.AutoOpenDoorsIfHidden || !_world.Player.IsHidden))
+                                    && (ProfileManager.CurrentProfile.AutoOpenDoorsIfHidden || !_world.Player.IsHidden)
+                                    && (!DoorData.IsOpenDoor(item2.Graphic) || _world.Player.IsMyOpenDoor(item2)))
                                 {
                                     dropFlags = true;
                                 }

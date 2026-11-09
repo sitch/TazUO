@@ -198,6 +198,10 @@ public static class ObjectHelpers
             item.Direction = direction;
             item.CheckGraphicChange(item.AnimIndex);
 
+            // Auto-open needs to know which doors it opened itself (see PlayerMobile).
+            if (!created && item.ItemData.IsDoor)
+                world.Player?.OnDoorUpdated(item);
+
             if (created)
                 EventSink.InvokeOnItemCreated(item);
             else

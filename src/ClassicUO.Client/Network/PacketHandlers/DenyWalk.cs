@@ -34,7 +34,8 @@ internal static class DenyWalk
         // contains no closed candidate at all do we fall back to includeOpen=true
         // to handle the rare swing-into-corridor case. This avoids slamming an
         // open door shut on the player when the actual blocker was a mob, a
-        // weight overload, or lag.
+        // weight overload, or lag. The fallback only ever closes a door this
+        // client opened, never one someone held open for us (it may be locked).
         if (!world.Player.TryOpenDoors())
             world.Player.TryOpenDoors(includeOpen: true);
 

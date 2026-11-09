@@ -78,10 +78,21 @@ namespace ClassicUO.Game.GameObjects
         // measured 0.3 s use-object cooldown so a running burst can't
         // out-pace the server's rate-limit.
         private const uint DOOR_GLOBAL_COOLDOWN_MS = 300;
-        // Trim _recentDoorClickTicks when it grows beyond this many entries.
+        // Trim each door tick table when it grows beyond this many entries.
         private const int DOOR_CLICK_CACHE_TRIM_THRESHOLD = 32;
         private readonly Dictionary<uint, uint> _recentDoorClickTicks = new();
         private uint _lastDoorClickTicks;
+        // Door ownership. The client only ever shuts a door it opened itself: a door
+        // someone else opened may be locked against us, and closing it shuts them (or
+        // us) out. A click on a closed door is pending until the server shows that door
+        // open; seen open within the confirm window, the door is ours until it is seen
+        // closed. An open arriving later is someone else's doing.
+        private const uint DOOR_OPEN_CONFIRM_MS = 1000;
+        // Safety net for a close we never saw (out of range, missed update). ServUO's
+        // doors swing shut on their own after 20 s, so ownership past that is stale.
+        private const uint DOOR_OWNED_MS = 20000;
+        private readonly Dictionary<uint, uint> _pendingDoorOpens = new();
+        private readonly Dictionary<uint, uint> _doorsOpenedByMe = new();
         // While set, OnDirectionChanged does not call TryOpenDoors. DenyWalk
         // uses this to assign Direction without re-entering the door scan,
         // since it calls TryOpenDoors explicitly one line later. Toggle only
@@ -462,17 +473,19 @@ namespace ClassicUO.Game.GameObjects
         //
         // Acts only on doors in the player's forward half-plane (the 3 tiles in facing
         // direction, by dx*fdx + dy*fdy > 0). Doors sideways or behind are ignored — so
-        // a hard turn at a corner near an open door can't re-trigger a double-click on
-        // the just-passed door. A per-serial cooldown is a second defense, because the
-        // IsImpassable open/closed signal is not always trustworthy here (the shard's
-        // TileData and/or the client's local graphic state can lag the actual door
-        // state). A global cooldown bounds total click traffic to the shard's measured
-        // 0.3 s use-object rate-limit.
+        // a hard turn at a corner near a door can't re-trigger a double-click on the
+        // just-passed door. A per-serial cooldown is a second defense, because the
+        // client's local graphic state can lag the actual door state. A global cooldown
+        // bounds total click traffic to the shard's measured 0.3 s use-object rate-limit.
         //
-        // `includeOpen` lets the DenyWalk path bypass the IsImpassable early-out so we
-        // can also close an open door that's blocking the direction we just tried to
-        // walk (some doors on this shard swing into the corridor when open). Used as
-        // a *fallback only* by DenyWalk — if the default `false` scan finds any
+        // Open or closed is read from the graphic (DoorData), never IsImpassable: this
+        // shard's tiledata marks open and closed doors alike impassable, so that test
+        // let open doors through and the click shut them in people's faces.
+        //
+        // `includeOpen` lets the DenyWalk path also close an open door that's blocking
+        // the direction we just tried to walk (some doors on this shard swing into the
+        // corridor when open), and only one this client opened (see IsMyOpenDoor). Used
+        // as a *fallback only* by DenyWalk — if the default `false` scan finds any
         // candidate in the half-plane, we don't fall back, since closing an open door
         // when the actual blocker was a mob/weight/lag is exactly the slam-shut bug.
         //
@@ -507,10 +520,8 @@ namespace ClassicUO.Game.GameObjects
             foreach (Item s in World.Items.Values)
             {
                 if (!s.ItemData.IsDoor) continue;
-                // Cheap early-out: skip clearly-passable open doors when caller didn't
-                // ask to include them. Not reliable on this shard (see header), so
-                // the half-plane filter below is the real defense.
-                if (!includeOpen && !s.ItemData.IsImpassable) continue;
+                bool open = DoorData.IsOpenDoor(s.Graphic);
+                if (open && (!includeOpen || !IsMyOpenDoor(s))) continue;
                 if (s.Z + 15 < pz || s.Z - 15 > pz) continue;
                 int dx = s.X - px;
                 int dy = s.Y - py;
@@ -524,26 +535,70 @@ namespace ClassicUO.Game.GameObjects
                 if (_recentDoorClickTicks.TryGetValue(s.Serial, out uint last) &&
                     now - last < DOOR_REOPEN_COOLDOWN_MS)
                     continue;
-                GameActions.DoubleClick(World, s.Serial);
-                _recentDoorClickTicks[s.Serial] = now;
-                _lastDoorClickTicks = now;
-                TrimDoorClickCache(now);
+                ClickDoor(s.Serial, now, open);
                 return true;
             }
             return sawCandidate;
         }
 
+        private void ClickDoor(uint serial, uint now, bool closing)
+        {
+            GameActions.DoubleClick(World, serial);
+            _recentDoorClickTicks[serial] = now;
+            _lastDoorClickTicks = now;
+            if (closing)
+                _doorsOpenedByMe.Remove(serial);
+            else
+                _pendingDoorOpens[serial] = now;
+            TrimDoorClickCache(now);
+        }
+
+        // True when this open door is one the client opened itself, so closing it is
+        // safe: whoever could open it can open it again.
+        internal bool IsMyOpenDoor(Item door)
+        {
+            return DoorData.IsOpenDoor(door.Graphic)
+                && _doorsOpenedByMe.TryGetValue(door.Serial, out uint opened)
+                && Time.Ticks - opened < DOOR_OWNED_MS;
+        }
+
+        // Called for every server update to a door already in the world. Opening or
+        // closing changes the graphic (and position), so this sees each state change.
+        internal void OnDoorUpdated(Item door)
+        {
+            uint serial = door.Serial;
+
+            if (!DoorData.IsOpenDoor(door.Graphic))
+            {
+                _doorsOpenedByMe.Remove(serial);
+                return;
+            }
+
+            if (_pendingDoorOpens.Remove(serial, out uint clicked)
+                && Time.Ticks - clicked <= DOOR_OPEN_CONFIRM_MS)
+            {
+                _doorsOpenedByMe[serial] = Time.Ticks;
+            }
+        }
+
         private void TrimDoorClickCache(uint now)
         {
-            if (_recentDoorClickTicks.Count < DOOR_CLICK_CACHE_TRIM_THRESHOLD) return;
+            TrimStale(_pendingDoorOpens, now, DOOR_OPEN_CONFIRM_MS);
+            TrimStale(_doorsOpenedByMe, now, DOOR_OWNED_MS);
+            TrimStale(_recentDoorClickTicks, now, DOOR_REOPEN_COOLDOWN_MS);
+        }
+
+        private static void TrimStale(Dictionary<uint, uint> ticks, uint now, uint maxAge)
+        {
+            if (ticks.Count < DOOR_CLICK_CACHE_TRIM_THRESHOLD) return;
             List<uint> stale = null;
-            foreach (var kv in _recentDoorClickTicks)
+            foreach (var kv in ticks)
             {
-                if (now - kv.Value >= DOOR_REOPEN_COOLDOWN_MS)
+                if (now - kv.Value >= maxAge)
                     (stale ??= new List<uint>()).Add(kv.Key);
             }
             if (stale == null) return;
-            foreach (uint serial in stale) _recentDoorClickTicks.Remove(serial);
+            foreach (uint serial in stale) ticks.Remove(serial);
         }
 
         // Block walking into a door when auto open is off to avoid spamming the server with
@@ -584,7 +639,11 @@ namespace ClassicUO.Game.GameObjects
         // Auto-open only ever touches the tile the player is facing, so a door beside a
         // diagonal path is never handled there. An open door still blocks the corner the
         // server checks, so when auto-close is on, shut it right before the step so the walk
-        // can go through; otherwise fall back to the block-walking option.
+        // can go through — but only a door this client opened, and through the same rate
+        // gates as auto-open (Walk runs every frame the key is held, and an ungated click
+        // here toggled the door open and shut). Anyone else's open door is a wall to
+        // Pathfinder, so CanWalk has already slid the diagonal to a straight step; reaching
+        // here with one falls back to the block-walking option.
         private bool IsFlankingDoorBlocked(int x, int y, sbyte z)
         {
             Profile profile = ProfileManager.CurrentProfile;
@@ -593,9 +652,12 @@ namespace ClassicUO.Game.GameObjects
             {
                 if (FindDoorOnTile(x, y, z, out Item door))
                 {
-                    if (ProfileManager.GlobalSettings.AutoCloseDoors && DoorData.IsOpenDoor(door.Graphic))
+                    if (ProfileManager.GlobalSettings.AutoCloseDoors && IsMyOpenDoor(door))
                     {
-                        AsyncNetClient.Socket.Send_DoubleClick(door.Serial);
+                        uint now = Time.Ticks;
+                        if (_lastDoorClickTicks != 0 && now - _lastDoorClickTicks < DOOR_GLOBAL_COOLDOWN_MS)
+                            return true;
+                        ClickDoor(door.Serial, now, closing: true);
                         return false;
                     }
 
