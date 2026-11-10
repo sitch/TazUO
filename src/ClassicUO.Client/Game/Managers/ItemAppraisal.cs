@@ -2,7 +2,9 @@
 
 using System;
 using System.Collections.Generic;
+using System.Text.RegularExpressions;
 using ClassicUO.Configuration;
+using ClassicUO.Game.GameObjects;
 using Microsoft.Xna.Framework;
 
 namespace ClassicUO.Game.Managers
@@ -54,6 +56,10 @@ namespace ClassicUO.Game.Managers
     ///   bottom pips    accuracy
     ///   left bar       wand charge type
     ///   right bar      slayer family
+    ///   corner square  collector grade (Trace .. Callout)
+    ///   top-right text seed type index, bonsai star, or stat/skill bonus
+    /// A collectible with no magic tier takes the outer border too, in its ACCENT
+    /// colour: a seed's own colour, a bonus's stat colour, else the grade colour.
     /// Wand type used to share the border with tier, which forced 5 ordinal colors and
     /// 13 categorical ones into one channel and made collisions unavoidable. Giving it
     /// its own element is what lets both palettes be chosen freely.
@@ -169,7 +175,46 @@ namespace ClassicUO.Game.Managers
 
             public bool HasAnything =>
                 Kind != AppraisalKind.None || Unidentified || Exceptional
-                || DurabilityTier > 0 || Slayer != SlayerFamily.None || Rare;
+                || DurabilityTier > 0 || Slayer != SlayerFamily.None || Rare
+                || SeedColor != null || Bonsai != null || BonusKey != null;
+
+            // ── Where the item is, stamped on every call (never cached) ──────────────
+            public ushort Hue;
+            public bool OnGround;
+            public bool IsContainer;
+            /// <summary>Grade of a collector container somewhere above it, or None.</summary>
+            public HighlightGrade RareContainer;
+
+            // ── Seeds ────────────────────────────────────────────────────────────────
+            /// <summary>Colour word from the name ("bright red"), null when not a seed.</summary>
+            public string SeedColor;
+            public ushort SeedHue;
+            /// <summary>Colour rarity 1-4, see AppraisalPalette.DefaultSeedColors.</summary>
+            public int SeedTier;
+            /// <summary>1-based PlantType index, 0 while the type is unknown.</summary>
+            public int PlantType;
+            /// <summary>Bonsai category ("common", "exotic" ...), null otherwise.</summary>
+            public string Bonsai;
+
+            // ── Stat and skill bonuses ───────────────────────────────────────────────
+            /// <summary>"str", "dex", "int" or "skill" for the first bonus line, else null.</summary>
+            public string BonusKey;
+            /// <summary>Every bonus, "+50 Tracking · +10 Animal Lore".</summary>
+            public string BonusLabel;
+            /// <summary>The first bonus, short enough for a grid cell ("+4 Int").</summary>
+            public string BonusShort;
+            public bool Blessed;
+
+            // ── Collector grade, resolved in Recolor ─────────────────────────────────
+            public HighlightGrade Grade;
+            /// <summary>What it is, in its own colour: seed hue, bonus colour or grade colour.</summary>
+            public Color? Accent;
+            /// <summary>World label text, or null for none.</summary>
+            public string Label;
+            public ushort LabelHue;
+            /// <summary>Top-right grid text, or null.</summary>
+            public string Badge;
+            public ushort BadgeHue;
 
             /// <summary>
             /// Potion family of a potion keg ("heal", "cure", ...), "unknown" for a keg
@@ -223,23 +268,50 @@ namespace ClassicUO.Game.Managers
             if (!Enabled || world == null)
                 return default;
 
+            // Looked up once and stamped on every return path, cached or not: where an
+            // item sits (ground, crate, pack) changes under a frozen parse. Graphic is
+            // stamped here too, which also repairs an entry that froze in the first
+            // frames after a container opened, before world.Items had the item. Rarity
+            // is computed FROM the graphic, so a 0 there once left one of two identical
+            // candelabra in a bag unmarked forever.
+            world.Items.TryGetValue(serial, out Item item);
+            Result r = ParseCached(world, serial, item);
+            if (item != null)
+                Stamp(world, item, ref r);
+            return Recolor(r);
+        }
+
+        private static void Stamp(World world, Item item, ref Result r)
+        {
+            r.Graphic = item.Graphic;
+            r.Hue = item.Hue;
+            r.OnGround = item.OnGround;
+            r.IsContainer = item.ItemData.IsContainer;
+            r.RareContainer = HighlightGrade.None;
+            if (!AppraisalPalette.HasRareContainers)
+                return;
+
+            uint c = item.Container;
+            for (int depth = 0; depth < 8 && SerialHelper.IsValid(c); depth++)
+            {
+                HighlightGrade g = AppraisalPalette.RareContainer(c);
+                if (g != HighlightGrade.None)
+                {
+                    r.RareContainer = g;
+                    return;
+                }
+                if (!world.Items.TryGetValue(c, out Item parent))
+                    return;
+                c = parent.Container;
+            }
+        }
+
+        private static Result ParseCached(World world, uint serial, Item item)
+        {
             if (_cache.TryGetValue(serial, out Entry e))
             {
                 if (e.Frozen)
-                {
-                    // Repair an entry that froze before the item was resolvable. Graphic is
-                    // stamped from world.Items, which can miss in the first frames after a
-                    // container opens, and rarity is computed FROM the graphic — so a 0
-                    // there means rarity was never actually evaluated, and the item would
-                    // stay unmarked forever. Symptom was two identical candelabra in one
-                    // bag where only one carried the rare border.
-                    if (e.Value.Graphic == 0
-                        && world.Items.TryGetValue(serial, out GameObjects.Item late))
-                    {
-                        e.Value.Graphic = late.Graphic;
-                    }
-                    return Recolor(e.Value);
-                }
+                    return e.Value;
 
                 // Not frozen yet: reuse only while the OPL text is genuinely unchanged.
                 //
@@ -253,22 +325,20 @@ namespace ClassicUO.Game.Managers
                 // path then returned that verdict forever, so the charges arriving a
                 // moment later were never seen. Every wand in the pack stuck grey.
                 if (world.OPL.TryGetRevision(serial, out uint rev) && rev == e.Revision)
-                    return Recolor(e.Value);
+                    return e.Value;
             }
 
             if (!world.OPL.TryGetNameAndData(serial, out string name, out string data))
             {
-                // Rarity is decided by GRAPHIC alone and needs no tooltip, so a missing
-                // OPL entry must not suppress it. This is the common case in the world:
-                // ground decorations only get OPL once something asks for it (a hover, or
-                // a container gump laying them out), so gating rares behind OPL meant a
-                // rare sitting on a table was never marked until pointed at.
-                if (world.Items.TryGetValue(serial, out GameObjects.Item bare)
-                    && AppraisalPalette.IsRare(bare.Graphic))
-                {
-                    return Recolor(new Result { Graphic = bare.Graphic });
-                }
-                return default;
+                // Rarity by graphic, rule, crate or seed name needs no tooltip, so a
+                // missing OPL entry must not suppress it. This is the common case in the
+                // world: ground decorations only get OPL once something asks for it (a
+                // hover, or a container gump laying them out), so gating rares behind OPL
+                // meant a rare sitting on a table was never marked until pointed at. The
+                // entity name, when the server sent one, stands in for the OPL name.
+                var bare = new Result { Name = item?.Name };
+                ParseSeed(item?.Name, ref bare);
+                return bare;
             }
 
             Result r = Parse((name ?? string.Empty) + "\n" + (data ?? string.Empty));
@@ -282,9 +352,6 @@ namespace ClassicUO.Game.Managers
                 if (nl > 0) firstData = firstData.Substring(0, nl);
             }
             r.Name = string.IsNullOrEmpty(firstData) ? name : (name + "\n" + firstData);
-            if (world.Items.TryGetValue(serial, out GameObjects.Item gi))
-                r.Graphic = gi.Graphic;
-            r = Recolor(r);
 
             world.OPL.TryGetRevision(serial, out uint revision);
 
@@ -315,18 +382,14 @@ namespace ClassicUO.Game.Managers
         }
 
         /// <summary>
-        /// Re-resolve colors on a cached result so live palette edits take effect without
-        /// having to invalidate (and re-parse) every cached appraisal.
+        /// Re-resolve colors and grade on a cached result, so live palette edits and the
+        /// item's current place take effect without invalidating (and re-parsing) every
+        /// cached appraisal. Reads only parsed and stamped fields, never its own outputs.
         /// </summary>
-        private static Result Recolor(Result r)
+        internal static Result Recolor(Result r)
         {
-            // Re-checked here rather than cached, so appending to rareGraphics in the
-            // palette file lights items up without invalidating any parse results.
-            // Graphic OR name. Shard-custom rares reuse ordinary art — Marijuana is drawn
-            // with the Nightshade graphic, shared with 144 ordinary reagents here — so the
-            // graphic alone would either miss them or flag every reagent.
-            r.Rare = (r.Graphic != 0 && AppraisalPalette.IsRare(r.Graphic))
-                     || AppraisalPalette.IsRareName(r.Name);
+            r.Grade = GradeOf(r, out string ruleLabel);
+            r.Rare = r.Grade != HighlightGrade.None;
 
             if (r.Unidentified && r.Kind != AppraisalKind.Wand)
                 r.Outline = AppraisalPalette.Unidentified;
@@ -337,25 +400,136 @@ namespace ClassicUO.Game.Managers
             else
                 r.Outline = null;
 
-            // A rare carries no magic tier, so the border is free — claim it. If the item
-            // somehow does have a tier, that wins the border and the corner mark still
-            // identifies it as a rare.
-            if (r.Rare && !r.Outline.HasValue)
-                r.Outline = AppraisalPalette.RareOutline;
+            r.Accent = null;
+            r.Label = null;
+            r.Badge = null;
+            r.LabelHue = 0;
+            r.BadgeHue = 0;
+            if (!r.Rare)
+                return r;
 
-            // Exceptional with no magic tier at all — an exceptionally crafted tambourine,
-            // say. Exceptional is drawn as a SECOND inset border, which only renders when
-            // there is an outer border to sit inside, so such an item previously showed
-            // nothing whatsoever. Give it the tier-1 colour: semantically right, since it
-            // is a common item that happens to be well made, and it reuses the existing
-            // doubled-border vocabulary rather than inventing another colour.
-            if (r.Exceptional && !r.Outline.HasValue)
-                r.Outline = AppraisalPalette.Tier(1);
+            GradeStyle style = AppraisalPalette.Grade(r.Grade);
 
+            // A collectible carries no magic tier, so the border is free: claim it in the
+            // accent, which says WHAT it is, while the corner square says how rare. An
+            // item that does carry a tier keeps it on the border.
+            //
+            // Exceptional no longer borrows a border here. It used to take tier 1's
+            // colour when nothing else had, which put an exceptional Ruin weapon and a
+            // plain exceptional one in the same bone white on the world outline. It has
+            // its own copper now, applied by each surface (the grid's inset, the world's
+            // lower edge).
+            r.Accent = Accent(r, style);
+            if (!r.Outline.HasValue)
+                r.Outline = r.Accent;
+
+            if (r.Bonsai != null)
+            {
+                r.Label = "\u2605 Bonsai \u00b7 " + r.Bonsai;
+                r.Badge = "\u2605";
+            }
+            else if (r.SeedColor != null)
+            {
+                string colour = TitleCase(r.SeedColor);
+                string[] types = AppraisalPalette.PlantTypes;
+                if (r.PlantType > 0)
+                {
+                    r.Label = colour + " \u00b7 " + r.PlantType + "/" + types.Length + " " + TitleCase(types[r.PlantType - 1]);
+                    r.Badge = r.PlantType.ToString();
+                }
+                else
+                {
+                    r.Label = colour + " seed";
+                }
+            }
+            else if (r.BonusKey != null)
+            {
+                r.Label = r.BonusLabel;
+                r.Badge = r.BonusShort;
+            }
+
+            if (ruleLabel != null)
+                r.Label = ruleLabel;
+            else if (r.Label == null && style.Label)
+                r.Label = DisplayName(r.Name);
+
+            ushort hue = r.SeedColor != null && r.SeedHue != 0 ? r.SeedHue
+                : r.BonusKey != null ? AppraisalPalette.BonusHue(r.BonusKey)
+                : style.LabelHue;
+            r.LabelHue = hue;
+            r.BadgeHue = hue;
             return r;
         }
 
-        private static Result Parse(string text)
+        private static HighlightGrade GradeOf(Result r, out string ruleLabel)
+        {
+            // A collector rule is a deliberate call ("this hat is common") and wins outright.
+            if (AppraisalPalette.MatchRule(r.Name, r.Graphic, r.OnGround, out HighlightGrade ruled, out ruleLabel))
+                return ruled;
+
+            var g = HighlightGrade.None;
+
+            // Blessed with a bonus is the shard's magic clothing and jewelry. A bonus
+            // without Blessed is a mask or a pair of mining gloves: worth a glance.
+            if (r.BonusKey != null)
+                g = r.Blessed ? HighlightGrade.Prized : HighlightGrade.Trace;
+
+            // Graphic OR name. Shard-custom rares reuse ordinary art — Marijuana is drawn
+            // with the Nightshade graphic, shared with 144 ordinary reagents here — so the
+            // graphic alone would either miss them or flag every reagent.
+            if ((r.Graphic != 0 && AppraisalPalette.IsRare(r.Graphic)) || AppraisalPalette.IsRareName(r.Name))
+                g = Max(g, HighlightGrade.Rare);
+
+            // Everything in a collector crate, but not the bags that hold it.
+            if (r.RareContainer != HighlightGrade.None && !r.IsContainer)
+                g = Max(g, r.RareContainer);
+
+            if (r.Bonsai != null)
+                g = Max(g, HighlightGrade.Callout);
+            else if (r.SeedColor != null)
+            {
+                // Colour rarity sets the grade; a seed that knows its plant type is a
+                // step up, since a typed seed is what a breeder actually wants.
+                int step = Math.Clamp(r.SeedTier, 1, 4) + (r.PlantType > 0 ? 1 : 0);
+                g = Max(g, (HighlightGrade)Math.Min(step, (int)HighlightGrade.Callout));
+            }
+            return g;
+        }
+
+        private static HighlightGrade Max(HighlightGrade a, HighlightGrade b) => a > b ? a : b;
+
+        private static Color Accent(in Result r, GradeStyle style)
+        {
+            if (r.SeedColor != null)
+                return AppraisalPalette.SeedOutline(r.SeedColor, r.SeedHue);
+            if (r.BonusKey != null)
+                return AppraisalPalette.BonusColor(r.BonusKey);
+            return style.Color;
+        }
+
+        private static string TitleCase(string s) =>
+            string.IsNullOrEmpty(s) ? s : System.Globalization.CultureInfo.InvariantCulture.TextInfo.ToTitleCase(s);
+
+        /// <summary>The item's own name for a label: the real-name line, minus any amount.</summary>
+        internal static string DisplayName(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return null;
+            string line = name;
+            int nl = name.IndexOf('\n');
+            if (nl >= 0)
+            {
+                // A locked-down item's first line is the merger's promoted label.
+                string first = name.Substring(0, nl);
+                line = first.IndexOf("locked down", StringComparison.OrdinalIgnoreCase) >= 0
+                    ? name.Substring(nl + 1) : first;
+            }
+            int colon = line.IndexOf(" : ", StringComparison.Ordinal);
+            if (colon > 0) line = line.Substring(0, colon);
+            line = line.Trim();
+            return line.Length == 0 ? null : TitleCase(line);
+        }
+
+        internal static Result Parse(string text)
         {
             var r = new Result();
             if (text.Length <= 1)
@@ -411,7 +585,155 @@ namespace ClassicUO.Game.Managers
 
             ParseKeg(text, ref r);
 
-            return Recolor(r);
+            // The name line, or the next one when the label merger has promoted
+            // "locked down" over it.
+            string[] lines = text.Split('\n');
+            ParseSeed(lines[0], ref r);
+            if (r.SeedColor == null && r.Bonsai == null && lines.Length > 1)
+                ParseSeed(lines[1], ref r);
+            ParseBonuses(lines, ref r);
+
+            return r;
+        }
+
+        // ── Seeds ───────────────────────────────────────────────────────────────────
+        // ServUO names a seed "<colour> seed", or "<colour> <plant type> seed" once its
+        // type is known; a bonsai seed is named for its category ("common seed"). The
+        // graphic, 0x0DCF, is shared with fishing weights, so the name decides. A name
+        // with no known colour or category is not a plant seed ("marijuana seeds").
+        internal static void ParseSeed(string line, ref Result r)
+        {
+            if (string.IsNullOrWhiteSpace(line))
+                return;
+
+            string s = line.Trim().ToLowerInvariant();
+            int colon = s.IndexOf(" : ", StringComparison.Ordinal);
+            if (colon > 0) s = s.Substring(0, colon).TrimEnd();
+
+            if (s.EndsWith(" seeds", StringComparison.Ordinal)) s = s.Substring(0, s.Length - 6);
+            else if (s.EndsWith(" seed", StringComparison.Ordinal)) s = s.Substring(0, s.Length - 5);
+            else return;
+
+            s = StripLead(s);
+
+            foreach (string category in AppraisalPalette.BonsaiCategories)
+            {
+                if (s == category)
+                {
+                    r.Bonsai = category;
+                    return;
+                }
+            }
+
+            foreach ((string colour, ushort hue, int tier) in AppraisalPalette.SeedColorsByLength())
+            {
+                if (s == colour || s.StartsWith(colour + " ", StringComparison.Ordinal))
+                {
+                    r.SeedColor = colour;
+                    r.SeedHue = hue;
+                    r.SeedTier = tier;
+                    string type = s.Substring(colour.Length).Trim();
+                    r.PlantType = type.Length == 0 ? 0 : Array.IndexOf(AppraisalPalette.PlantTypes, type) + 1;
+                    return;
+                }
+            }
+        }
+
+        /// <summary>Drop a leading article or amount ("a ", "an ", "12 ").</summary>
+        private static string StripLead(string s)
+        {
+            if (s.StartsWith("a ", StringComparison.Ordinal)) return s.Substring(2);
+            if (s.StartsWith("an ", StringComparison.Ordinal)) return s.Substring(3);
+            int i = 0;
+            while (i < s.Length && char.IsDigit(s[i])) i++;
+            return i > 0 && i < s.Length && s[i] == ' ' ? s.Substring(i + 1) : s;
+        }
+
+        // ── Stat and skill bonuses ──────────────────────────────────────────────────
+        // The shard writes stats as "Intelligence Bonus 4" and skills as "Tailoring +5",
+        // "Mining Bonus +1" or "Tracking +50", one per line. Skill lines are checked
+        // against the skill list, so a vendor's "[+5 through +10 Damage Bonus]" or any
+        // other "+n" text never reads as a skill.
+        private static readonly Regex StatBonus =
+            new Regex(@"^(Strength|Dexterity|Intelligence) Bonus \+?(\d+)$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex SkillBonus =
+            new Regex(@"^([A-Za-z' ]+?)(?: Bonus)? \+(\d+)$", RegexOptions.Compiled);
+
+        private static readonly HashSet<string> SkillNames = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "Alchemy", "Anatomy", "Animal Lore", "Item Identification", "Arms Lore", "Parrying",
+            "Begging", "Blacksmithy", "Blacksmithing", "Bowcraft", "Fletching", "Bowcraft/Fletching",
+            "Peacemaking", "Camping", "Carpentry", "Cartography", "Cooking", "Detecting Hidden",
+            "Discordance", "Enticement", "Evaluating Intelligence", "Evaluate Intelligence", "Healing",
+            "Fishing", "Forensic Evaluation", "Herding", "Hiding", "Provocation", "Inscription",
+            "Lockpicking", "Magery", "Magic Resistance", "Resisting Spells", "Tactics", "Snooping",
+            "Musicianship", "Poisoning", "Archery", "Spirit Speak", "Stealing", "Tailoring",
+            "Animal Taming", "Taste Identification", "Tinkering", "Tracking", "Veterinary",
+            "Swordsmanship", "Mace Fighting", "Fencing", "Wrestling", "Lumberjacking", "Mining",
+            "Meditation", "Stealth", "Remove Trap", "Necromancy", "Focus", "Chivalry", "Bushido",
+            "Ninjitsu", "Spellweaving", "Mysticism", "Imbuing", "Throwing",
+        };
+
+        internal static void ParseBonuses(string[] lines, ref Result r)
+        {
+            List<string> parts = null;
+            foreach (string raw in lines)
+            {
+                string line = raw.Trim();
+                if (line.Equals("Blessed", StringComparison.OrdinalIgnoreCase))
+                {
+                    r.Blessed = true;
+                    continue;
+                }
+
+                string key, name, shortName;
+                int value;
+                Match m = StatBonus.Match(line);
+                if (m.Success)
+                {
+                    key = m.Groups[1].Value.Substring(0, 3).ToLowerInvariant();
+                    name = shortName = TitleCase(key);
+                    value = int.Parse(m.Groups[2].Value);
+                }
+                else if ((m = SkillBonus.Match(line)).Success && SkillNames.Contains(m.Groups[1].Value.Trim()))
+                {
+                    key = "skill";
+                    name = m.Groups[1].Value.Trim();
+                    shortName = ShortSkill(name);
+                    value = int.Parse(m.Groups[2].Value);
+                }
+                else
+                {
+                    continue;
+                }
+
+                if (value <= 0)
+                    continue;
+
+                parts ??= new List<string>(2);
+                parts.Add("+" + value + " " + name);
+                if (r.BonusKey == null)
+                {
+                    r.BonusKey = key;
+                    r.BonusShort = "+" + value + " " + shortName;
+                }
+            }
+            if (parts != null)
+                r.BonusLabel = string.Join(" \u00b7 ", parts);
+        }
+
+        /// <summary>A skill name that fits a grid cell: "MR", "Mining", "Tail.".</summary>
+        private static string ShortSkill(string name)
+        {
+            string[] words = name.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (words.Length > 1)
+            {
+                var initials = new char[words.Length];
+                for (int i = 0; i < words.Length; i++) initials[i] = char.ToUpperInvariant(words[i][0]);
+                return new string(initials);
+            }
+            return name.Length <= 6 ? name : name.Substring(0, 4) + ".";
         }
 
         // ── Potion kegs ─────────────────────────────────────────────────────────────
@@ -576,7 +898,7 @@ namespace ClassicUO.Game.Managers
         public static Color? OutlineFor(World world, uint serial)
         {
             Result r = Appraise(world, serial);
-            return r.Outline ?? r.WandColor;
+            return r.Outline ?? r.WandColor ?? (r.Exceptional ? AppraisalPalette.Exceptional : null);
         }
     }
 }

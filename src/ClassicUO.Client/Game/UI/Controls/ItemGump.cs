@@ -151,11 +151,27 @@ namespace ClassicUO.Game.UI.Controls
                     batcher.Draw(spriteInfo.Texture, rect, spriteInfo.UV, hueVector);
                 }
 
-                Color? appraised = ItemAppraisal.OutlineFor(_gump.World, LocalSerial);
+                ItemAppraisal.Result ar = ItemAppraisal.Appraise(_gump.World, LocalSerial);
+                Color? appraised = ar.Outline ?? ar.WandColor ?? (ar.Exceptional ? AppraisalPalette.Exceptional : null);
 
                 if (appraised.HasValue)
                 {
                     Color oc = appraised.Value;
+
+                    // One channel here, so the grade rides on opacity and Exceptional on
+                    // the lower edge of a tier outline, as in the world.
+                    float outlineAlpha = 1f;
+                    if (ar.Rare && ar.Outline == ar.Accent)
+                    {
+                        GradeStyle style = AppraisalPalette.Grade(ar.Grade);
+                        outlineAlpha = style.Alpha * (style.Pulse ? AppraisalPalette.Pulse(Time.Ticks) : 1f);
+                    }
+                    Vector3? outlineEnd = null;
+                    if (ar.Exceptional && (ar.Outline ?? ar.WandColor).HasValue)
+                    {
+                        Color ec = AppraisalPalette.Exceptional;
+                        outlineEnd = new Vector3(ec.R / 255f, ec.G / 255f, ec.B / 255f);
+                    }
 
                     // Scale is expressed per-axis rather than as Vector2.One because the
                     // container gump may have resized us: ContainerGump multiplies
@@ -171,13 +187,14 @@ namespace ClassicUO.Game.UI.Controls
                         spriteInfo.Texture,
                         new Vector2(x, y),
                         spriteInfo.UV,
-                        ShaderHueTranslator.GetOutlineHueVector(),
+                        ShaderHueTranslator.GetOutlineHueVector(outlineAlpha),
                         new Vector3(oc.R / 255f, oc.G / 255f, oc.B / 255f),
                         0f,
                         Vector2.Zero,
                         scale,
                         SpriteEffects.None,
-                        0f
+                        0f,
+                        outlineEnd
                     );
                 }
             }

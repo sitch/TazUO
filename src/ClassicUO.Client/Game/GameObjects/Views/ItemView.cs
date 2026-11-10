@@ -378,9 +378,27 @@ namespace ClassicUO.Game.GameObjects
             // a pile of junk is visible without hovering every item. Chest glow wins when
             // both apply — a container's pickable state is the more actionable signal, and
             // containers never appraise as weapons anyway.
-            if (!glowColor.HasValue && OnGround && !ItemData.IsContainer)
+            //
+            // A chest shows through walls by state: an unpicked lock strongly, a looted
+            // one faintly, a capacity outline not at all (every shelf in a house has one).
+            float xray = 0f;
+            int weight = 1;
+            HighlightLook look = default;
+            bool hasLook = false;
+            if (glowColor.HasValue)
             {
-                glowColor = ItemAppraisal.OutlineFor(World, Serial);
+                Color g = glowColor.Value;
+                xray = g == _unpickedChestGlowColor || g == _puzzleChestGlowColor ? AppraisalPalette.XrayChest
+                    : g == _lootedChestGlowColor ? AppraisalPalette.XrayLooted
+                    : AppraisalPalette.XrayCapacity;
+            }
+            else if (OnGround && !ItemData.IsContainer && AppraisalHighlights.TryLook(World, this, out look))
+            {
+                hasLook = true;
+                glowColor = look.Top;
+                glowColorEnd = look.Bottom;
+                weight = look.Weight;
+                xray = look.Xray;
             }
 
             // Clear only what this method set. The old version compared OutlineColor
@@ -403,7 +421,7 @@ namespace ClassicUO.Game.GameObjects
 
             if (!IsMulti && !IsCoin && Amount > 1 && ItemData.IsStackable)
             {
-                DrawStaticAnimated(batcher, graphic, posX - 5, posY - 5, hueVec, false, depth, outlineColor: OutlineColor, outlineColorEnd: OutlineColorEnd);
+                DrawStaticAnimated(batcher, graphic, posX - 5, posY - 5, hueVec, false, depth, outlineColor: OutlineColor, outlineColorEnd: OutlineColorEnd, outlineWeight: weight);
             }
 
             if (
@@ -415,7 +433,13 @@ namespace ClassicUO.Game.GameObjects
                 hueVec.Z = 0.5f;
             }
 
-            DrawStaticAnimated(batcher, graphic, posX, posY, hueVec, false, depth, outlineColor: OutlineColor, outlineColorEnd: OutlineColorEnd);
+            DrawStaticAnimated(batcher, graphic, posX, posY, hueVec, false, depth, outlineColor: OutlineColor, outlineColorEnd: OutlineColorEnd, outlineWeight: weight);
+
+            if (OutlineColor.HasValue && _outlineOwned && (xray > 0f || hasLook))
+            {
+                Client.Game.GetScene<GameScene>()?.RegisterHighlight(this, graphic, posX, posY, depth,
+                    OutlineColor.Value, OutlineColorEnd, xray * hueVec.Z, look, hasLook);
+            }
 
             return true;
         }

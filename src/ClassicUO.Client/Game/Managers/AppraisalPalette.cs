@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Text.Json;
+using ClassicUO.Utility;
 using ClassicUO.Utility.Logging;
 using Microsoft.Xna.Framework;
 
@@ -22,8 +23,8 @@ namespace ClassicUO.Game.Managers
     /// for its CSVs — mtime checked at most once every RELOAD_INTERVAL_SEC, cheap enough
     /// to call from a render predicate.
     ///
-    /// The file is written out with the built-in defaults if it doesn't exist, so it is
-    /// self-documenting: look at it to see every knob.
+    /// The tracked file in the uo repo is the reference for every knob; the client only
+    /// reads it. Anything absent from the file keeps its compiled default.
     ///
     /// Missing or malformed entries fall back to the compiled defaults rather than
     /// throwing — a typo mid-edit should dim one swatch, not crash the client or leave
@@ -227,9 +228,113 @@ namespace ClassicUO.Game.Managers
             ["unknown"] = new Color(0xB4, 0xA0, 0x82),
         };
 
-        // Rares carry no magic tier, so the outer border is free for them. A hue well
-        // clear of the tier ramp, since "collectible" is a different claim from "powerful".
-        private static readonly Color DefaultRareOutline = new Color(0xFF, 0x6F, 0xA8);
+
+        // ── Highlight grades ─────────────────────────────────────────────────────────
+        // How LOUD a collectible is, separate from what colour it is. A seed keeps its
+        // own colour and a magic hat its bonus colour; the grade decides weight, alpha,
+        // pulse, label, chime and how far it shows through walls. Four steps because
+        // the crate next to Walter holds all four: a common Magical Wizard's Hat that
+        // should barely register, ordinary decor rares, magic clothing and jewelry, and
+        // the one-off "really really magic" hat.
+        private static readonly Dictionary<HighlightGrade, GradeStyle> DefaultGrades = new()
+        {
+            [HighlightGrade.Trace] = new GradeStyle(new Color(0xC9, 0xA2, 0xB4), 0.4f, 1, false, 946, 0, 0f, false),
+            [HighlightGrade.Rare] = new GradeStyle(new Color(0xFF, 0x6F, 0xA8), 1f, 1, false, 1166, 0, 0.45f, false),
+            [HighlightGrade.Prized] = new GradeStyle(new Color(0xFF, 0x5C, 0xC8), 1f, 2, true, 1166, 0x055, 0.8f, false),
+            [HighlightGrade.Callout] = new GradeStyle(new Color(0xFF, 0xE0, 0x7A), 1f, 2, true, 53, 0x1EB, 1f, true),
+        };
+
+        // Exceptional is quality, not power, so it gets a colour outside the tier ramp:
+        // copper. Before this it borrowed tier 1's bone white on single-channel
+        // surfaces, which made an exceptional Ruin weapon and a plain exceptional one
+        // look identical.
+        private static readonly Color DefaultExceptional = new Color(0xD9, 0x89, 0x4A);
+
+        // Pulse: alpha swings between floor and 1 over period seconds, eased by a sine.
+        private const float DefaultPulsePeriod = 1.8f;
+        private const float DefaultPulseFloor = 0.35f;
+
+        // X-ray opacity for container outlines, by state; appraisal x-ray rides on the
+        // grade. Culled = above the player's ceiling, drawn without a depth test, so
+        // the range keeps a house full of upstairs rares from flooding the screen.
+        private const float DefaultXrayChest = 0.65f;
+        private const float DefaultXrayLooted = 0.25f;
+        private const float DefaultXrayCapacity = 0f;
+        private const int DefaultXrayCulledRange = 24;
+
+        // Minimum seconds between two first-sight chimes; the journal line still prints.
+        private const float DefaultChimeGap = 2f;
+
+        // ServUO PlantHue, in the order a plant breeds them. Tier is colour rarity:
+        // 1 the four colours seeds drop in, 2 bright primaries and the secondaries,
+        // 3 bright secondaries, 4 the mutants. The outline colour is read from the
+        // hue itself at draw time, so a seed is outlined in its own colour.
+        private static readonly (string Name, ushort Hue, int Tier)[] DefaultSeedColors =
+        {
+            ("plain", 0, 1), ("red", 1645, 1), ("blue", 1341, 1), ("yellow", 2213, 1),
+            ("bright red", 33, 2), ("bright blue", 5, 2), ("bright yellow", 56, 2),
+            ("purple", 13, 2), ("green", 1435, 2), ("orange", 1135, 2),
+            ("bright purple", 16, 3), ("bright green", 66, 3), ("bright orange", 43, 3),
+            ("black", 1109, 4), ("white", 1153, 4), ("pink", 1166, 4),
+            ("magenta", 1158, 4), ("aqua", 1173, 4), ("fire red", 1161, 4),
+        };
+
+        // A plain seed is unhued; this stands in for a colour it doesn't have.
+        private static readonly Color DefaultPlainSeed = new Color(0xD8, 0xC8, 0xA0);
+
+        // ServUO PlantType order; a seed's index is its position here.
+        private static readonly string[] DefaultPlantTypes =
+        {
+            "campion flowers", "poppies", "snowdrops", "bulrushes", "lilies",
+            "pampas grass", "rushes", "elephant ear plant", "fern", "ponytail palm",
+            "small palm", "century plant", "water plant", "snake plant",
+            "prickly pear cactus", "barrel cactus", "tribarrel cactus",
+        };
+
+        // Seeds named for a category rather than a colour grow bonsai ("common seed").
+        private static readonly string[] DefaultBonsaiCategories =
+        {
+            "common", "uncommon", "rare", "exceptional", "exotic", "peculiar", "fragrant",
+        };
+
+        // Bonus colours: stats in the colours UO players already read them in, skills
+        // in gold. Hues for the text labels, colours for outlines.
+        private static readonly Dictionary<string, Color> DefaultBonusColors = new()
+        {
+            ["str"] = new Color(0xF0, 0x5A, 0x4A),
+            ["dex"] = new Color(0x5C, 0xD6, 0x7C),
+            ["int"] = new Color(0x5E, 0x9E, 0xF5),
+            ["skill"] = new Color(0xF2, 0xC8, 0x50),
+        };
+
+        private static readonly Dictionary<string, ushort> DefaultBonusHues = new()
+        {
+            ["str"] = 33,
+            ["dex"] = 68,
+            ["int"] = 88,
+            ["skill"] = 2213,
+        };
+
+        // Collector rules, first match wins, ahead of every other grade source.
+        private static readonly RareRule[] DefaultRareRules =
+        {
+            new RareRule("really really magic wizards hat", null, null, HighlightGrade.Callout, null),
+            new RareRule("a magical wizard's hat", null, null, HighlightGrade.Trace, null),
+            new RareRule("antique", null, null, HighlightGrade.Prized, null),
+            // Magic clothing is prized before its tooltip arrives; with the tooltip, the
+            // Blessed + bonus lines say the same thing.
+            new RareRule("^magic ", null, null, HighlightGrade.Prized, null),
+            // Trays dress tables all over town (57 on the ground in this player's data),
+            // so only one that has been picked up counts.
+            new RareRule(null, new HashSet<ushort> { 0x0991, 0x0992 }, false, HighlightGrade.Rare, null),
+        };
+
+        // Containers whose whole contents count as rare: the large crate next to
+        // Walter Goonsman. Containers inside are holders, not items, and are skipped.
+        private static readonly Dictionary<uint, HighlightGrade> DefaultRareContainers = new()
+        {
+            [1075862537] = HighlightGrade.Rare,
+        };
 
         // ── Live values ──────────────────────────────────────────────────────────────
         private static Color[] _tiers = (Color[])DefaultTiers.Clone();
@@ -244,7 +349,25 @@ namespace ClassicUO.Game.Managers
         private static string[] _rareNames = (string[])DefaultRareNames.Clone();
         private static int _topTierBorderBonus = DefaultTopTierBorderBonus;
         private static HashSet<ushort> _rareGraphics = new(DefaultRareGraphics);
-        private static Color _rareOutline = DefaultRareOutline;
+        private static Dictionary<HighlightGrade, GradeStyle> _grades = new(DefaultGrades);
+        private static Color _exceptional = DefaultExceptional;
+        private static float _pulsePeriod = DefaultPulsePeriod;
+        private static float _pulseFloor = DefaultPulseFloor;
+        private static float _xrayChest = DefaultXrayChest;
+        private static float _xrayLooted = DefaultXrayLooted;
+        private static float _xrayCapacity = DefaultXrayCapacity;
+        private static int _xrayCulledRange = DefaultXrayCulledRange;
+        private static float _chimeGap = DefaultChimeGap;
+        private static (string Name, ushort Hue, int Tier)[] _seedColors = DefaultSeedColors;
+        private static (string Name, ushort Hue, int Tier)[] _seedColorsByLength = ByLength(DefaultSeedColors);
+        private static Color _plainSeed = DefaultPlainSeed;
+        private static Dictionary<string, Color> _seedOverride = new(StringComparer.OrdinalIgnoreCase);
+        private static string[] _plantTypes = DefaultPlantTypes;
+        private static string[] _bonsaiCategories = DefaultBonsaiCategories;
+        private static Dictionary<string, Color> _bonusColors = new(DefaultBonusColors, StringComparer.OrdinalIgnoreCase);
+        private static Dictionary<string, ushort> _bonusHues = new(DefaultBonusHues, StringComparer.OrdinalIgnoreCase);
+        private static RareRule[] _rareRules = DefaultRareRules;
+        private static Dictionary<uint, HighlightGrade> _rareContainers = new(DefaultRareContainers);
 
         public static Color Tier(int tier)
         {
@@ -277,7 +400,166 @@ namespace ClassicUO.Game.Managers
                 (byte)(a.B + (b.B - a.B) * f));
         }
         public static int TopTierBorderBonus { get { MaybeReload(); return _topTierBorderBonus; } }
-        public static Color RareOutline { get { MaybeReload(); return _rareOutline; } }
+        public static Color RareOutline => Grade(HighlightGrade.Rare).Color;
+
+        public static GradeStyle Grade(HighlightGrade g)
+        {
+            MaybeReload();
+            return _grades.TryGetValue(g, out GradeStyle st) ? st : DefaultGrades[HighlightGrade.Rare];
+        }
+
+        public static Color Exceptional { get { MaybeReload(); return _exceptional; } }
+
+        /// <summary>Alpha multiplier for a pulsing highlight at time <paramref name="ms"/>.</summary>
+        public static float Pulse(uint ms)
+        {
+            MaybeReload();
+            float period = Math.Max(0.2f, _pulsePeriod) * 1000f;
+            float phase = (ms % (uint)period) / period;
+            float wave = 0.5f + 0.5f * (float)Math.Sin(phase * Math.PI * 2);
+            return _pulseFloor + (1f - _pulseFloor) * wave;
+        }
+
+        public static float XrayChest { get { MaybeReload(); return _xrayChest; } }
+        public static float XrayLooted { get { MaybeReload(); return _xrayLooted; } }
+        public static float XrayCapacity { get { MaybeReload(); return _xrayCapacity; } }
+        public static int XrayCulledRange { get { MaybeReload(); return _xrayCulledRange; } }
+        public static float ChimeGap { get { MaybeReload(); return _chimeGap; } }
+        public static Color PlainSeed { get { MaybeReload(); return _plainSeed; } }
+
+        /// <summary>
+        /// Outline colour for a seed: the palette's override, else the seed's own hue
+        /// read from hues.mul, else the plain stand-in. Never the raw hue table.
+        /// </summary>
+        public static Color SeedOutline(string colorName, ushort hue)
+        {
+            MaybeReload();
+            if (colorName != null && _seedOverride.TryGetValue(colorName, out Color c)) return c;
+            return hue == 0 ? _plainSeed : HueColor(hue) ?? _plainSeed;
+        }
+
+        // ── Hue colours ──────────────────────────────────────────────────────────────
+        // A hue is a 32-shade ramp; an outline needs one colour. Shade 24 is where a hue
+        // reads as itself on cloth, and a luminance floor keeps black seeds and dark
+        // dyes from drawing an outline the ground swallows. Cached per hue, since the
+        // hue file never changes under a running client.
+        private const int HueShade = 24;
+        private const float HueLumaFloor = 110f;
+        private static readonly Dictionary<ushort, Color?> _hueColors = new();
+
+        public static Color? HueColor(ushort hue)
+        {
+            if (hue == 0) return null;
+            if (_hueColors.TryGetValue(hue, out Color? cached)) return cached;
+
+            Color? result = null;
+            try
+            {
+                var hues = Client.Game.UO.FileManager.Hues;
+                int h = (hue & 0x3FFF) - 1;
+                if (h >= 0 && h < hues.HuesCount)
+                {
+                    uint packed = HuesHelper.Color16To32(hues.HuesRange[h >> 3].Entries[h % 8].ColorTable[HueShade]);
+                    var c = new Color { PackedValue = packed | 0xFF000000u };
+                    float luma = 0.2126f * c.R + 0.7152f * c.G + 0.0722f * c.B;
+                    if (luma < HueLumaFloor)
+                    {
+                        // Lift toward white, keeping the hue's direction.
+                        float t = (HueLumaFloor - luma) / (255f - Math.Max(luma, 1f));
+                        c = Color.Lerp(c, Color.White, Math.Clamp(t, 0f, 1f));
+                    }
+                    result = c;
+                }
+            }
+            catch (Exception)
+            {
+                // No hue data (unit tests, or before the files load): no colour.
+                return null;
+            }
+            _hueColors[hue] = result;
+            return result;
+        }
+
+        /// <summary>Seed colours longest name first, so "bright red" wins over "red".</summary>
+        public static (string Name, ushort Hue, int Tier)[] SeedColorsByLength()
+        {
+            MaybeReload();
+            return _seedColorsByLength;
+        }
+
+        public static bool TrySeedColor(string name, out ushort hue, out int tier)
+        {
+            MaybeReload();
+            foreach ((string n, ushort h, int t) in _seedColors)
+            {
+                if (string.Equals(n, name, StringComparison.OrdinalIgnoreCase))
+                {
+                    hue = h;
+                    tier = t;
+                    return true;
+                }
+            }
+            hue = 0;
+            tier = 0;
+            return false;
+        }
+
+        /// <summary>Colour name for a seed's hue, when its name doesn't carry one.</summary>
+        public static string SeedColorForHue(ushort hue)
+        {
+            MaybeReload();
+            foreach ((string n, ushort h, int _) in _seedColors)
+                if (h == hue) return n;
+            return null;
+        }
+
+        public static string[] PlantTypes { get { MaybeReload(); return _plantTypes; } }
+        public static string[] BonsaiCategories { get { MaybeReload(); return _bonsaiCategories; } }
+
+        public static Color BonusColor(string key)
+        {
+            MaybeReload();
+            return key != null && _bonusColors.TryGetValue(key, out Color c) ? c : DefaultBonusColors["skill"];
+        }
+
+        public static ushort BonusHue(string key)
+        {
+            MaybeReload();
+            return key != null && _bonusHues.TryGetValue(key, out ushort h) ? h : DefaultBonusHues["skill"];
+        }
+
+        /// <summary>First collector rule matching the item, or false.</summary>
+        public static bool MatchRule(string name, ushort graphic, bool onGround, out HighlightGrade grade, out string label)
+        {
+            MaybeReload();
+            foreach (RareRule rule in _rareRules)
+            {
+                if (rule.Matches(name, graphic, onGround))
+                {
+                    grade = rule.Grade;
+                    label = rule.Label;
+                    return true;
+                }
+            }
+            grade = HighlightGrade.None;
+            label = null;
+            return false;
+        }
+
+        public static HighlightGrade RareContainer(uint serial)
+        {
+            MaybeReload();
+            return _rareContainers.TryGetValue(serial, out HighlightGrade g) ? g : HighlightGrade.None;
+        }
+
+        public static bool HasRareContainers { get { MaybeReload(); return _rareContainers.Count > 0; } }
+
+        private static (string Name, ushort Hue, int Tier)[] ByLength((string Name, ushort Hue, int Tier)[] colors)
+        {
+            var sorted = ((string Name, ushort Hue, int Tier)[])colors.Clone();
+            Array.Sort(sorted, (a, b) => b.Name.Length.CompareTo(a.Name.Length));
+            return sorted;
+        }
 
         public static int RareGraphicCount { get { MaybeReload(); return _rareGraphics.Count; } }
 
@@ -335,9 +617,12 @@ namespace ClassicUO.Game.Managers
 
             try
             {
+                // No file: the compiled defaults stand. The tracked copy lives in the
+                // uo repo (configs/TazUO/Data/Client/appraisal_palette.json, symlinked
+                // in); the client no longer writes one, because rewriting a symlinked
+                // file would replace the link with a plain copy.
                 if (!File.Exists(PalettePath))
                 {
-                    WriteDefaults();
                     _loaded = true;
                     return;
                 }
@@ -354,6 +639,14 @@ namespace ClassicUO.Game.Managers
             {
                 // Mid-write by an editor — try again on the next check.
             }
+            catch (Exception ex) when (ex is JsonException || ex is InvalidOperationException)
+            {
+                // A typo mid-edit. Keep what was loaded before and don't retry until the
+                // file changes again; one warning per broken save.
+                _lastMtime = File.GetLastWriteTimeUtc(PalettePath);
+                _loaded = true;
+                Log.Warn("AppraisalPalette: " + ex.Message);
+            }
         }
 
         private static void Load()
@@ -367,7 +660,7 @@ namespace ClassicUO.Game.Managers
             {
                 foreach (JsonElement e in te.EnumerateArray())
                 {
-                    if (TryHex(e.GetString(), out Color c))
+                    if (e.ValueKind == JsonValueKind.String && TryHex(e.GetString(), out Color c))
                         tiers.Add(c);
                 }
             }
@@ -381,15 +674,14 @@ namespace ClassicUO.Game.Managers
             var ramp = new List<Color>();
             if (root.TryGetProperty("capacityRamp", out JsonElement cr) && cr.ValueKind == JsonValueKind.Array)
                 foreach (JsonElement e in cr.EnumerateArray())
-                    if (TryHex(e.GetString(), out Color cc)) ramp.Add(cc);
+                    if (e.ValueKind == JsonValueKind.String && TryHex(e.GetString(), out Color cc)) ramp.Add(cc);
             _capacityRamp = ramp.Count >= 2 ? ramp.ToArray() : (Color[])DefaultCapacityRamp.Clone();
-            _rareOutline = ReadColor(root, "rareOutline", DefaultRareOutline);
 
             var rnames = new List<string>();
             if (root.TryGetProperty("rareNames", out JsonElement rn) && rn.ValueKind == JsonValueKind.Array)
                 foreach (JsonElement e in rn.EnumerateArray())
                 {
-                    string v = e.GetString();
+                    string v = e.ValueKind == JsonValueKind.String ? e.GetString() : null;
                     if (!string.IsNullOrWhiteSpace(v)) rnames.Add(v.Trim());
                 }
             _rareNames = rnames.Count > 0 ? rnames.ToArray() : (string[])DefaultRareNames.Clone();
@@ -417,22 +709,165 @@ namespace ClassicUO.Game.Managers
             _wands = ReadMap(root, "wands", DefaultWands, StringComparer.OrdinalIgnoreCase);
             _kegs = ReadMap(root, "kegs", DefaultKegs, StringComparer.OrdinalIgnoreCase);
 
-            // A file written by an earlier build is missing any key added since, and the
-            // user would never learn those knobs exist. Rewrite once, merging what was
-            // loaded (so hand edits survive) with defaults for whatever was absent.
-            if (!root.TryGetProperty("rareGraphics", out _)
-                || !root.TryGetProperty("rareNames", out _)
-                || !root.TryGetProperty("capacityRamp", out _)
-                || !root.TryGetProperty("topTierBorderBonus", out _)
-                || !root.TryGetProperty("containerOutline", out _)
-                || !root.TryGetProperty("kegs", out _))
+            _grades = ReadGrades(root);
+            _exceptional = ReadColor(root, "exceptional", DefaultExceptional);
+
+            _pulsePeriod = DefaultPulsePeriod;
+            _pulseFloor = DefaultPulseFloor;
+            if (root.TryGetProperty("pulse", out JsonElement pe) && pe.ValueKind == JsonValueKind.Object)
             {
-                WriteLive();
+                _pulsePeriod = ReadFloat(pe, "period", DefaultPulsePeriod, 0.2f, 10f);
+                _pulseFloor = ReadFloat(pe, "floor", DefaultPulseFloor, 0f, 1f);
+            }
+
+            _xrayChest = DefaultXrayChest;
+            _xrayLooted = DefaultXrayLooted;
+            _xrayCapacity = DefaultXrayCapacity;
+            _xrayCulledRange = DefaultXrayCulledRange;
+            if (root.TryGetProperty("xray", out JsonElement xe) && xe.ValueKind == JsonValueKind.Object)
+            {
+                _xrayChest = ReadFloat(xe, "chest", DefaultXrayChest, 0f, 1f);
+                _xrayLooted = ReadFloat(xe, "looted", DefaultXrayLooted, 0f, 1f);
+                _xrayCapacity = ReadFloat(xe, "capacity", DefaultXrayCapacity, 0f, 1f);
+                _xrayCulledRange = (int)ReadFloat(xe, "culledRange", DefaultXrayCulledRange, 0f, 40f);
+            }
+
+            _chimeGap = ReadFloat(root, "chimeGap", DefaultChimeGap, 0f, 60f);
+
+            var seeds = new List<(string, ushort, int)>();
+            var overrides = new Dictionary<string, Color>(StringComparer.OrdinalIgnoreCase);
+            if (root.TryGetProperty("seedColors", out JsonElement se) && se.ValueKind == JsonValueKind.Object)
+            {
+                foreach (JsonProperty p in se.EnumerateObject())
+                {
+                    if (p.Value.ValueKind != JsonValueKind.Object) continue;
+                    int hue = (int)ReadFloat(p.Value, "hue", -1, -1, 0xFFFF);
+                    int tier = (int)ReadFloat(p.Value, "tier", 1, 1, 4);
+                    if (hue < 0) continue;
+                    string key = p.Name.Trim().ToLowerInvariant();
+                    seeds.Add((key, (ushort)hue, tier));
+                    if (TryHex(Str(p.Value, "color"), out Color oc)) overrides[key] = oc;
+                }
+            }
+            _seedColors = seeds.Count > 0 ? seeds.ToArray() : DefaultSeedColors;
+            _seedColorsByLength = ByLength(_seedColors);
+            _seedOverride = overrides;
+            _plainSeed = ReadColor(root, "plainSeed", DefaultPlainSeed);
+
+            _plantTypes = ReadStrings(root, "plantTypes", DefaultPlantTypes);
+            _bonsaiCategories = ReadStrings(root, "bonsaiCategories", DefaultBonsaiCategories);
+
+            _bonusColors = ReadMap(root, "bonusColors", DefaultBonusColors, StringComparer.OrdinalIgnoreCase);
+            _bonusHues = new Dictionary<string, ushort>(DefaultBonusHues, StringComparer.OrdinalIgnoreCase);
+            if (root.TryGetProperty("bonusHues", out JsonElement bh) && bh.ValueKind == JsonValueKind.Object)
+                foreach (JsonProperty p in bh.EnumerateObject())
+                    if (p.Value.TryGetUInt16(out ushort hv)) _bonusHues[p.Name] = hv;
+
+            _rareRules = ReadRules(root);
+
+            _rareContainers = new Dictionary<uint, HighlightGrade>(DefaultRareContainers);
+            if (root.TryGetProperty("rareContainers", out JsonElement rc) && rc.ValueKind == JsonValueKind.Array)
+            {
+                _rareContainers.Clear();
+                foreach (JsonElement e in rc.EnumerateArray())
+                {
+                    if (e.ValueKind == JsonValueKind.Object
+                        && e.TryGetProperty("serial", out JsonElement sv) && sv.TryGetUInt32(out uint serial))
+                    {
+                        _rareContainers[serial] = ParseGrade(Str(e, "grade"), HighlightGrade.Rare);
+                    }
+                }
             }
         }
 
         private static Color ReadColor(JsonElement root, string name, Color fallback) =>
-            root.TryGetProperty(name, out JsonElement e) && TryHex(e.GetString(), out Color c) ? c : fallback;
+            TryHex(Str(root, name), out Color c) ? c : fallback;
+
+        private static string Str(JsonElement obj, string name) =>
+            obj.TryGetProperty(name, out JsonElement e) && e.ValueKind == JsonValueKind.String ? e.GetString() : null;
+
+        private static float ReadFloat(JsonElement obj, string name, float fallback, float min, float max)
+        {
+            if (obj.TryGetProperty(name, out JsonElement e) && e.ValueKind == JsonValueKind.Number
+                && e.TryGetDouble(out double v) && v >= min && v <= max)
+            {
+                return (float)v;
+            }
+            return fallback;
+        }
+
+        private static string[] ReadStrings(JsonElement root, string name, string[] fallback)
+        {
+            var list = new List<string>();
+            if (root.TryGetProperty(name, out JsonElement e) && e.ValueKind == JsonValueKind.Array)
+                foreach (JsonElement v in e.EnumerateArray())
+                    if (v.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(v.GetString()))
+                        list.Add(v.GetString().Trim().ToLowerInvariant());
+            return list.Count > 0 ? list.ToArray() : fallback;
+        }
+
+        private static HighlightGrade ParseGrade(string s, HighlightGrade fallback) =>
+            Enum.TryParse(s, true, out HighlightGrade g) && g != HighlightGrade.None ? g : fallback;
+
+        private static Dictionary<HighlightGrade, GradeStyle> ReadGrades(JsonElement root)
+        {
+            var map = new Dictionary<HighlightGrade, GradeStyle>(DefaultGrades);
+            if (!root.TryGetProperty("grades", out JsonElement ge) || ge.ValueKind != JsonValueKind.Object)
+                return map;
+
+            foreach (JsonProperty p in ge.EnumerateObject())
+            {
+                HighlightGrade g = ParseGrade(p.Name, HighlightGrade.None);
+                if (g == HighlightGrade.None || p.Value.ValueKind != JsonValueKind.Object) continue;
+
+                GradeStyle d = DefaultGrades[g];
+                JsonElement v = p.Value;
+                map[g] = new GradeStyle(
+                    TryHex(Str(v, "color"), out Color c) ? c : d.Color,
+                    ReadFloat(v, "alpha", d.Alpha, 0f, 1f),
+                    (int)ReadFloat(v, "weight", d.Weight, 1, 3),
+                    v.TryGetProperty("label", out JsonElement le) && (le.ValueKind == JsonValueKind.True || le.ValueKind == JsonValueKind.False)
+                        ? le.GetBoolean() : d.Label,
+                    (ushort)ReadFloat(v, "labelHue", d.LabelHue, 0, 0xFFFF),
+                    (ushort)ReadFloat(v, "sound", d.Sound, 0, 0xFFFF),
+                    ReadFloat(v, "xray", d.Xray, 0f, 1f),
+                    v.TryGetProperty("pulse", out JsonElement pe) && (pe.ValueKind == JsonValueKind.True || pe.ValueKind == JsonValueKind.False)
+                        ? pe.GetBoolean() : d.Pulse);
+            }
+            return map;
+        }
+
+        private static RareRule[] ReadRules(JsonElement root)
+        {
+            if (!root.TryGetProperty("rareRules", out JsonElement re) || re.ValueKind != JsonValueKind.Array)
+                return DefaultRareRules;
+
+            var rules = new List<RareRule>();
+            foreach (JsonElement e in re.EnumerateArray())
+            {
+                if (e.ValueKind != JsonValueKind.Object) continue;
+
+                string name = Str(e, "name");
+                HashSet<ushort> graphics = null;
+                if (e.TryGetProperty("graphics", out JsonElement ga) && ga.ValueKind == JsonValueKind.Array)
+                {
+                    graphics = new HashSet<ushort>();
+                    foreach (JsonElement g in ga.EnumerateArray())
+                    {
+                        if (g.ValueKind == JsonValueKind.String && TryHexUShort(g.GetString(), out ushort gv)) graphics.Add(gv);
+                        else if (g.ValueKind == JsonValueKind.Number && g.TryGetUInt16(out ushort nv)) graphics.Add(nv);
+                    }
+                }
+                bool? onGround = e.TryGetProperty("onGround", out JsonElement og)
+                    && (og.ValueKind == JsonValueKind.True || og.ValueKind == JsonValueKind.False)
+                    ? og.GetBoolean() : null;
+
+                if (string.IsNullOrWhiteSpace(name) && (graphics == null || graphics.Count == 0)) continue;
+                rules.Add(new RareRule(name?.Trim(), graphics, onGround,
+                    ParseGrade(Str(e, "grade"), HighlightGrade.Rare), Str(e, "label")));
+            }
+            return rules.ToArray();
+        }
 
         private static Dictionary<string, Color> ReadMap(
             JsonElement root, string name, Dictionary<string, Color> fallback, StringComparer cmp)
@@ -442,7 +877,7 @@ namespace ClassicUO.Game.Managers
             {
                 foreach (JsonProperty p in e.EnumerateObject())
                 {
-                    if (TryHex(p.Value.GetString(), out Color c))
+                    if (p.Value.ValueKind == JsonValueKind.String && TryHex(p.Value.GetString(), out Color c))
                         map[p.Name] = c;
                 }
             }
@@ -469,110 +904,78 @@ namespace ClassicUO.Game.Managers
             return true;
         }
 
-        private static string Hex(Color c) => string.Format("#{0:X2}{1:X2}{2:X2}", c.R, c.G, c.B);
+    }
 
-        /// <summary>Write the live values back out, preserving hand edits while adding
-        /// any keys the file was missing.</summary>
-        private static void WriteLive()
+    /// <summary>How loud a collectible is; see AppraisalPalette's grade notes.</summary>
+    internal enum HighlightGrade
+    {
+        None = 0,
+        Trace,
+        Rare,
+        Prized,
+        Callout,
+    }
+
+    internal sealed class GradeStyle
+    {
+        public readonly Color Color;
+        public readonly float Alpha;
+        /// <summary>Outline thickness in pixels, 1-3.</summary>
+        public readonly int Weight;
+        /// <summary>Show the world label even when the item carries no data text.</summary>
+        public readonly bool Label;
+        public readonly ushort LabelHue;
+        /// <summary>First-sight chime for a ground item, 0 for none.</summary>
+        public readonly ushort Sound;
+        /// <summary>Opacity of the outline where a wall or ceiling hides it, 0 for none.</summary>
+        public readonly float Xray;
+        public readonly bool Pulse;
+
+        public GradeStyle(Color color, float alpha, int weight, bool label, ushort labelHue, ushort sound, float xray, bool pulse)
         {
-            try
-            {
-                var sb = new System.Text.StringBuilder();
-                sb.AppendLine("{");
-                sb.AppendLine("  \"_channels\": \"border=tier | left bar=wand type | right bar=slayer | top pips=durability | bottom pips=accuracy | inset border=Exceptional | top-left square=rare\",");
-                sb.AppendLine("  \"_tierNames\": \"Basic, Uncommon, Rare, Legendary, Exotic (Destiny rarity order)\",");
-                sb.AppendLine("  \"tiers\": [");
-                for (int i = 0; i < _tiers.Length; i++)
-                    sb.AppendFormat("    \"{0}\"{1}\n", Hex(_tiers[i]), i < _tiers.Length - 1 ? "," : "");
-                sb.AppendLine("  ],");
-                sb.AppendFormat("  \"unidentified\": \"{0}\",\n", Hex(_unidentified));
-                sb.AppendFormat("  \"durabilityPip\": \"{0}\",\n", Hex(_durabilityPip));
-                sb.AppendFormat("  \"genericWand\": \"{0}\",\n", Hex(_genericWand));
-                sb.AppendFormat("  \"containerOutline\": \"{0}\",\n", Hex(_containerOutline));
-                sb.AppendFormat("  \"topTierBorderBonus\": {0},\n", _topTierBorderBonus);
-                sb.AppendFormat("  \"rareOutline\": \"{0}\",\n", Hex(_rareOutline));
-                sb.AppendLine("  \"_rareNamesNote\": \"For shard-custom rares that REUSE common art (Marijuana uses the Nightshade graphic, a Water Bong uses bottle art) the graphic cannot identify them - match the name instead. Case-insensitive substring.\",");
-                sb.AppendFormat("  \"rareNames\": [{0}],\n",
-                    string.Join(", ", System.Array.ConvertAll(_rareNames, n => "\"" + n + "\"")));
-                sb.AppendLine("  \"_rareGraphicsNote\": \"Rares are matched by art graphic; nothing in the tooltip marks them. Append as you find more.\",");
-                var rl = new List<ushort>(_rareGraphics); rl.Sort();
-                sb.AppendFormat("  \"rareGraphics\": [{0}],\n",
-                    string.Join(", ", rl.ConvertAll(g => "\"0x" + g.ToString("X4") + "\"")));
-                sb.AppendLine();
-                AppendMap(sb, "slayers", _slayers, true);
-                AppendMap(sb, "wands", _wands, true);
-                sb.AppendLine("  \"_kegsNote\": \"Potion keg border by family (grid view). The border climbs from the bottom with the fill level; an empty keg draws none.\",");
-                AppendMap(sb, "kegs", _kegs, false);
-                sb.AppendLine("}");
-                File.WriteAllText(PalettePath, sb.ToString());
-                _lastMtime = File.GetLastWriteTimeUtc(PalettePath);
-            }
-            catch (Exception ex)
-            {
-                Log.Warn("AppraisalPalette: could not upgrade palette file - " + ex.Message);
-            }
+            Color = color;
+            Alpha = alpha;
+            Weight = weight;
+            Label = label;
+            LabelHue = labelHue;
+            Sound = sound;
+            Xray = xray;
+            Pulse = pulse;
+        }
+    }
+
+    internal sealed class RareRule
+    {
+        public readonly string Name;
+        public readonly HashSet<ushort> Graphics;
+        /// <summary>Null matches anywhere; false only off the ground; true only on it.</summary>
+        public readonly bool? OnGround;
+        public readonly HighlightGrade Grade;
+        public readonly string Label;
+
+        public RareRule(string name, HashSet<ushort> graphics, bool? onGround, HighlightGrade grade, string label)
+        {
+            Name = name;
+            Graphics = graphics;
+            OnGround = onGround;
+            Grade = grade;
+            Label = label;
         }
 
-        private static void WriteDefaults()
+        public bool Matches(string name, ushort graphic, bool onGround)
         {
-            try
-            {
-                Directory.CreateDirectory(Path.GetDirectoryName(PalettePath));
+            if (OnGround.HasValue && OnGround.Value != onGround) return false;
+            if (Graphics != null && Graphics.Count > 0 && !Graphics.Contains(graphic)) return false;
+            if (string.IsNullOrEmpty(Name)) return true;
+            if (string.IsNullOrEmpty(name)) return false;
+            if (Name[0] != '^') return name.IndexOf(Name, StringComparison.OrdinalIgnoreCase) >= 0;
 
-                var sb = new System.Text.StringBuilder();
-                sb.AppendLine("{");
-                sb.AppendLine("  \"_comment\": \"Live-reloaded ~2s after save; no client restart needed.\",");
-                sb.AppendLine("  \"_channels\": \"border=tier | left bar=wand type | right bar=slayer | top pips=durability | bottom pips=accuracy | inset border=Exceptional\",");
-                sb.AppendLine("  \"_tierNames\": \"Basic, Uncommon, Rare, Legendary, Exotic (Destiny rarity order)\",");
-                sb.AppendLine("  \"_destinyVerbatim\": [\"#C3BCB4\", \"#366F42\", \"#5076A3\", \"#522F65\", \"#CEAE33\"],");
-                sb.AppendLine("  \"_destinyVerbatimNote\": \"Destiny's shipped fill colors. Paste over \\\"tiers\\\" for the authentic look; Uncommon and Legendary will be very dim as outlines.\",");
-                sb.AppendLine();
-                sb.AppendLine("  \"tiers\": [");
-                for (int i = 0; i < DefaultTiers.Length; i++)
-                {
-                    sb.AppendFormat("    \"{0}\"{1}\n", Hex(DefaultTiers[i]),
-                        i < DefaultTiers.Length - 1 ? "," : "");
-                }
-                sb.AppendLine("  ],");
-                sb.AppendFormat("  \"unidentified\": \"{0}\",\n", Hex(DefaultUnidentified));
-                sb.AppendFormat("  \"durabilityPip\": \"{0}\",\n", Hex(DefaultDurabilityPip));
-                sb.AppendFormat("  \"genericWand\": \"{0}\",\n", Hex(DefaultGenericWand));
-                sb.AppendFormat("  \"containerOutline\": \"{0}\",\n", Hex(DefaultContainerOutline));
-                sb.AppendLine("  \"_capacityRampNote\": \"Container fill colour by WEIGHT (log scale to 100000 stones); the gradient LEVEL is item count.\",");
-                sb.AppendFormat("  \"capacityRamp\": [{0}],\n",
-                    string.Join(", ", System.Array.ConvertAll(DefaultCapacityRamp, c => "\"" + Hex(c) + "\"")));
-                sb.AppendFormat("  \"topTierBorderBonus\": {0},\n", DefaultTopTierBorderBonus);
-                sb.AppendFormat("  \"rareOutline\": \"{0}\",\n", Hex(DefaultRareOutline));
-                sb.AppendLine("  \"_rareGraphicsNote\": \"Rares are matched by art graphic, since nothing in the tooltip marks them. Add more as you find them.\",");
-                sb.AppendFormat("  \"rareGraphics\": [{0}],\n",
-                    string.Join(", ", System.Array.ConvertAll(DefaultRareGraphics, g => "\"0x" + g.ToString("X4") + "\"")));
-                sb.AppendLine();
-                AppendMap(sb, "slayers", DefaultSlayers, true);
-                AppendMap(sb, "wands", DefaultWands, true);
-                sb.AppendLine("  \"_kegsNote\": \"Potion keg border by family (grid view). The border climbs from the bottom with the fill level; an empty keg draws none.\",");
-                AppendMap(sb, "kegs", DefaultKegs, false);
-                sb.AppendLine("}");
-
-                File.WriteAllText(PalettePath, sb.ToString());
-                _lastMtime = File.GetLastWriteTimeUtc(PalettePath);
-            }
-            catch (Exception ex)
-            {
-                Log.Warn("AppraisalPalette: could not write defaults - " + ex.Message);
-            }
-        }
-
-        private static void AppendMap(System.Text.StringBuilder sb, string name,
-            Dictionary<string, Color> map, bool trailingComma)
-        {
-            sb.AppendFormat("  \"{0}\": {{\n", name);
-            int i = 0;
-            foreach (KeyValuePair<string, Color> kv in map)
-            {
-                sb.AppendFormat("    \"{0}\": \"{1}\"{2}\n", kv.Key, Hex(kv.Value),
-                    ++i < map.Count ? "," : "");
-            }
-            sb.AppendFormat("  }}{0}\n", trailingComma ? "," : "");
+            // "^text": the start of any line, since a locked-down item's real name sits
+            // on the line after the label the merger promoted.
+            string want = Name.Substring(1);
+            foreach (string line in name.Split('\n'))
+                if (line.TrimStart().StartsWith(want, StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
         }
     }
 }

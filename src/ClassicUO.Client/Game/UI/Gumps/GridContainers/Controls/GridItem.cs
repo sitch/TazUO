@@ -23,6 +23,11 @@ public class GridItem : Control
     private readonly int _slot;
     private GridContainerPreview _preview;
     private Label _count;
+    // Top-right appraisal text (seed type, bonsai star, stat bonus), rebuilt only when
+    // its text or hue changes.
+    private RenderedText _badge;
+    private string _badgeText;
+    private ushort _badgeHue;
     private readonly AlphaBlendControl _background;
     private readonly Label _listLabel;
     private CustomToolTip _toolTipThis, _toolTipitem1, _toolTipitem2;
@@ -222,6 +227,7 @@ public class GridItem : Control
             Highlight = false;
             _count?.Dispose();
             _count = null;
+            DropBadge();
             _listLabel.Text = string.Empty;
             _listLabel.IsVisible = false;
             ItemGridLocked = false;
@@ -1303,15 +1309,30 @@ public class GridItem : Control
             {
                 Texture2D borderTexture = SolidColorTextureCache.GetTexture(appraisal.Outline.Value);
 
-                DrawHighlightBorder(batcher, itemCellBounds, borderTexture, borderHueVec,
-                    _profile.GridHighlightSize
-                    + (appraisal.BorderTier >= 5 ? AppraisalPalette.TopTierBorderBonus : 0));
+                // A collectible's border is its accent, and its grade sets how loud:
+                // Trace draws thin and faint, Prized and Callout a step thicker, and
+                // Callout breathes. A tier border keeps full strength.
+                bool collectible = appraisal.Rare && appraisal.Outline == appraisal.Accent;
+                int thickness = _profile.GridHighlightSize
+                    + (appraisal.BorderTier >= 5 && !collectible ? AppraisalPalette.TopTierBorderBonus : 0);
+                var outlineHueVec = borderHueVec;
+                if (collectible)
+                {
+                    GradeStyle style = AppraisalPalette.Grade(appraisal.Grade);
+                    thickness = Math.Max(1, _profile.GridHighlightSize + style.Weight - 1);
+                    outlineHueVec.Z = style.Alpha * (style.Pulse ? AppraisalPalette.Pulse(Time.Ticks) : 1f);
+                }
 
-                // Exceptional gets a second, inset border rather than a color of its
-                // own — quality is orthogonal to tier, so it needs its own channel.
-                // Free here; the world surface would need a shader thickness uniform.
+                DrawHighlightBorder(batcher, itemCellBounds, borderTexture, outlineHueVec, thickness);
+
+                // Exceptional gets a second, inset border in its own copper. It used to
+                // reuse the outer border's colour, which was fine here but meant the
+                // single-channel surfaces (world, classic gump) had to borrow tier 1's
+                // white for it, and an exceptional Ruin weapon read as a plain
+                // exceptional one. Copper is outside the tier ramp, so both read.
                 if (appraisal.Exceptional)
-                    DrawInsetBorder(batcher, itemCellBounds, borderTexture, borderHueVec);
+                    DrawInsetBorder(batcher, itemCellBounds,
+                        SolidColorTextureCache.GetTexture(AppraisalPalette.Exceptional), borderHueVec);
 
                 // Accuracy pips along the bottom edge. Coloured by the ACCURACY
                 // tier, not the item's border tier — so the dots carry the axis
@@ -1324,6 +1345,13 @@ public class GridItem : Control
                         AppraisalPalette.Tier(appraisal.AccuracyTier));
                     DrawPips(batcher, itemCellBounds, appraisal.AccuracyTier, false, accTexture, borderHueVec);
                 }
+            }
+            else if (appraisal.Exceptional)
+            {
+                // Exceptional and nothing else (a well-made tambourine): the copper ring
+                // takes the edge, so the inner one never floats inside an empty slot.
+                DrawHighlightBorder(batcher, itemCellBounds,
+                    SolidColorTextureCache.GetTexture(AppraisalPalette.Exceptional), borderHueVec);
             }
         }
 
@@ -1349,11 +1377,22 @@ public class GridItem : Control
         // edges, the bars are centred vertically on the sides — so this composes
         // with everything else. Drawn even when the item also has a tier border,
         // since "collectible" and "powerful" are independent claims.
+        //
+        // The square is the grade's colour, so it says HOW rare while the border says
+        // what: a seed's border is its own colour, a magic hat's its stat colour. It
+        // is left off when the border already is the grade colour, where it would only
+        // repeat it.
         if (appraisal.Rare)
         {
-            int inset = EdgeInset;
-            Texture2D rareTex = SolidColorTextureCache.GetTexture(AppraisalPalette.RareOutline);
-            batcher.Draw(rareTex, new Rectangle(itemCellBounds.X + inset, itemCellBounds.Y + inset, 5, 5), borderHueVec);
+            GradeStyle style = AppraisalPalette.Grade(appraisal.Grade);
+            if (appraisal.Outline != style.Color)
+            {
+                int inset = EdgeInset;
+                var squareHueVec = borderHueVec;
+                squareHueVec.Z = Math.Max(style.Alpha, 0.6f);
+                batcher.Draw(SolidColorTextureCache.GetTexture(style.Color),
+                    new Rectangle(itemCellBounds.X + inset, itemCellBounds.Y + inset, 5, 5), squareHueVec);
+            }
         }
 
         // Slayer mark, also independent of the border — a slayer is a categorical
@@ -1464,7 +1503,36 @@ public class GridItem : Control
 
         _count?.Draw(batcher, x + _count.X, y + _count.Y);
 
+        // The appraisal's data text, top-right: which of the 17 plant types a seed
+        // is, a star for a bonsai seed, or "+4 Int" on magic clothing. Last, so the
+        // art never covers it.
+        if (appraisal.Badge != null && !_isListLayout)
+        {
+            if (_badge == null || _badgeText != appraisal.Badge || _badgeHue != appraisal.BadgeHue)
+            {
+                DropBadge();
+                _badgeText = appraisal.Badge;
+                _badgeHue = appraisal.BadgeHue;
+                _badge = RenderedText.Create(_badgeText, _badgeHue, 0xFF, true, FontStyle.BlackBorder);
+            }
+            int inset = EdgeInset - 3;
+            _badge.Draw(batcher, x + itemCellWidth - inset - _badge.Width, y + inset - 2);
+        }
+
         return true;
+    }
+
+    private void DropBadge()
+    {
+        _badge?.Destroy();
+        _badge = null;
+        _badgeText = null;
+    }
+
+    public override void Dispose()
+    {
+        DropBadge();
+        base.Dispose();
     }
 
     public override void PreDraw()

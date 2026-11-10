@@ -1436,6 +1436,7 @@ namespace ClassicUO.Game.Scenes
             // doesn't swallow them.
             batcher.Begin(null, Camera.ViewTransformMatrix);
             DrawBlockGrid(batcher);
+            DrawHighlightLabels(batcher);
             batcher.End();
 
             gd.Viewport = rViewport;
@@ -1538,6 +1539,8 @@ namespace ClassicUO.Game.Scenes
 
         private void DrawWorld(UltimaBatcher2D batcher, ref Matrix matrix)
         {
+            BeginHighlightFrame();
+
             Profiler.EnterContext("WorldSelection");
             FillGameObjectList();
             Profiler.ExitContext("WorldSelection");
@@ -1573,6 +1576,10 @@ namespace ClassicUO.Game.Scenes
                 batcher.SetStencil(DepthStencilState.DepthRead);
                 RenderedObjectsCount += DrawRenderList(batcher, _renderListTransparentObjects);
             }
+
+            // In Mani Ylem mod: highlighted items through walls, then through ceilings.
+            DrawHighlightXray(batcher);
+            DrawCulledHighlights(batcher);
 
             batcher.SetStencil(null);
 

@@ -333,7 +333,8 @@ namespace ClassicUO.Game.GameObjects
             float depth,
             bool isWet = false,
             Color? outlineColor = null,
-            Color? outlineColorEnd = null
+            Color? outlineColorEnd = null,
+            int outlineWeight = 1
         )
         {
             ref UOFileIndex index = ref Client.Game.UO.FileManager.Arts.File.GetValidRefEntry(graphic + ART_STATIC_OFFSET);
@@ -405,49 +406,106 @@ namespace ClassicUO.Game.GameObjects
 
                 if (outlineColor.HasValue)
                 {
-                    Color oc = outlineColor.Value;
-                    var outlineNormal = new Vector3(oc.R / 255f, oc.G / 255f, oc.B / 255f);
-                    // The outline colour's ALPHA channel scales opacity, on top of the
-                    // object's own alpha. Callers wanting a flat outline pass an opaque
-                    // colour (A=255) and behave exactly as before.
-                    Vector3 outlineHue = ShaderHueTranslator.GetOutlineHueVector(hue.Z * (oc.A / 255f));
-
-                    Vector3? endNormal = null;
-                    Vector2 outlinePos = pos;
-                    Rectangle outlineUV = artInfo.UV;
-
-                    if (outlineColorEnd.HasValue)
-                    {
-                        Color ec = outlineColorEnd.Value;
-                        endNormal = new Vector3(ec.R / 255f, ec.G / 255f, ec.B / 255f);
-
-                        // A gradient MUST be mapped to the sprite's real bounds, not the
-                        // art tile. UO tiles carry heavy transparent margin, so quad-mapped
-                        // the visible sprite only ever samples the middle of the ramp and
-                        // never reaches either endpoint — measured at roughly half the
-                        // intended range, with small sprites collapsing to near-flat.
-                        Rectangle b = Client.Game.UO.Arts.GetRealArtBounds(graphic);
-                        if (b.Width > 0 && b.Height > 0)
-                        {
-                            outlineUV = new Rectangle(artInfo.UV.X + b.X, artInfo.UV.Y + b.Y, b.Width, b.Height);
-                            outlinePos = new Vector2(pos.X + b.X, pos.Y + b.Y);
-                        }
-                    }
-
-                    batcher.DrawOutlined(
-                        artInfo.Texture,
-                        outlinePos,
-                        outlineUV,
-                        outlineHue,
-                        outlineNormal,
-                        0f,
-                        Vector2.Zero,
-                        Vector2.One,
-                        SpriteEffects.None,
-                        renderDepth - 0.001f,
-                        endNormal
-                    );
+                    DrawArtOutline(batcher, graphic, artInfo, pos, hue.Z, outlineColor.Value, outlineColorEnd, outlineWeight, renderDepth - 0.001f);
                 }
+            }
+        }
+
+        /// <summary>
+        /// Where an item's art lands for a draw at (x, y): the animated graphic, its
+        /// sprite and the top-left it is drawn from. False when the art isn't loaded.
+        /// </summary>
+        internal static bool ResolveItemArt(ushort graphic, int x, int y, out ushort animated, out SpriteInfo artInfo, out Vector2 pos)
+        {
+            ref UOFileIndex index = ref Client.Game.UO.FileManager.Arts.File.GetValidRefEntry(graphic + ART_STATIC_OFFSET);
+            animated = (ushort)(graphic + index.AnimOffset);
+            artInfo = Client.Game.UO.Arts.GetArt(animated);
+            pos = new Vector2(x - ((artInfo.UV.Width >> 1) - TILE_CENTER_OFFSET), y - (artInfo.UV.Height - TILE_HEIGHT_OFFSET));
+            return artInfo.Texture != null;
+        }
+
+        /// <summary>
+        /// The outline ring around a sprite. The shader draws a fixed 1 px ring; a
+        /// heavier weight adds copies offset along the four axes, so the ring grows
+        /// outward (the copies never cover the sprite, which wrote nearer depth). The
+        /// colour's alpha scales opacity on top of <paramref name="alpha"/>; a second
+        /// colour runs a gradient top to bottom.
+        /// </summary>
+        internal static void DrawArtOutline(
+            UltimaBatcher2D batcher,
+            ushort graphic,
+            in SpriteInfo artInfo,
+            Vector2 pos,
+            float alpha,
+            Color top,
+            Color? bottom,
+            int weight,
+            float depth
+        )
+        {
+            var outlineNormal = new Vector3(top.R / 255f, top.G / 255f, top.B / 255f);
+            // The outline colour's ALPHA channel scales opacity, on top of the
+            // object's own alpha. Callers wanting a flat outline pass an opaque
+            // colour (A=255) and behave exactly as before.
+            Vector3 outlineHue = ShaderHueTranslator.GetOutlineHueVector(alpha * (top.A / 255f));
+
+            Vector3? endNormal = null;
+            Vector2 outlinePos = pos;
+            Rectangle outlineUV = artInfo.UV;
+
+            if (bottom.HasValue)
+            {
+                Color ec = bottom.Value;
+                endNormal = new Vector3(ec.R / 255f, ec.G / 255f, ec.B / 255f);
+
+                // A gradient MUST be mapped to the sprite's real bounds, not the
+                // art tile. UO tiles carry heavy transparent margin, so quad-mapped
+                // the visible sprite only ever samples the middle of the ramp and
+                // never reaches either endpoint — measured at roughly half the
+                // intended range, with small sprites collapsing to near-flat.
+                Rectangle b = Client.Game.UO.Arts.GetRealArtBounds(graphic);
+                if (b.Width > 0 && b.Height > 0)
+                {
+                    // One texel of margin each side, so the ring outside the real
+                    // bounds still has quad to land on.
+                    int left = Math.Max(0, b.X - 1);
+                    int topY = Math.Max(0, b.Y - 1);
+                    int right = Math.Min(artInfo.UV.Width, b.X + b.Width + 1);
+                    int bot = Math.Min(artInfo.UV.Height, b.Y + b.Height + 1);
+                    outlineUV = new Rectangle(artInfo.UV.X + left, artInfo.UV.Y + topY, right - left, bot - topY);
+                    outlinePos = new Vector2(pos.X + left, pos.Y + topY);
+                }
+            }
+
+            for (int i = 0; i < weight * 4 - 3; i++)
+            {
+                // i = 0 is the ring itself; then +x, -x, +y, -y at 1 px, 2 px ...
+                Vector2 offset = Vector2.Zero;
+                if (i > 0)
+                {
+                    int step = (i - 1) / 4 + 1;
+                    offset = ((i - 1) % 4) switch
+                    {
+                        0 => new Vector2(step, 0),
+                        1 => new Vector2(-step, 0),
+                        2 => new Vector2(0, step),
+                        _ => new Vector2(0, -step),
+                    };
+                }
+
+                batcher.DrawOutlined(
+                    artInfo.Texture,
+                    outlinePos + offset,
+                    outlineUV,
+                    outlineHue,
+                    outlineNormal,
+                    0f,
+                    Vector2.Zero,
+                    Vector2.One,
+                    SpriteEffects.None,
+                    depth,
+                    endNormal
+                );
             }
         }
     }
