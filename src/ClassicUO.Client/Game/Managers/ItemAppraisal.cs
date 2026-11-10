@@ -278,6 +278,12 @@ namespace ClassicUO.Game.Managers
             Result r = ParseCached(world, serial, item);
             if (item != null)
                 Stamp(world, item, ref r);
+
+            // A piece whose tooltip stays bare even when worn: what it gave when the
+            // appraise script tried it on. Applied after the cache, never into it, so
+            // a new reading shows on the next frame.
+            if (r.BonusKey == null && AppraisalTriedOn.TryLines(serial, out string[] tried))
+                ParseBonuses(tried, ref r);
             return Recolor(r);
         }
 
@@ -658,7 +664,7 @@ namespace ClassicUO.Game.Managers
             new Regex(@"^(Strength|Dexterity|Intelligence) Bonus \+?(\d+)$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         private static readonly Regex SkillBonus =
-            new Regex(@"^([A-Za-z' ]+?)(?: Bonus)? \+(\d+)$", RegexOptions.Compiled);
+            new Regex(@"^([A-Za-z'/ ]+?)(?: Bonus)? \+(\d+)$", RegexOptions.Compiled);
 
         private static readonly HashSet<string> SkillNames = new(StringComparer.OrdinalIgnoreCase)
         {

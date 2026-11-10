@@ -139,6 +139,56 @@ namespace ClassicUO.UnitTests.Game.Managers
             Assert.True(Bonuses("a sash\nBlessed").Blessed);
         }
 
+        // ── Tried on (LegionScripts/.appraise.txt) ─────────────────────────────────
+
+        private const string TriedOn = @"{
+          ""1073741901"": {""name"": ""really really magic wizards hat"", ""gives"": {""Forensic Evaluation"": 5}, ""sure"": true},
+          ""1073741902"": {""name"": ""an antique gold necklace"", ""gives"": {""Int"": 2}},
+          ""1073741903"": {""name"": ""a fancy shirt"", ""gives"": {}, ""capped"": [""Hiding""]},
+          ""1073741904"": {""name"": ""magic skull cap"", ""gives"": {""Dex"": 3, ""Str"": 1}, ""sure"": false},
+          ""1073741905"": {""name"": ""magic cloak"", ""gives"": {""Phys"": 2, ""Bowcraft/Fletching"": 5.0}},
+          ""1073741906"": {""name"": ""a sash"", ""refused"": true}
+        }";
+
+        [Fact]
+        public void Tried_on_file_becomes_the_shards_bonus_lines()
+        {
+            var lines = AppraisalTriedOn.Parse(TriedOn);
+
+            Assert.Equal(new[] { "Forensic Evaluation +5" }, lines[1073741901]);
+            Assert.Equal(new[] { "Intelligence Bonus 2" }, lines[1073741902]);
+            Assert.Equal(new[] { "Bowcraft/Fletching +5" }, lines[1073741905]);
+        }
+
+        [Fact]
+        public void Nothing_unsure_or_refused_is_labelled()
+        {
+            var lines = AppraisalTriedOn.Parse(TriedOn);
+
+            Assert.False(lines.ContainsKey(1073741903));
+            Assert.False(lines.ContainsKey(1073741904));
+            Assert.False(lines.ContainsKey(1073741906));
+        }
+
+        [Fact]
+        public void Tried_on_hat_is_prized_and_labelled_with_what_it_gave()
+        {
+            var r = ItemAppraisal.Parse("really really magic wizards hat");
+            r.Name = "really really magic wizards hat";
+            ItemAppraisal.ParseBonuses(AppraisalTriedOn.Parse(TriedOn)[1073741901], ref r);
+            r = ItemAppraisal.Recolor(r);
+
+            Assert.Equal(HighlightGrade.Prized, r.Grade);
+            Assert.Equal("+5 Forensic Evaluation", r.Label);
+            Assert.Equal("skill", r.BonusKey);
+        }
+
+        [Fact]
+        public void Slash_skill_reads_as_a_bonus()
+        {
+            Assert.Equal("+5 Bowcraft/Fletching", Bonuses("Bowcraft/Fletching +5").BonusLabel);
+        }
+
         // ── Grades ──────────────────────────────────────────────────────────────────
 
         [Fact]
