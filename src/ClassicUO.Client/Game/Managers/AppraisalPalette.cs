@@ -235,7 +235,7 @@ namespace ClassicUO.Game.Managers
         // pulse, label, chime and how far it shows through walls. Four steps because
         // the crate next to Walter holds all four: a common Magical Wizard's Hat that
         // should barely register, ordinary decor rares, magic clothing and jewelry, and
-        // the one-off "really really magic" hat.
+        // the callouts (a common seed that grows a bonsai).
         private static readonly Dictionary<HighlightGrade, GradeStyle> DefaultGrades = new()
         {
             [HighlightGrade.Trace] = new GradeStyle(new Color(0xC9, 0xA2, 0xB4), 0.4f, 1, false, 946, 0, 0f, false),
@@ -318,7 +318,9 @@ namespace ClassicUO.Game.Managers
         // Collector rules, first match wins, ahead of every other grade source.
         private static readonly RareRule[] DefaultRareRules =
         {
-            new RareRule("really really magic wizards hat", null, null, HighlightGrade.Callout, null),
+            // Ordinary magic clothing: the shard renamed it only because "magical
+            // wizard's hat" was taken by the common vendor hat below.
+            new RareRule("really really magic wizards hat", null, null, HighlightGrade.Prized, null),
             new RareRule("a magical wizard's hat", null, null, HighlightGrade.Trace, null),
             new RareRule("antique", null, null, HighlightGrade.Prized, null),
             // Magic clothing is prized before its tooltip arrives; with the tooltip, the

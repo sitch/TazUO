@@ -150,9 +150,9 @@ namespace ClassicUO.UnitTests.Game.Managers
         }
 
         [Fact]
-        public void Really_really_magic_hat_is_a_callout()
+        public void Really_really_magic_hat_is_magic_clothing()
         {
-            Assert.Equal(HighlightGrade.Callout, Graded("a really really magic wizards hat").Grade);
+            Assert.Equal(HighlightGrade.Prized, Graded("a really really magic wizards hat").Grade);
         }
 
         [Fact]
