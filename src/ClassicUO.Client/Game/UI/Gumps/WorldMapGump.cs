@@ -82,6 +82,10 @@ public class WorldMapGump : ResizableGump
     private bool _mapMarkersLoaded;
     private List<string> _hiddenZoneFiles;
     private ZoneSets _zoneSets = new ZoneSets();
+    private string _zoneFilesSig = "";
+    private long _nextZoneFilesCheck;
+    private const long ZONE_FILES_CHECK_MS = 1000;
+    private const float ZONE_FILL_ALPHA = 0.35f;
 
     private static Mobile following;
 
@@ -843,6 +847,8 @@ public class WorldMapGump : ResizableGump
         // leave the view (or change) don't leak their layouts.
         if (_ttfTextBoxes.Count > 0)
             PurgeTtfTextBoxes();
+
+        ReloadZonesIfChanged();
 
         if (_isFullscreen)
         {
@@ -1711,6 +1717,13 @@ public class WorldMapGump : ResizableGump
 
         public string Color { get; set; }
 
+        // Optional: the zone is filled in this colour (same forms as Color), at Alpha
+        // (0..1, default ZONE_FILL_ALPHA). A script-written overlay such as the mined
+        // ore veins reads as tinted ground rather than a tangle of outlines.
+        public string Fill { get; set; }
+
+        public float? Alpha { get; set; }
+
         public List<List<int>> Polygon { get; set; }
     }
 
@@ -1726,11 +1739,14 @@ public class WorldMapGump : ResizableGump
         public Color Color;
         public Rectangle BoundingRectangle;
         public List<Point> Vertices;
+        public Color? Fill;
+        public float FillAlpha;
+        public List<Rectangle> FillRects;
 
         public Zone(ZonesFileZoneData data)
         {
             Label = data.Label;
-            Color = _colorMap[data.Color];
+            Color = TryParseColor(data.Color, out Color c) ? c : Microsoft.Xna.Framework.Color.White;
 
             Vertices = new List<Point>();
 
@@ -1752,6 +1768,52 @@ public class WorldMapGump : ResizableGump
             }
 
             BoundingRectangle = new Rectangle(xmin, ymin, xmax - xmin, ymax - ymin);
+
+            if (!string.IsNullOrEmpty(data.Fill) && TryParseColor(data.Fill, out Color fill))
+            {
+                Fill = fill;
+                FillAlpha = Math.Clamp(data.Alpha ?? ZONE_FILL_ALPHA, 0f, 1f);
+                FillRects = FillRectangles(Vertices);
+            }
+        }
+
+        /// <summary>
+        /// The polygon as world rectangles, one per band between consecutive vertex rows
+        /// and span inside it (even-odd at the band's middle). Exact for the rectilinear
+        /// polygons the zone files hold; a slanted edge is taken at the band's middle.
+        /// </summary>
+        private static List<Rectangle> FillRectangles(List<Point> v)
+        {
+            var rects = new List<Rectangle>();
+            if (v.Count < 3)
+                return rects;
+
+            var ys = v.Select(p => p.Y).Distinct().OrderBy(y => y).ToList();
+            var xs = new List<float>();
+
+            for (int b = 0; b + 1 < ys.Count; b++)
+            {
+                int y0 = ys[b], y1 = ys[b + 1];
+                float mid = (y0 + y1) * 0.5f;
+                xs.Clear();
+
+                for (int i = 0, j = v.Count - 1; i < v.Count; j = i++)
+                {
+                    Point a = v[i], c = v[j];
+                    if ((a.Y > mid) != (c.Y > mid))
+                        xs.Add(a.X + (mid - a.Y) * (c.X - a.X) / (float)(c.Y - a.Y));
+                }
+
+                xs.Sort();
+                for (int k = 0; k + 1 < xs.Count; k += 2)
+                {
+                    int x0 = (int)Math.Round(xs[k]), x1 = (int)Math.Round(xs[k + 1]);
+                    if (x1 > x0)
+                        rects.Add(new Rectangle(x0, y0, x1 - x0, y1 - y0));
+                }
+            }
+
+            return rects;
         }
     }
 
@@ -1784,13 +1846,14 @@ public class WorldMapGump : ResizableGump
     {
         public Dictionary<string, ZoneSet> ZoneSetDict { get; } = new Dictionary<string, ZoneSet>();
 
-        public void AddZoneSetByFileName(World world, string filename, bool hidden)
+        public void AddZoneSetByFileName(World world, string filename, bool hidden, bool quiet = false)
         {
             try
             {
                 ZonesFile zf = System.Text.Json.JsonSerializer.Deserialize(File.ReadAllText(filename), ZonesJsonContext.Default.ZonesFile);
                 ZoneSetDict[filename] = new ZoneSet(zf, filename, hidden);
-                GameActions.Print(world, string.Format(TazLang.Get("map_zone_file_loaded"), ZoneSetDict[filename].NiceFileName), 0x3A /* yellow green */);
+                if (!quiet)
+                    GameActions.Print(world, string.Format(TazLang.Get("map_zone_file_loaded"), ZoneSetDict[filename].NiceFileName), 0x3A /* yellow green */);
             }
             catch (Exception ee)
             {
@@ -1821,18 +1884,16 @@ public class WorldMapGump : ResizableGump
         public void Clear() => ZoneSetDict.Clear();
     }
 
-    private void LoadZones()
+    private void LoadZones() => LoadZones(false);
+
+    private void LoadZones(bool quiet)
     {
         Log.Trace("LoadZones()...");
 
         _zoneSets.Clear();
 
-            List<string> zonefiles = new();
-            foreach (string s in _mapFilesPath)
-            {
-                if(Directory.Exists(s))
-                    zonefiles.AddRange(Directory.GetFiles(s, "*.zones.json"));
-            }
+        List<string> zonefiles = ZoneFilesOnDisk();
+        _zoneFilesSig = ZoneFilesSignature(zonefiles);
 
         foreach (string filename in zonefiles)
         {
@@ -1841,8 +1902,50 @@ public class WorldMapGump : ResizableGump
                 _hiddenZoneFiles.FirstOrDefault(x => x.Contains(filename))
             );
 
-            _zoneSets.AddZoneSetByFileName(World, filename, shouldHide);
+            _zoneSets.AddZoneSetByFileName(World, filename, shouldHide, quiet);
         }
+    }
+
+    private static List<string> ZoneFilesOnDisk()
+    {
+        List<string> zonefiles = new();
+        foreach (string s in _mapFilesPath)
+        {
+            if (Directory.Exists(s))
+                zonefiles.AddRange(Directory.GetFiles(s, "*.zones.json"));
+        }
+
+        return zonefiles;
+    }
+
+    private static string ZoneFilesSignature(List<string> files) =>
+        string.Join("|", files.OrderBy(f => f, StringComparer.Ordinal).Select(f =>
+        {
+            try { return f + "@" + File.GetLastWriteTimeUtc(f).Ticks; }
+            catch { return f; }
+        }));
+
+    /// <summary>
+    /// A script rewrites its zones file as it learns (master_miner's vein map), so the
+    /// map re-reads the zone files when one appears, goes, or changes on disk, quietly,
+    /// rather than waiting for "Reload zones" from the context menu.
+    /// </summary>
+    private void ReloadZonesIfChanged()
+    {
+        if (Time.Ticks < _nextZoneFilesCheck)
+            return;
+
+        _nextZoneFilesCheck = Time.Ticks + ZONE_FILES_CHECK_MS;
+
+        List<string> files = ZoneFilesOnDisk();
+        string sig = ZoneFilesSignature(files);
+        if (sig == _zoneFilesSig)
+            return;
+
+        bool sameFiles = files.Count == _zoneSets.ZoneSetDict.Count && files.All(_zoneSets.ZoneSetDict.ContainsKey);
+        LoadZones(true);
+        if (!sameFiles)
+            BuildContextMenu();
     }
 
     private bool ShouldDrawGrid() => (_showGridIfZoomed && Zoom >= 4);
@@ -3531,6 +3634,22 @@ public class WorldMapGump : ResizableGump
         float zoom
     )
     {
+        if (zone.Fill.HasValue)
+        {
+            // A band drawn as a line as thick as the band is tall: the batcher's line
+            // extends to the right of its direction, which is +y in world, and the map
+            // only ever rotates, so the quad lands on the band at any zoom or flip.
+            Texture2D fill = SolidColorTextureCache.GetTexture(zone.Fill.Value);
+            Vector3 fillHue = ShaderHueTranslator.GetHueVector(0, false, zone.FillAlpha);
+
+            foreach (Rectangle r in zone.FillRects)
+            {
+                Vector2 a = WorldPointToGumpPoint(r.X, r.Y, x, y, width, height, zoom);
+                Vector2 b = WorldPointToGumpPoint(r.Right, r.Y, x, y, width, height, zoom);
+                batcher.DrawLine(fill, a, b, fillHue, r.Height * zoom, 0f);
+            }
+        }
+
         Vector3 hueVector = ShaderHueTranslator.GetHueVector(0);
         Texture2D texture = SolidColorTextureCache.GetTexture(zone.Color);
 
@@ -4558,7 +4677,42 @@ public class WorldMapGump : ResizableGump
     /// </summary>
     /// <param name="name">Color name</param>
     /// <returns>Color in XNA (RGBA)</returns>
-    public static Color GetColor(string name) => _colorMap.TryGetValue(name, out Color color) ? color : Color.White;
+    public static Color GetColor(string name) => TryParseColor(name, out Color color) ? color : Color.White;
+
+    /// <summary>
+    /// A zone or marker colour: a name from the colour map, "#rrggbb", or "hue:N", a UO
+    /// hue at the brightest shade of its ramp, the shade hued text takes, so a script
+    /// can colour the map with the same hues it marks tiles and writes journal lines in
+    /// (the ore hues). Anything else is not a colour.
+    /// </summary>
+    public static bool TryParseColor(string s, out Color color)
+    {
+        color = Color.White;
+        if (string.IsNullOrWhiteSpace(s))
+            return false;
+
+        s = s.Trim();
+        if (_colorMap.TryGetValue(s.ToLowerInvariant(), out color))
+            return true;
+
+        if (s.Length == 7 && s[0] == '#' && uint.TryParse(s.AsSpan(1), System.Globalization.NumberStyles.HexNumber, null, out uint rgb))
+        {
+            color = new Color((byte)(rgb >> 16), (byte)(rgb >> 8), (byte)rgb);
+            return true;
+        }
+
+        if (s.StartsWith("hue:", StringComparison.OrdinalIgnoreCase) && ushort.TryParse(s.AsSpan(4), out ushort hue) && hue > 0)
+        {
+            uint c = Client.Game.UO.FileManager.Hues.GetPolygoneColor(31, hue);
+            if (c == 0xFF010101)
+                return false;
+            color = new Color((int)(c & 0xFF), (int)((c >> 8) & 0xFF), (int)((c >> 16) & 0xFF));
+            return true;
+        }
+
+        color = Color.White;
+        return false;
+    }
 }
 
 #endregion
