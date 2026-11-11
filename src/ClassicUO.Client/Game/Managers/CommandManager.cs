@@ -267,11 +267,11 @@ namespace ClassicUO.Game.Managers
                     if (!gfxRare && !r.Rare) continue;
                     bool opl = _world.OPL.TryGetNameAndData(it.Serial, out string nm, out _);
                     sb.AppendFormat(
-                        "0x{0:X8} gfx=0x{1:X4} gfxRare={2} rare={3} grade={4} resultGfx=0x{5:X4} outline={6} kind={7} opl={8} crate={9} seed={10}/{11}/{12} bonus={13} label={14} name={15}\n",
+                        "0x{0:X8} gfx=0x{1:X4} gfxRare={2} rare={3} grade={4} resultGfx=0x{5:X4} outline={6} kind={7} opl={8} crate={9} seed={10}/{11}/{12} bonus={13} label={14} flags={16} fixed={17} name={15}\n",
                         it.Serial, it.Graphic, gfxRare, r.Rare, r.Grade, r.Graphic,
                         r.Outline.HasValue, r.Kind, opl, r.RareContainer,
                         r.SeedColor ?? r.Bonsai ?? "", r.SeedTier, r.PlantType,
-                        r.BonusLabel ?? "", r.Label ?? "", nm ?? "");
+                        r.BonusLabel ?? "", r.Label ?? "", nm ?? "", it.Flags, r.Fixed);
                     n++;
                 }
                 sb.AppendFormat("enabled={0} paletteCount={1}\n",

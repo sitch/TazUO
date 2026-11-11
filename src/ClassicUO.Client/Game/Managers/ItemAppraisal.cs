@@ -181,6 +181,8 @@ namespace ClassicUO.Game.Managers
             // ── Where the item is, stamped on every call (never cached) ──────────────
             public ushort Hue;
             public bool OnGround;
+            /// <summary>On the ground without the server's Movable flag: decoration or locked down.</summary>
+            public bool Fixed;
             public bool IsContainer;
             /// <summary>Grade of a collector container somewhere above it, or None.</summary>
             public HighlightGrade RareContainer;
@@ -292,6 +294,9 @@ namespace ClassicUO.Game.Managers
             r.Graphic = item.Graphic;
             r.Hue = item.Hue;
             r.OnGround = item.OnGround;
+            // Only a ground item's packet carries the flags byte; an item in a pack or
+            // on a paperdoll always reads 0, so Movable means nothing off the ground.
+            r.Fixed = item.OnGround && !item.IsMovable;
             r.IsContainer = item.ItemData.IsContainer;
             r.RareContainer = HighlightGrade.None;
             if (!AppraisalPalette.HasRareContainers)
@@ -469,6 +474,15 @@ namespace ClassicUO.Game.Managers
 
         private static HighlightGrade GradeOf(Result r, out string ruleLabel)
         {
+            // A collectible nobody can pick up is set dressing: the candles and trays
+            // nailed to tables around town, or a piece locked down in a house. It is
+            // not a find, so no grade, no chime, no x-ray, whatever rule matches it.
+            if (r.Fixed)
+            {
+                ruleLabel = null;
+                return HighlightGrade.None;
+            }
+
             // A collector rule is a deliberate call ("this hat is common") and wins outright.
             if (AppraisalPalette.MatchRule(r.Name, r.Graphic, r.OnGround, out HighlightGrade ruled, out ruleLabel))
                 return ruled;
