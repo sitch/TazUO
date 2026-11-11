@@ -1724,6 +1724,17 @@ public class WorldMapGump : ResizableGump
 
         public float? Alpha { get; set; }
 
+        // Optional outline styling: Width in screen pixels (default 1; it grows to the
+        // right of each edge's direction, so a clockwise polygon's border stays inside
+        // it), LineAlpha its opacity (0..1, default 1), Dash a dash length in screen
+        // pixels (0 or absent: solid). Lets an overlay rank its zones by weight: the
+        // valuable ones bold, the dull ones faint, the unknown ones dashed.
+        public float? Width { get; set; }
+
+        public float? LineAlpha { get; set; }
+
+        public int? Dash { get; set; }
+
         public List<List<int>> Polygon { get; set; }
     }
 
@@ -1742,11 +1753,17 @@ public class WorldMapGump : ResizableGump
         public Color? Fill;
         public float FillAlpha;
         public List<Rectangle> FillRects;
+        public float LineWidth = 1f;
+        public float LineAlpha = 1f;
+        public int Dash;
 
         public Zone(ZonesFileZoneData data)
         {
             Label = data.Label;
             Color = TryParseColor(data.Color, out Color c) ? c : Microsoft.Xna.Framework.Color.White;
+            LineWidth = Math.Clamp(data.Width ?? 1f, 0f, 16f);
+            LineAlpha = Math.Clamp(data.LineAlpha ?? 1f, 0f, 1f);
+            Dash = Math.Max(0, data.Dash ?? 0);
 
             Vertices = new List<Point>();
 
@@ -3650,10 +3667,13 @@ public class WorldMapGump : ResizableGump
             }
         }
 
-        Vector3 hueVector = ShaderHueTranslator.GetHueVector(0);
-        Texture2D texture = SolidColorTextureCache.GetTexture(zone.Color);
+        if (zone.LineWidth <= 0f || zone.LineAlpha <= 0f)
+        {
+            return;
+        }
 
-        //Vector2 topleft = new Vector2(10000, 10000), botright = Vector2.Zero;
+        Vector3 hueVector = ShaderHueTranslator.GetHueVector(0, false, zone.LineAlpha);
+        Texture2D texture = SolidColorTextureCache.GetTexture(zone.Color);
 
         for (int i = 0, j = 1; i < zone.Vertices.Count; i++, j++)
         {
@@ -3662,27 +3682,28 @@ public class WorldMapGump : ResizableGump
             Vector2 start = WorldPointToGumpPoint(zone.Vertices[i].X, zone.Vertices[i].Y, x, y, width, height, zoom);
             Vector2 end = WorldPointToGumpPoint(zone.Vertices[j].X, zone.Vertices[j].Y, x, y, width, height, zoom);
 
-            //if(start.X < topleft.X)
-            //{
-            //    topleft.X = start.X;
-            //}
+            if (zone.Dash <= 0)
+            {
+                batcher.DrawLine(texture, start, end, hueVector, zone.LineWidth, 0f);
+                continue;
+            }
 
-            //if(start.Y < topleft.Y)
-            //{
-            //    topleft.Y = start.Y;
-            //}
+            // Dashes in screen pixels, so the pattern reads the same at every zoom;
+            // each edge starts on a dash, so a corner is always drawn.
+            float length = Vector2.Distance(start, end);
 
-            //if(end.X > botright.X)
-            //{
-            //    botright.X = end.X;
-            //}
-            //if (end.Y > botright.Y)
-            //{
-            //    botright.Y = end.Y;
-            //}
-            ////Handle drawing a label here
+            if (length <= 0f)
+            {
+                continue;
+            }
 
-            batcher.DrawLine(texture, start, end, hueVector, 1, 0f);
+            Vector2 step = (end - start) / length;
+
+            for (float t = 0f; t < length; t += zone.Dash * 2)
+            {
+                float e = Math.Min(t + zone.Dash, length);
+                batcher.DrawLine(texture, start + step * t, start + step * e, hueVector, zone.LineWidth, 0f);
+            }
         }
     }
 
