@@ -147,6 +147,9 @@ namespace ClassicUO.Game.GameObjects
             int drawX = posX + (int)Offset.X + 22;
             int drawY = posY + (int)(Offset.Y - Offset.Z) + 22;
 
+            bool collectible = Managers.AppraisalHighlights.TryMobileLook(World, this, out Managers.HighlightLook rareLook);
+            ApplyCollectorOutline(collectible, rareLook);
+
             // Cache boolean values
             bool isDead = IsDead;
             bool isHidden = IsHidden;
@@ -620,6 +623,9 @@ namespace ClassicUO.Game.GameObjects
                 }
             }
 
+            if (collectible)
+                GameScene.Instance?.RegisterMobileHighlight(this, drawX, spriteTopY, rareLook);
+
             _overheadStackTopOffset = spriteTopY - (RealScreenPosition.Y + (int)(Offset.Y - Offset.Z));
             _overheadStackTick = Time.Ticks;
             _hasOverheadStack = true;
@@ -629,6 +635,31 @@ namespace ClassicUO.Game.GameObjects
             FrameInfo.Width = FrameInfo.X + FrameInfo.Width;
             FrameInfo.Height = FrameInfo.Y + FrameInfo.Height;
             return true;
+        }
+
+        // In Mani Ylem mod: a creature a collector rule names (the black sheep) wears its
+        // grade's colour as its outline. Whatever outline it had before (notoriety) is
+        // kept aside and put back when the rule stops matching.
+        private bool _collectorOutline;
+        private Color? _outlineBeforeCollector;
+
+        private void ApplyCollectorOutline(bool collectible, in Managers.HighlightLook look)
+        {
+            if (collectible)
+            {
+                if (!_collectorOutline)
+                {
+                    _outlineBeforeCollector = OutlineColor;
+                    _collectorOutline = true;
+                }
+                OutlineColor = look.Top;
+            }
+            else if (_collectorOutline)
+            {
+                OutlineColor = _outlineBeforeCollector;
+                _outlineBeforeCollector = null;
+                _collectorOutline = false;
+            }
         }
 
         private const int HEALTHBAR_WIDTH = 60;

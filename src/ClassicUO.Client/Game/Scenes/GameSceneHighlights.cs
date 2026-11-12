@@ -29,7 +29,19 @@ namespace ClassicUO.Game.Scenes
             public bool Culled;
         }
 
+        /// <summary>A creature a collector rule names, drawn this frame: its label goes over its head.</summary>
+        private struct MobileMark
+        {
+            public Mobile Mobile;
+            /// <summary>Centre of the label and the top of the mobile's overhead stack.</summary>
+            public int X, Y;
+            public string Label;
+            public ushort LabelHue;
+            public Color LabelRule;
+        }
+
         private readonly List<HighlightMark> _highlightMarks = new();
+        private readonly List<MobileMark> _mobileMarks = new();
         private readonly HashSet<uint> _highlightDrawn = new();
         private readonly List<uint> _culledCandidates = new();
         private uint _culledScanAt;
@@ -86,9 +98,31 @@ namespace ClassicUO.Game.Scenes
             if (hasLook) AppraisalHighlights.Announce(_world, item, look);
         }
 
+        /// <summary>
+        /// In Mani Ylem mod: a creature a collector rule names drew this frame. Called
+        /// from MobileView with the top of its overhead stack; rings the chime.
+        /// </summary>
+        internal void RegisterMobileHighlight(Mobile mobile, int x, int topY, in HighlightLook look)
+        {
+            if (look.Label != null)
+            {
+                _mobileMarks.Add(new MobileMark
+                {
+                    Mobile = mobile,
+                    X = x,
+                    Y = topY,
+                    Label = look.Label,
+                    LabelHue = look.LabelHue,
+                    LabelRule = look.LabelRule,
+                });
+            }
+            AppraisalHighlights.Announce(_world, mobile.Serial, look);
+        }
+
         private void BeginHighlightFrame()
         {
             _highlightMarks.Clear();
+            _mobileMarks.Clear();
             _highlightDrawn.Clear();
             _highlightFrame++;
         }
@@ -136,7 +170,9 @@ namespace ClassicUO.Game.Scenes
                 int px = _world.Player.X, py = _world.Player.Y;
                 foreach (Item it in _world.Items.Values)
                 {
-                    if (it.IsDestroyed || !it.OnGround || it.ItemData.IsContainer || it.IsMulti)
+                    // Containers too: TryLook gives them only the loose look, so a chest
+                    // someone could carry out of a house upstairs still shows.
+                    if (it.IsDestroyed || !it.OnGround || it.IsMulti)
                         continue;
                     if (Math.Max(Math.Abs(it.X - px), Math.Abs(it.Y - py)) > range)
                         continue;
@@ -188,11 +224,25 @@ namespace ClassicUO.Game.Scenes
         {
             _labelStack.Clear();
 
-            if (_highlightMarks.Count > 0)
+            if (_highlightMarks.Count > 0 || _mobileMarks.Count > 0)
             {
                 Texture2D plate = SolidColorTextureCache.GetTexture(new Color(0x0d, 0x10, 0x17));
                 var plateHue = new Vector3(0, 0, 0.72f);
                 var ruleHue = new Vector3(0, 0, 1f);
+
+                foreach (MobileMark m in _mobileMarks)
+                {
+                    if (m.Mobile.IsDestroyed)
+                        continue;
+                    RenderedText rt = HighlightLabel(m.Label, m.LabelHue);
+                    int w = rt.Width + 6;
+                    int h = rt.Height + 1;
+                    int lx = m.X - (w >> 1);
+                    int ly = m.Y - h - 2;
+                    batcher.Draw(plate, new Rectangle(lx, ly, w, h), plateHue);
+                    batcher.Draw(SolidColorTextureCache.GetTexture(m.LabelRule), new Rectangle(lx, ly + h - 1, w, 1), ruleHue);
+                    rt.Draw(batcher, lx + 3, ly, 1f);
+                }
 
                 foreach (HighlightMark m in _highlightMarks)
                 {

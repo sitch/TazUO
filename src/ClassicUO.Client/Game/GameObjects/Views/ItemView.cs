@@ -391,8 +391,13 @@ namespace ClassicUO.Game.GameObjects
                 xray = g == _unpickedChestGlowColor || g == _puzzleChestGlowColor ? AppraisalPalette.XrayChest
                     : g == _lootedChestGlowColor ? AppraisalPalette.XrayLooted
                     : AppraisalPalette.XrayCapacity;
+
+                // A container someone could carry out of a house shows through its
+                // floors and ceilings like any other loose thing there.
+                if (ItemAppraisal.Enabled && AppraisalHighlights.Loose(World, this) == LoosePlace.House)
+                    xray = Math.Max(xray, AppraisalPalette.LooseHouse.Xray);
             }
-            else if (OnGround && !ItemData.IsContainer && AppraisalHighlights.TryLook(World, this, out look))
+            else if (OnGround && AppraisalHighlights.TryLook(World, this, out look))
             {
                 hasLook = true;
                 glowColor = look.Top;

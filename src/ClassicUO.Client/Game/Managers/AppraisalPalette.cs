@@ -315,9 +315,17 @@ namespace ClassicUO.Game.Managers
             ["skill"] = 2213,
         };
 
-        // Collector rules, first match wins, ahead of every other grade source.
+        // Spell scrolls, 0x1F2D-0x1F6C, first circle to eighth. Six of them are named
+        // "Magic Arrow", "Magic Trap", "Magic Untrap", "Magic Lock", "Magic Unlock" and
+        // "Magic Reflection", which the "^magic " clothing rule below took for magic
+        // clothing and drew in Prized pink.
+        private static readonly HashSet<ushort> SpellScrollGraphics = Range(0x1F2D, 0x1F6C);
+
+        // Collector rules, first match wins, ahead of every other grade source. A rule
+        // graded None is a deliberate "not a collectible" and stops every other source.
         private static readonly RareRule[] DefaultRareRules =
         {
+            new RareRule(null, SpellScrollGraphics, null, HighlightGrade.None, null),
             // Ordinary magic clothing: the shard renamed it only because "magical
             // wizard's hat" was taken by the common vendor hat below.
             new RareRule("really really magic wizards hat", null, null, HighlightGrade.Prized, null),
@@ -329,7 +337,39 @@ namespace ClassicUO.Game.Managers
             // Trays dress tables all over town (57 on the ground in this player's data),
             // so only one that has been picked up counts.
             new RareRule(null, new HashSet<ushort> { 0x0991, 0x0992 }, false, HighlightGrade.Rare, null),
+            // Fertile Dirt, wanted for every plant. By graphic, so it shows before its
+            // tooltip arrives (seed_harvester confirmed 0x0F81 in harvest drops).
+            new RareRule(null, new HashSet<ushort> { 0x0F81 }, null, HighlightGrade.Rare, null),
+            // The black sheep's wool, the only black dye on the shard (2009 server
+            // page). Ordinary wool is unhued, so any hue on wool art is the black.
+            new RareRule(null, new HashSet<ushort> { 0x0DF8, 0x0DF9 }, null, HighlightGrade.Prized, "Black Wool", hued: true),
         };
+
+        // Creatures worth a callout, first match wins. The 2009 server page: "A very
+        // rare black sheep ... gives a very valuable colored black wool". Nobody here has
+        // seen one yet, so it is caught two ways: by name, and as any hued sheep body
+        // (0xCF woolly, 0xDF shorn), since every ordinary sheep is unhued.
+        private static readonly MobileRule[] DefaultRareMobiles =
+        {
+            new MobileRule("black sheep", null, null, HighlightGrade.Callout, "\u2605 Black Sheep"),
+            new MobileRule(null, new HashSet<ushort> { 0xCF, 0xDF }, true, HighlightGrade.Callout, "\u2605 Black Sheep"),
+        };
+
+        // Loose items: on the ground, movable, and in a town (a guard zone) or inside a
+        // house. Not a grade, so no label and no chime; only a thin outline in a colour
+        // no grade or tier uses. A house's loose items show through walls, floors and
+        // ceilings, so what a burglar can carry off is plain from the street; a town's
+        // stay in plain sight only, or every shop's shelves would flood the screen.
+        private static readonly LooseStyle DefaultLooseTown = new LooseStyle(new Color(0x5C, 0xE0, 0xFF), 0.75f, 0f);
+        private static readonly LooseStyle DefaultLooseHouse = new LooseStyle(new Color(0xA6, 0xFF, 0x4D), 0.9f, 0.7f);
+        private const string DefaultLooseZones = "in_mani_ylem_guard_zones.zones.json";
+
+        private static HashSet<ushort> Range(ushort first, ushort last)
+        {
+            var set = new HashSet<ushort>();
+            for (int g = first; g <= last; g++) set.Add((ushort)g);
+            return set;
+        }
 
         // Containers whose whole contents count as rare: the large crate next to
         // Walter Goonsman. Containers inside are holders, not items, and are skipped.
@@ -369,6 +409,10 @@ namespace ClassicUO.Game.Managers
         private static Dictionary<string, Color> _bonusColors = new(DefaultBonusColors, StringComparer.OrdinalIgnoreCase);
         private static Dictionary<string, ushort> _bonusHues = new(DefaultBonusHues, StringComparer.OrdinalIgnoreCase);
         private static RareRule[] _rareRules = DefaultRareRules;
+        private static MobileRule[] _rareMobiles = DefaultRareMobiles;
+        private static LooseStyle _looseTown = DefaultLooseTown;
+        private static LooseStyle _looseHouse = DefaultLooseHouse;
+        private static string _looseZones = DefaultLooseZones;
         private static Dictionary<uint, HighlightGrade> _rareContainers = new(DefaultRareContainers);
 
         public static Color Tier(int tier)
@@ -531,12 +575,12 @@ namespace ClassicUO.Game.Managers
         }
 
         /// <summary>First collector rule matching the item, or false.</summary>
-        public static bool MatchRule(string name, ushort graphic, bool onGround, out HighlightGrade grade, out string label)
+        public static bool MatchRule(string name, ushort graphic, bool onGround, ushort hue, out HighlightGrade grade, out string label)
         {
             MaybeReload();
             foreach (RareRule rule in _rareRules)
             {
-                if (rule.Matches(name, graphic, onGround))
+                if (rule.Matches(name, graphic, onGround, hue))
                 {
                     grade = rule.Grade;
                     label = rule.Label;
@@ -547,6 +591,32 @@ namespace ClassicUO.Game.Managers
             label = null;
             return false;
         }
+
+        /// <summary>First creature rule matching the mobile, or false.</summary>
+        public static bool MatchMobile(string name, ushort body, ushort hue, out HighlightGrade grade, out string label)
+        {
+            MaybeReload();
+            foreach (MobileRule rule in _rareMobiles)
+            {
+                if (rule.Matches(name, body, hue))
+                {
+                    grade = rule.Grade;
+                    label = rule.Label;
+                    return true;
+                }
+            }
+            grade = HighlightGrade.None;
+            label = null;
+            return false;
+        }
+
+        /// <summary>Bodies some creature rule names, so most mobiles skip the rules.</summary>
+        public static bool AnyMobileRules { get { MaybeReload(); return _rareMobiles.Length > 0; } }
+
+        public static LooseStyle LooseTown { get { MaybeReload(); return _looseTown; } }
+        public static LooseStyle LooseHouse { get { MaybeReload(); return _looseHouse; } }
+        /// <summary>The guard-zone file in Data/Client that says where the towns are.</summary>
+        public static string LooseZones { get { MaybeReload(); return _looseZones; } }
 
         public static HighlightGrade RareContainer(uint serial)
         {
@@ -766,6 +836,18 @@ namespace ClassicUO.Game.Managers
                     if (p.Value.TryGetUInt16(out ushort hv)) _bonusHues[p.Name] = hv;
 
             _rareRules = ReadRules(root);
+            _rareMobiles = ReadMobileRules(root);
+
+            _looseTown = DefaultLooseTown;
+            _looseHouse = DefaultLooseHouse;
+            _looseZones = DefaultLooseZones;
+            if (root.TryGetProperty("loose", out JsonElement lo) && lo.ValueKind == JsonValueKind.Object)
+            {
+                _looseTown = ReadLoose(lo, "town", DefaultLooseTown);
+                _looseHouse = ReadLoose(lo, "house", DefaultLooseHouse);
+                string zones = Str(lo, "zones");
+                if (zones != null) _looseZones = zones.Trim();
+            }
 
             _rareContainers = new Dictionary<uint, HighlightGrade>(DefaultRareContainers);
             if (root.TryGetProperty("rareContainers", out JsonElement rc) && rc.ValueKind == JsonValueKind.Array)
@@ -839,6 +921,60 @@ namespace ClassicUO.Game.Managers
             return map;
         }
 
+        private static LooseStyle ReadLoose(JsonElement obj, string name, LooseStyle d)
+        {
+            if (!obj.TryGetProperty(name, out JsonElement e) || e.ValueKind != JsonValueKind.Object)
+                return d;
+            return new LooseStyle(
+                TryHex(Str(e, "color"), out Color c) ? c : d.Color,
+                ReadFloat(e, "alpha", d.Alpha, 0f, 1f),
+                ReadFloat(e, "xray", d.Xray, 0f, 1f));
+        }
+
+        private static bool? ReadBool(JsonElement obj, string name) =>
+            obj.TryGetProperty(name, out JsonElement e)
+            && (e.ValueKind == JsonValueKind.True || e.ValueKind == JsonValueKind.False)
+                ? e.GetBoolean() : null;
+
+        private static HashSet<ushort> ReadGraphics(JsonElement obj, string name)
+        {
+            if (!obj.TryGetProperty(name, out JsonElement ga) || ga.ValueKind != JsonValueKind.Array)
+                return null;
+            var graphics = new HashSet<ushort>();
+            foreach (JsonElement g in ga.EnumerateArray())
+            {
+                if (g.ValueKind == JsonValueKind.String && TryHexUShort(g.GetString(), out ushort gv)) graphics.Add(gv);
+                else if (g.ValueKind == JsonValueKind.Number && g.TryGetUInt16(out ushort nv)) graphics.Add(nv);
+            }
+            return graphics;
+        }
+
+        /// <summary>A rule's grade: "none" is allowed and means "not a collectible".</summary>
+        private static HighlightGrade RuleGrade(JsonElement e) =>
+            string.Equals(Str(e, "grade"), "none", StringComparison.OrdinalIgnoreCase)
+                ? HighlightGrade.None
+                : ParseGrade(Str(e, "grade"), HighlightGrade.Rare);
+
+        private static MobileRule[] ReadMobileRules(JsonElement root)
+        {
+            if (!root.TryGetProperty("rareMobiles", out JsonElement re) || re.ValueKind != JsonValueKind.Array)
+                return DefaultRareMobiles;
+
+            var rules = new List<MobileRule>();
+            foreach (JsonElement e in re.EnumerateArray())
+            {
+                if (e.ValueKind != JsonValueKind.Object) continue;
+                string name = Str(e, "name");
+                HashSet<ushort> bodies = ReadGraphics(e, "bodies");
+                bool? hued = ReadBool(e, "hued");
+                if (string.IsNullOrWhiteSpace(name) && (bodies == null || bodies.Count == 0)) continue;
+                HighlightGrade g = RuleGrade(e);
+                if (g == HighlightGrade.None) continue;
+                rules.Add(new MobileRule(name?.Trim(), bodies, hued, g, Str(e, "label")));
+            }
+            return rules.ToArray();
+        }
+
         private static RareRule[] ReadRules(JsonElement root)
         {
             if (!root.TryGetProperty("rareRules", out JsonElement re) || re.ValueKind != JsonValueKind.Array)
@@ -850,23 +986,12 @@ namespace ClassicUO.Game.Managers
                 if (e.ValueKind != JsonValueKind.Object) continue;
 
                 string name = Str(e, "name");
-                HashSet<ushort> graphics = null;
-                if (e.TryGetProperty("graphics", out JsonElement ga) && ga.ValueKind == JsonValueKind.Array)
-                {
-                    graphics = new HashSet<ushort>();
-                    foreach (JsonElement g in ga.EnumerateArray())
-                    {
-                        if (g.ValueKind == JsonValueKind.String && TryHexUShort(g.GetString(), out ushort gv)) graphics.Add(gv);
-                        else if (g.ValueKind == JsonValueKind.Number && g.TryGetUInt16(out ushort nv)) graphics.Add(nv);
-                    }
-                }
-                bool? onGround = e.TryGetProperty("onGround", out JsonElement og)
-                    && (og.ValueKind == JsonValueKind.True || og.ValueKind == JsonValueKind.False)
-                    ? og.GetBoolean() : null;
+                HashSet<ushort> graphics = ReadGraphics(e, "graphics");
+                bool? onGround = ReadBool(e, "onGround");
 
                 if (string.IsNullOrWhiteSpace(name) && (graphics == null || graphics.Count == 0)) continue;
                 rules.Add(new RareRule(name?.Trim(), graphics, onGround,
-                    ParseGrade(Str(e, "grade"), HighlightGrade.Rare), Str(e, "label")));
+                    RuleGrade(e), Str(e, "label"), ReadBool(e, "hued")));
             }
             return rules.ToArray();
         }
@@ -954,30 +1079,85 @@ namespace ClassicUO.Game.Managers
         public readonly bool? OnGround;
         public readonly HighlightGrade Grade;
         public readonly string Label;
+        /// <summary>Null matches any hue; true only a hued item; false only an unhued one.</summary>
+        public readonly bool? Hued;
 
-        public RareRule(string name, HashSet<ushort> graphics, bool? onGround, HighlightGrade grade, string label)
+        public RareRule(string name, HashSet<ushort> graphics, bool? onGround, HighlightGrade grade, string label, bool? hued = null)
         {
             Name = name;
             Graphics = graphics;
             OnGround = onGround;
             Grade = grade;
             Label = label;
+            Hued = hued;
         }
 
-        public bool Matches(string name, ushort graphic, bool onGround)
+        public bool Matches(string name, ushort graphic, bool onGround, ushort hue = 0)
         {
             if (OnGround.HasValue && OnGround.Value != onGround) return false;
+            if (Hued.HasValue && Hued.Value != (hue != 0)) return false;
             if (Graphics != null && Graphics.Count > 0 && !Graphics.Contains(graphic)) return false;
-            if (string.IsNullOrEmpty(Name)) return true;
-            if (string.IsNullOrEmpty(name)) return false;
-            if (Name[0] != '^') return name.IndexOf(Name, StringComparison.OrdinalIgnoreCase) >= 0;
+            return NameMatches(Name, name);
+        }
 
-            // "^text": the start of any line, since a locked-down item's real name sits
-            // on the line after the label the merger promoted.
-            string want = Name.Substring(1);
+        /// <summary>
+        /// A rule's name against an item's: empty matches anything, "^text" the start of
+        /// any line (a locked-down item's real name sits on the line after the label the
+        /// merger promoted), anything else a substring. Case-insensitive.
+        /// </summary>
+        internal static bool NameMatches(string rule, string name)
+        {
+            if (string.IsNullOrEmpty(rule)) return true;
+            if (string.IsNullOrEmpty(name)) return false;
+            if (rule[0] != '^') return name.IndexOf(rule, StringComparison.OrdinalIgnoreCase) >= 0;
+
+            string want = rule.Substring(1);
             foreach (string line in name.Split('\n'))
                 if (line.TrimStart().StartsWith(want, StringComparison.OrdinalIgnoreCase)) return true;
             return false;
+        }
+    }
+
+    /// <summary>A creature worth a callout: every condition given must hold.</summary>
+    internal sealed class MobileRule
+    {
+        public readonly string Name;
+        public readonly HashSet<ushort> Bodies;
+        /// <summary>Null matches any hue; true only a hued body; false only an unhued one.</summary>
+        public readonly bool? Hued;
+        public readonly HighlightGrade Grade;
+        public readonly string Label;
+
+        public MobileRule(string name, HashSet<ushort> bodies, bool? hued, HighlightGrade grade, string label)
+        {
+            Name = name;
+            Bodies = bodies;
+            Hued = hued;
+            Grade = grade;
+            Label = label;
+        }
+
+        public bool Matches(string name, ushort body, ushort hue)
+        {
+            if (Bodies != null && Bodies.Count > 0 && !Bodies.Contains(body)) return false;
+            if (Hued.HasValue && Hued.Value != (hue != 0)) return false;
+            return RareRule.NameMatches(Name, name);
+        }
+    }
+
+    /// <summary>How a loose ground item in a town or a house is outlined.</summary>
+    internal sealed class LooseStyle
+    {
+        public readonly Color Color;
+        public readonly float Alpha;
+        /// <summary>Opacity through walls, floors and ceilings, 0 for none.</summary>
+        public readonly float Xray;
+
+        public LooseStyle(Color color, float alpha, float xray)
+        {
+            Color = color;
+            Alpha = alpha;
+            Xray = xray;
         }
     }
 }

@@ -484,7 +484,7 @@ namespace ClassicUO.Game.Managers
             }
 
             // A collector rule is a deliberate call ("this hat is common") and wins outright.
-            if (AppraisalPalette.MatchRule(r.Name, r.Graphic, r.OnGround, out HighlightGrade ruled, out ruleLabel))
+            if (AppraisalPalette.MatchRule(r.Name, r.Graphic, r.OnGround, r.Hue, out HighlightGrade ruled, out ruleLabel))
                 return ruled;
 
             var g = HighlightGrade.None;
