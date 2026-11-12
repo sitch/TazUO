@@ -263,7 +263,11 @@ namespace ClassicUO.Game.Managers
         private const int MAX_EMPTY_ATTEMPTS = 3;
         private const int CACHE_LIMIT = 4096;
 
-        public static void ClearCache() => _cache.Clear();
+        public static void ClearCache()
+        {
+            _cache.Clear();
+            LockedDownLabels.Clear();
+        }
 
         public static Result Appraise(World world, uint serial)
         {
@@ -296,7 +300,8 @@ namespace ClassicUO.Game.Managers
             r.OnGround = item.OnGround;
             // Only a ground item's packet carries the flags byte; an item in a pack or
             // on a paperdoll always reads 0, so Movable means nothing off the ground.
-            r.Fixed = item.OnGround && !item.IsMovable;
+            // Nor can the flag tell a locked-down plant or statue; the label can.
+            r.Fixed = item.OnGround && (!item.IsMovable || LockedDownLabels.IsLockedDown(world, item.Serial));
             r.IsContainer = item.ItemData.IsContainer;
             r.RareContainer = HighlightGrade.None;
             if (!AppraisalPalette.HasRareContainers)

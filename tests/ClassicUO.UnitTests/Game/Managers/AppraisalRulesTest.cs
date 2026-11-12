@@ -67,6 +67,45 @@ namespace ClassicUO.UnitTests.Game.Managers
             Assert.False(rule.Matches("a thing", 1, true, 0x0455));
         }
 
+        // ── Hats and mage bone armor (the 2009 page) ───────────────────────────────
+
+        [Theory]
+        [InlineData("bear mask", 0x1545, 0x0481, (int)HighlightGrade.Callout, "★ Polar Bear Hat")]
+        [InlineData("deer mask", 0x1548, 0x047E, (int)HighlightGrade.Callout, "★ White Stag Mask")]
+        [InlineData("bear mask", 0x1546, 0, (int)HighlightGrade.Prized, "Bear Hat")]
+        [InlineData("deer mask", 0x1547, 0, (int)HighlightGrade.Prized, "Deer Hat")]
+        [InlineData("magic bear mask", 0x1545, 0, (int)HighlightGrade.Prized, "Bear Hat")]
+        public void Animal_hats_are_named_and_the_white_ones_called_out(string name, int graphic, int hue, int grade, string label)
+        {
+            var r = Graded(name, (ushort)graphic, (ushort)hue);
+
+            Assert.Equal((HighlightGrade)grade, r.Grade);
+            Assert.Equal(label, r.Label);
+        }
+
+        [Theory]
+        [InlineData("bone armor", 0x144F, 0x0455)]
+        [InlineData("bone helmet", 0x1451, 0x0497)]
+        [InlineData("mage bone armor", 0x144F, 0)]
+        public void Dark_bone_armor_is_mage_bone(string name, int graphic, int hue)
+        {
+            var r = Graded(name, (ushort)graphic, (ushort)hue);
+
+            Assert.Equal(HighlightGrade.Callout, r.Grade);
+            Assert.Equal("★ Mage Bone Armor", r.Label);
+        }
+
+        [Theory]
+        [InlineData(0)]
+        [InlineData(0x08AC)]
+        [InlineData(0x0845)]
+        [InlineData(0x0851)]
+        [InlineData(0x8851)]   // the partial-hue bit is masked off
+        public void Plain_and_leather_bone_armor_is_nothing(int hue)
+        {
+            Assert.NotEqual(HighlightGrade.Callout, Graded("bone arms", 0x144E, (ushort)hue).Grade);
+        }
+
         // ── Creatures ───────────────────────────────────────────────────────────────
 
         [Theory]
@@ -83,10 +122,83 @@ namespace ClassicUO.UnitTests.Game.Managers
         [Theory]
         [InlineData("a sheep", 0xCF, 0)]
         [InlineData("a sheep", 0xDF, 0)]
-        [InlineData("a horse", 0xC8, 0x0455)]
+        [InlineData("a horse", 0xC8, 0)]
+        [InlineData("a llama", 0xDC, 0x0455)]
         public void Ordinary_creatures_are_nothing(string name, int body, int hue)
         {
             Assert.False(AppraisalPalette.MatchMobile(name, (ushort)body, (ushort)hue, out _, out _));
+        }
+
+        // ── The Moonglow Zoo (census 2026-11-11) ───────────────────────────────────
+
+        [Theory]
+        [InlineData("a black wolf", 0x17, 0x076B, (int)HighlightGrade.Callout, "★ Black Wolf")]
+        [InlineData("an arctic wolf", 0x25, 0x0481, (int)HighlightGrade.Callout, "★ Arctic Wolf")]
+        [InlineData("a giant black scorpion", 0x30, 0x076B, (int)HighlightGrade.Callout, "★ Giant Black Scorpion")]
+        [InlineData("", 0x1C, 0x076B, (int)HighlightGrade.Callout, "★ Rare Creature")]
+        [InlineData("a war horse", 0xC8, 0x076B, (int)HighlightGrade.Callout, "★ War Horse")]
+        [InlineData("an ancient gorilla", 0x1D, 0x0482, (int)HighlightGrade.Callout, "★ Ancient Gorilla")]
+        [InlineData("a silver drake", 0x3D, 0x076D, (int)HighlightGrade.Callout, "★ Silver Drake")]
+        [InlineData("a green drake", 0x3D, 0x08A4, (int)HighlightGrade.Callout, "★ Green Drake")]
+        [InlineData("an albino giant rat", 0xD7, 0x047E, (int)HighlightGrade.Prized, "★ Albino Giant Rat")]
+        [InlineData("a white hare", 0xCD, 0x047E, (int)HighlightGrade.Prized, "★ White Hare")]
+        [InlineData("a white stag", 0xEA, 0x047E, (int)HighlightGrade.Prized, "★ White Stag")]
+        [InlineData("a dire bear", 0xD4, 0x0452, (int)HighlightGrade.Prized, "★ Dire Bear")]
+        [InlineData("a tropical bird", 0x06, 0x0556, (int)HighlightGrade.Prized, "★ Tropical Bird")]
+        [InlineData("a tropical bird", 0x06, 0x0562, (int)HighlightGrade.Prized, "★ Tropical Bird")]
+        public void Zoo_rares_are_called_out_by_their_own_name(string name, int body, int hue, int grade, string label)
+        {
+            Assert.True(AppraisalPalette.MatchMobile(name, (ushort)body, (ushort)hue, out HighlightGrade g, out string l));
+            Assert.Equal((HighlightGrade)grade, g);
+            Assert.Equal(label, l);
+        }
+
+        [Theory]
+        [InlineData("a dire wolf", 0x17, 0)]
+        [InlineData("a grey wolf", 0x1B, 0)]
+        [InlineData("a timber wolf", 0xE1, 0)]
+        [InlineData("a gorilla", 0x1D, 0)]
+        [InlineData("a giant rat", 0xD7, 0)]
+        [InlineData("a grizzly bear", 0xD4, 0)]
+        [InlineData("a wild horse", 0xE4, 0)]
+        [InlineData("a cougar", 0x3F, 0)]
+        [InlineData("an eagle", 0x05, 0)]
+        [InlineData("a rabbit", 0xCD, 0x0712)]
+        [InlineData("a raven", 0x06, 0x0901)]
+        [InlineData("a hawk", 0x06, 0x0836)]
+        [InlineData("a sparrow", 0x06, 0x083F)]
+        [InlineData("a thrush", 0x06, 0x0851)]
+        [InlineData("a tropical bird", 0x06, 0x0845)]
+        [InlineData("a baby ice serpent", 0x34, 0x0480)]
+        public void Zoo_commons_are_nothing(string name, int body, int hue)
+        {
+            Assert.False(AppraisalPalette.MatchMobile(name, (ushort)body, (ushort)hue, out _, out _));
+        }
+
+        [Fact]
+        public void A_hue_set_takes_values_and_ranges()
+        {
+            var set = new HueSet(0x0901).Range(0x0835, 0x0853);
+
+            Assert.True(set.Contains(0x0901));
+            Assert.True(set.Contains(0x0835));
+            Assert.True(set.Contains(0x0853));
+            Assert.False(set.Contains(0x0854));
+            Assert.False(set.Contains(0x0556));
+        }
+
+        // ── Locked down ─────────────────────────────────────────────────────────────
+
+        [Theory]
+        [InlineData("locked down", true)]
+        [InlineData("locked down\nwriting table", true)]
+        [InlineData("wooden chest\nLocked Down & Secure", true)]
+        [InlineData("plant bowl", false)]
+        [InlineData("a locked chest", false)]
+        [InlineData("", false)]
+        public void The_shards_label_says_locked_down(string text, bool locked)
+        {
+            Assert.Equal(locked, LockedDownLabels.Says(text));
         }
 
         // ── Town zones ──────────────────────────────────────────────────────────────

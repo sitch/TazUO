@@ -83,19 +83,22 @@ namespace ClassicUO.Game.Managers
 
         /// <summary>
         /// Town or house when the item sits on the ground, movable (the server's own
-        /// flag: what is locked down, nailed to a shop table or part of a house reads
-        /// not-movable), and inside a house's footprint or a guard zone. A house wins,
-        /// since a house in a town is still a house. Boats are multis too, and skipped.
+        /// flag: what is nailed to a shop table or part of a house reads not-movable),
+        /// not labelled locked down, and inside a house's footprint or a guard zone. A
+        /// house wins, since a house in a town is still a house. Boats are multis too,
+        /// and skipped. The flag alone lets locked-down plants and statues through, so
+        /// the label is asked for, and the item stays unlit until it answers.
         /// </summary>
         public static LoosePlace Loose(World world, Item item)
         {
             if (!item.OnGround || !item.IsMovable || item.IsMulti || item.IsCorpse || item.IsDestroyed)
                 return LoosePlace.None;
-            if (InHouse(world, item.X, item.Y))
-                return LoosePlace.House;
-            if (TownZones.Contains(world.MapIndex, item.X, item.Y))
-                return LoosePlace.Town;
-            return LoosePlace.None;
+            LoosePlace place = InHouse(world, item.X, item.Y) ? LoosePlace.House
+                : TownZones.Contains(world.MapIndex, item.X, item.Y) ? LoosePlace.Town
+                : LoosePlace.None;
+            if (place == LoosePlace.None || LockedDownLabels.Ask(world, item.Serial) != LockedDownLabels.State.Loose)
+                return LoosePlace.None;
+            return place;
         }
 
         private static bool InHouse(World world, int x, int y)

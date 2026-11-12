@@ -321,6 +321,17 @@ namespace ClassicUO.Game.Managers
         // clothing and drew in Prized pink.
         private static readonly HashSet<ushort> SpellScrollGraphics = Range(0x1F2D, 0x1F6C);
 
+        // From tiledata.mul: bear mask 0x1545/0x1546, deer mask 0x1547/0x1548, and the
+        // bone arms, armor, gloves, helmet and legs, 0x144E-0x1457.
+        private static readonly HashSet<ushort> BearMaskGraphics = new() { 0x1545, 0x1546 };
+        private static readonly HashSet<ushort> DeerMaskGraphics = new() { 0x1547, 0x1548 };
+        private static readonly HashSet<ushort> BoneArmorGraphics = Range(0x144E, 0x1457);
+
+        // Coloured leather, which a tailor's bone armor takes the hue of: the shard's
+        // spined 0x08AC, horned 0x0845 and barbed 0x0851 (_ui.METAL_HUE, from its BODs),
+        // and later RunUO's 0x0283, 0x0227 and 0x01C1.
+        private static readonly HueSet LeatherHues = new(0x08AC, 0x0845, 0x0851, 0x0283, 0x0227, 0x01C1);
+
         // Collector rules, first match wins, ahead of every other grade source. A rule
         // graded None is a deliberate "not a collectible" and stops every other source.
         private static readonly RareRule[] DefaultRareRules =
@@ -330,6 +341,22 @@ namespace ClassicUO.Game.Managers
             // wizard's hat" was taken by the common vendor hat below.
             new RareRule("really really magic wizards hat", null, null, HighlightGrade.Prized, null),
             new RareRule("a magical wizard's hat", null, null, HighlightGrade.Trace, null),
+            // Deer and bear hats, "rare spawns on ... deer and bears" (2009 page): night
+            // sight and +5 Animal Lore. The white polar bear hat and white stag mask give
+            // +10; ordinary masks are unhued, so a hued one is the white. Ahead of the
+            // magic rules, so a magic one still reads as the hat it is.
+            new RareRule(null, BearMaskGraphics, null, HighlightGrade.Callout, "\u2605 Polar Bear Hat", hued: true),
+            new RareRule(null, DeerMaskGraphics, null, HighlightGrade.Callout, "\u2605 White Stag Mask", hued: true),
+            new RareRule(null, BearMaskGraphics, null, HighlightGrade.Prized, "Bear Hat"),
+            new RareRule(null, DeerMaskGraphics, null, HighlightGrade.Prized, "Deer Hat"),
+            // Mage bone armor, "very rare ... recognized by its dark color": bone armor
+            // with no meditation penalty and a little INT. Ordinary bone armor is unhued
+            // (two chest finds, both 0) unless a tailor made it from coloured leather,
+            // so any hue but the leathers' is the mage's. By name too, in case the
+            // tooltip says so.
+            new RareRule("mage bone", BoneArmorGraphics, null, HighlightGrade.Callout, "\u2605 Mage Bone Armor"),
+            new RareRule(null, BoneArmorGraphics, null, HighlightGrade.Callout, "\u2605 Mage Bone Armor",
+                hued: true, exceptHues: LeatherHues),
             new RareRule("antique", null, null, HighlightGrade.Prized, null),
             // Magic clothing is prized before its tooltip arrives; with the tooltip, the
             // Blessed + bonus lines say the same thing.
@@ -345,14 +372,57 @@ namespace ClassicUO.Game.Managers
             new RareRule(null, new HashSet<ushort> { 0x0DF8, 0x0DF9 }, null, HighlightGrade.Prized, "Black Wool", hued: true),
         };
 
-        // Creatures worth a callout, first match wins. The 2009 server page: "A very
-        // rare black sheep ... gives a very valuable colored black wool". Nobody here has
-        // seen one yet, so it is caught two ways: by name, and as any hued sheep body
-        // (0xCF woolly, 0xDF shorn), since every ordinary sheep is unhued.
+        // Creatures worth a callout, first match wins. The 2009 server page: rare spawns
+        // of many species, 1 in 200 to 1 in 1000, mixed in with their kind, and the
+        // Moonglow Zoo shows them off. The zoo's census (2026-11-11, creature_census.py)
+        // found every rare in a colour its species never wears otherwise, and under a name
+        // of its own ("a black wolf", "an ancient gorilla", "a silver drake"), so a rule is
+        // a body plus the colours that are not ordinary, labelled by the creature's name.
+        //
+        // Callout: the page's "rare colors and increased stats" species. Prized: its
+        // "rare colors" only, and the zoo's rare bears and harts, which it does not list.
+        private static readonly HashSet<ushort> BirdBodies = new() { 0x06 };
+
         private static readonly MobileRule[] DefaultRareMobiles =
         {
+            // The black sheep ("a very valuable colored black wool"): nobody has seen one,
+            // so by name, and as any hued sheep body (0xCF woolly, 0xDF shorn).
             new MobileRule("black sheep", null, null, HighlightGrade.Callout, "\u2605 Black Sheep"),
             new MobileRule(null, new HashSet<ushort> { 0xCF, 0xDF }, true, HighlightGrade.Callout, "\u2605 Black Sheep"),
+
+            // Rare colours, increased stats. Every one of these bodies is unhued in the
+            // wild, so any hue is the rare. Zoo: black wolf 0x17/0x076B, arctic wolf
+            // 0x25/0x0481, giant black scorpion 0x30/0x076B, a black giant spider
+            // 0x1C/0x076B, war horse 0xC8/0x076B, ancient gorilla 0x1D/0x0482, silver drake
+            // 0x3D/0x076D, green drake 0x3D/0x08A4. The page's drake and dragon colours
+            // slay: gold elementals, silver undead, blue humanoids, green snakes, black dragons.
+            new MobileRule(null, new HashSet<ushort> { 0x17 }, true, HighlightGrade.Callout, null),               // dire wolf
+            new MobileRule(null, new HashSet<ushort> { 0x22, 0x25 }, true, HighlightGrade.Callout, null),         // white wolf
+            new MobileRule(null, new HashSet<ushort> { 0x30 }, true, HighlightGrade.Callout, null),               // scorpion
+            new MobileRule(null, new HashSet<ushort> { 0x1C, 0x14, 0x0B }, true, HighlightGrade.Callout, null),   // giant, frost, dread spider
+            new MobileRule(null, new HashSet<ushort> { 0xC8, 0xCC, 0xE2, 0xE4 }, true, HighlightGrade.Callout, null), // horses
+            new MobileRule(null, new HashSet<ushort> { 0x1D }, true, HighlightGrade.Callout, null),               // gorilla
+            new MobileRule(null, new HashSet<ushort> { 0x3C, 0x3D }, true, HighlightGrade.Callout, null),         // drakes
+            new MobileRule(null, new HashSet<ushort> { 0x0C, 0x3B }, true, HighlightGrade.Callout, null),         // dragons
+            new MobileRule(null, new HashSet<ushort> { 0xB4 }, true, HighlightGrade.Callout, null),               // white wyrm
+
+            // Rare colours only. Zoo: albino giant rat 0xD7/0x047E, white hare 0xCD/0x047E,
+            // white stag 0xEA/0x047E, dire bear 0xD4/0x0452. Rabbits are hued in the wild,
+            // so a hare is matched by its white or its name; rats, dolphins, bears and
+            // harts are not.
+            new MobileRule(null, new HashSet<ushort> { 0xD7, 0xEE }, true, HighlightGrade.Prized, null),          // giant, sewer rat
+            new MobileRule(null, new HashSet<ushort> { 0x97 }, true, HighlightGrade.Prized, null),                // dolphin
+            new MobileRule(null, new HashSet<ushort> { 0xD4 }, true, HighlightGrade.Prized, null),                // grizzly bear
+            new MobileRule(null, new HashSet<ushort> { 0xEA }, true, HighlightGrade.Prized, null),                // great hart
+            new MobileRule("white hare", null, null, HighlightGrade.Prized, null),
+            new MobileRule(null, new HashSet<ushort> { 0xCD }, null, HighlightGrade.Prized, null, new HueSet(0x047E)), // rabbit
+
+            // Birds share one body. Ravens, crows and magpies wear 0x0901, every other wild
+            // bird a hue in 0x0835-0x0853 (the zoo's commons: 0x0836-0x0851), and so does
+            // an ordinary tropical bird. The zoo's rare tropical birds wore 0x0556, 0x055C,
+            // 0x055F and 0x0562, so a bird in any other colour is the rare.
+            new MobileRule(null, BirdBodies, true, HighlightGrade.Prized, null,
+                exceptHues: new HueSet(0x0901).Range(0x0835, 0x0853)),
         };
 
         // Loose items: on the ground, movable, and in a town (a guard zone) or inside a
@@ -601,13 +671,26 @@ namespace ClassicUO.Game.Managers
                 if (rule.Matches(name, body, hue))
                 {
                     grade = rule.Grade;
-                    label = rule.Label;
+                    label = rule.Label ?? CreatureLabel(name);
                     return true;
                 }
             }
             grade = HighlightGrade.None;
             label = null;
             return false;
+        }
+
+        /// <summary>"a black wolf" → "★ Black Wolf"; the shard names each rare colour.</summary>
+        internal static string CreatureLabel(string name)
+        {
+            string n = (name ?? "").Trim();
+            foreach (string article in new[] { "a ", "an ", "the " })
+                if (n.StartsWith(article, StringComparison.OrdinalIgnoreCase)) { n = n.Substring(article.Length); break; }
+            if (n.Length == 0) return "\u2605 Rare Creature";
+            var words = n.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            for (int i = 0; i < words.Length; i++)
+                words[i] = char.ToUpperInvariant(words[i][0]) + words[i].Substring(1);
+            return "\u2605 " + string.Join(" ", words);
         }
 
         /// <summary>Bodies some creature rule names, so most mobiles skip the rules.</summary>
@@ -949,6 +1032,30 @@ namespace ClassicUO.Game.Managers
             return graphics;
         }
 
+        /// <summary>A hue list: numbers, "0x" strings, and [lo, hi] pairs for ranges.</summary>
+        private static HueSet ReadHues(JsonElement obj, string name)
+        {
+            if (!obj.TryGetProperty(name, out JsonElement ha) || ha.ValueKind != JsonValueKind.Array)
+                return null;
+            var set = new HueSet();
+            foreach (JsonElement h in ha.EnumerateArray())
+            {
+                if (h.ValueKind == JsonValueKind.Array && h.GetArrayLength() == 2
+                    && TryHue(h[0], out ushort lo) && TryHue(h[1], out ushort hi))
+                    set.Range(lo, hi);
+                else if (TryHue(h, out ushort v))
+                    set.Range(v, v);
+            }
+            return set.Empty ? null : set;
+        }
+
+        private static bool TryHue(JsonElement e, out ushort hue)
+        {
+            hue = 0;
+            if (e.ValueKind == JsonValueKind.String) return TryHexUShort(e.GetString(), out hue);
+            return e.ValueKind == JsonValueKind.Number && e.TryGetUInt16(out hue);
+        }
+
         /// <summary>A rule's grade: "none" is allowed and means "not a collectible".</summary>
         private static HighlightGrade RuleGrade(JsonElement e) =>
             string.Equals(Str(e, "grade"), "none", StringComparison.OrdinalIgnoreCase)
@@ -970,7 +1077,8 @@ namespace ClassicUO.Game.Managers
                 if (string.IsNullOrWhiteSpace(name) && (bodies == null || bodies.Count == 0)) continue;
                 HighlightGrade g = RuleGrade(e);
                 if (g == HighlightGrade.None) continue;
-                rules.Add(new MobileRule(name?.Trim(), bodies, hued, g, Str(e, "label")));
+                rules.Add(new MobileRule(name?.Trim(), bodies, hued, g, Str(e, "label"),
+                    ReadHues(e, "hues"), ReadHues(e, "exceptHues")));
             }
             return rules.ToArray();
         }
@@ -991,7 +1099,8 @@ namespace ClassicUO.Game.Managers
 
                 if (string.IsNullOrWhiteSpace(name) && (graphics == null || graphics.Count == 0)) continue;
                 rules.Add(new RareRule(name?.Trim(), graphics, onGround,
-                    RuleGrade(e), Str(e, "label"), ReadBool(e, "hued")));
+                    RuleGrade(e), Str(e, "label"), ReadBool(e, "hued"),
+                    ReadHues(e, "hues"), ReadHues(e, "exceptHues")));
             }
             return rules.ToArray();
         }
@@ -1081,8 +1190,13 @@ namespace ClassicUO.Game.Managers
         public readonly string Label;
         /// <summary>Null matches any hue; true only a hued item; false only an unhued one.</summary>
         public readonly bool? Hued;
+        /// <summary>When set, the hue must be one of these.</summary>
+        public readonly HueSet Hues;
+        /// <summary>When set, the hue must be none of these.</summary>
+        public readonly HueSet ExceptHues;
 
-        public RareRule(string name, HashSet<ushort> graphics, bool? onGround, HighlightGrade grade, string label, bool? hued = null)
+        public RareRule(string name, HashSet<ushort> graphics, bool? onGround, HighlightGrade grade, string label,
+            bool? hued = null, HueSet hues = null, HueSet exceptHues = null)
         {
             Name = name;
             Graphics = graphics;
@@ -1090,12 +1204,17 @@ namespace ClassicUO.Game.Managers
             Grade = grade;
             Label = label;
             Hued = hued;
+            Hues = hues;
+            ExceptHues = exceptHues;
         }
 
         public bool Matches(string name, ushort graphic, bool onGround, ushort hue = 0)
         {
             if (OnGround.HasValue && OnGround.Value != onGround) return false;
+            hue &= 0x7FFF;
             if (Hued.HasValue && Hued.Value != (hue != 0)) return false;
+            if (Hues != null && !Hues.Contains(hue)) return false;
+            if (ExceptHues != null && ExceptHues.Contains(hue)) return false;
             if (Graphics != null && Graphics.Count > 0 && !Graphics.Contains(graphic)) return false;
             return NameMatches(Name, name);
         }
@@ -1125,14 +1244,22 @@ namespace ClassicUO.Game.Managers
         public readonly HashSet<ushort> Bodies;
         /// <summary>Null matches any hue; true only a hued body; false only an unhued one.</summary>
         public readonly bool? Hued;
+        /// <summary>When set, the hue must be one of these.</summary>
+        public readonly HueSet Hues;
+        /// <summary>When set, the hue must be none of these: a species' ordinary colours.</summary>
+        public readonly HueSet ExceptHues;
         public readonly HighlightGrade Grade;
+        /// <summary>Null labels the creature by its own name (<see cref="AppraisalPalette.CreatureLabel"/>).</summary>
         public readonly string Label;
 
-        public MobileRule(string name, HashSet<ushort> bodies, bool? hued, HighlightGrade grade, string label)
+        public MobileRule(string name, HashSet<ushort> bodies, bool? hued, HighlightGrade grade, string label,
+            HueSet hues = null, HueSet exceptHues = null)
         {
             Name = name;
             Bodies = bodies;
             Hued = hued;
+            Hues = hues;
+            ExceptHues = exceptHues;
             Grade = grade;
             Label = label;
         }
@@ -1140,8 +1267,37 @@ namespace ClassicUO.Game.Managers
         public bool Matches(string name, ushort body, ushort hue)
         {
             if (Bodies != null && Bodies.Count > 0 && !Bodies.Contains(body)) return false;
+            hue &= 0x7FFF;
             if (Hued.HasValue && Hued.Value != (hue != 0)) return false;
+            if (Hues != null && !Hues.Contains(hue)) return false;
+            if (ExceptHues != null && ExceptHues.Contains(hue)) return false;
             return RareRule.NameMatches(Name, name);
+        }
+    }
+
+    /// <summary>Hues as single values and inclusive ranges.</summary>
+    internal sealed class HueSet
+    {
+        private readonly List<(ushort Lo, ushort Hi)> _ranges = new();
+
+        public HueSet(params ushort[] hues)
+        {
+            foreach (ushort h in hues) _ranges.Add((h, h));
+        }
+
+        public HueSet Range(ushort lo, ushort hi)
+        {
+            _ranges.Add(lo <= hi ? (lo, hi) : (hi, lo));
+            return this;
+        }
+
+        public bool Empty => _ranges.Count == 0;
+
+        public bool Contains(ushort hue)
+        {
+            foreach ((ushort lo, ushort hi) in _ranges)
+                if (hue >= lo && hue <= hi) return true;
+            return false;
         }
     }
 
