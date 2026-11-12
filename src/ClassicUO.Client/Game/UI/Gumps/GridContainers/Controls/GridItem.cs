@@ -648,7 +648,11 @@ public class GridItem : Control
     // pixel of padding on lesser items is far cheaper than a grid that jitters
     // as you scroll past an exotic.
     private int EdgeInset =>
-        6 + _profile.GridHighlightSize * 2 + AppraisalPalette.TopTierBorderBonus + 2;
+        6 + _profile.GridHighlightSize + AppraisalPalette.TopTierBorderBonus + 1 + InsetRing + 1;
+
+    // The Exceptional ring is a pixel heavier than the tier border, so it reads as
+    // its own mark at GridHighlightSize 1 rather than as a second hairline.
+    private int InsetRing => _profile.GridHighlightSize + 1;
 
     /// <summary>
     /// The highlight border filled like a vessel: the bottom edge always, the sides
@@ -685,8 +689,8 @@ public class GridItem : Control
     /// </summary>
     private void DrawInsetBorder(UltimaBatcher2D batcher, Rectangle cellBounds, Texture2D tex, Vector3 hue)
     {
-        int bsize = _profile.GridHighlightSize;
-        int gap = bsize + AppraisalPalette.TopTierBorderBonus + 1;
+        int bsize = InsetRing;
+        int gap = _profile.GridHighlightSize + AppraisalPalette.TopTierBorderBonus + 1;
         int bx = cellBounds.X + 6 + gap;
         int by = cellBounds.Y + 6 + gap;
         int iw = cellBounds.Width - 12 - gap * 2;
@@ -722,6 +726,13 @@ public class GridItem : Control
         int total = count * PIP + (count - 1) * GAP;
         int px = cellBounds.X + (cellBounds.Width - total) / 2;
         int py = topEdge ? cellBounds.Y + inset : cellBounds.Y + cellBounds.Height - inset - PIP;
+
+        // A dark pad under the row: the pips sit over the art now, and steel on a
+        // grey plate tunic would vanish without one.
+        var padHue = hue;
+        padHue.Z *= 0.75f;
+        batcher.Draw(SolidColorTextureCache.GetTexture(Color.Black),
+            new Rectangle(px - 1, py - 1, total + 2, PIP + 2), padHue);
 
         for (int i = 0; i < count; i++)
             batcher.Draw(tex, new Rectangle(px + i * (PIP + GAP), py, PIP, PIP), hue);
@@ -1238,53 +1249,14 @@ public class GridItem : Control
         UIManager.Add(multipleToolTipGump);
     }
 
-    /// <summary>Draws the item, its primary highlight border, and any additional rule markers.</summary>
-    /// <param name="batcher">The renderer for this frame.</param>
-    /// <param name="x">The item's horizontal drawing position.</param>
-    /// <param name="y">The item's vertical drawing position.</param>
-    /// <returns>Whether the item was drawn.</returns>
-    public override bool Draw(UltimaBatcher2D batcher, int x, int y)
+    /// <summary>
+    /// The slot's borders and appraisal marks: a hand-made highlight rule, a keg's
+    /// fill, or the appraisal's tier border, Exceptional ring, pips, bars and
+    /// corner square. Drawn over the item art.
+    /// </summary>
+    private void DrawCellMarks(UltimaBatcher2D batcher, Rectangle itemCellBounds,
+        ItemAppraisal.Result appraisal, Vector3 borderHueVec)
     {
-        if (!_shouldDraw || IsDisposed) return false;
-
-        TryShowComparisonTooltip();
-
-        if (_selectHighlight && _hasItem)
-            if (!MultiItemMoveGump.IsSelected(_item.Serial))
-                _selectHighlight = false;
-
-        base.Draw(batcher, x, y);
-
-        Vector3 hueVector = _borderHueVec;
-
-        if (_hasItem)
-        {
-            if (ItemGridLocked)
-                hueVector = ShaderHueTranslator.GetHueVector(0x2, false, (float)_profile.GridBorderAlpha / 100);
-
-            if (Highlight || _selectHighlight)
-                hueVector = _highLightHue;
-        }
-
-        batcher.DrawRectangle
-        (
-            _whiteTexture,
-            x,
-            y,
-            Width,
-            Height,
-            hueVector
-    );
-
-        if (!_hasItem) return true;
-
-        int itemCellWidth = _isListLayout ? GridContainer.LIST_ICON_SIZE : Width;
-        int itemCellHeight = _isListLayout ? GridContainer.LIST_ICON_SIZE : Height;
-        Rectangle itemCellBounds = new(x, y, itemCellWidth, itemCellHeight);
-
-        var borderHueVec = new Vector3(1, 0, 1);
-        ItemAppraisal.Result appraisal = ItemAppraisal.Appraise(_world, _item.Serial);
-
         if (_item.MatchesHighlightData && !_gridContainer.HighlightsDisabledForContainer)
         {
             Texture2D borderTexture = SolidColorTextureCache.GetTexture(_item.HighlightColor);
@@ -1325,15 +1297,6 @@ public class GridItem : Control
 
                 DrawHighlightBorder(batcher, itemCellBounds, borderTexture, outlineHueVec, thickness);
 
-                // Exceptional gets a second, inset border in its own copper. It used to
-                // reuse the outer border's colour, which was fine here but meant the
-                // single-channel surfaces (world, classic gump) had to borrow tier 1's
-                // white for it, and an exceptional Ruin weapon read as a plain
-                // exceptional one. Copper is outside the tier ramp, so both read.
-                if (appraisal.Exceptional)
-                    DrawInsetBorder(batcher, itemCellBounds,
-                        SolidColorTextureCache.GetTexture(AppraisalPalette.Exceptional), borderHueVec);
-
                 // Accuracy pips along the bottom edge. Coloured by the ACCURACY
                 // tier, not the item's border tier — so the dots carry the axis
                 // entirely on their own: five gold pips is unmistakably Supremely
@@ -1346,13 +1309,15 @@ public class GridItem : Control
                     DrawPips(batcher, itemCellBounds, appraisal.AccuracyTier, false, accTexture, borderHueVec);
                 }
             }
-            else if (appraisal.Exceptional)
-            {
-                // Exceptional and nothing else (a well-made tambourine): the copper ring
-                // takes the edge, so the inner one never floats inside an empty slot.
-                DrawHighlightBorder(batcher, itemCellBounds,
+
+            // Exceptional is a copper ring in ONE place, inset from the tier border,
+            // whatever else the item carries: outer ring = tier, inner ring = quality.
+            // A plain exceptional piece used to move its copper out to the tier's
+            // edge, so "[Exceptional]" and "[Exceptional/Ruin]" were both a single
+            // ring and told apart only by a pixel of copper against bone white.
+            if (appraisal.Exceptional)
+                DrawInsetBorder(batcher, itemCellBounds,
                     SolidColorTextureCache.GetTexture(AppraisalPalette.Exceptional), borderHueVec);
-            }
         }
 
         // Durability pips along the top edge, in steel. Drawn for EVERY item that
@@ -1403,6 +1368,54 @@ public class GridItem : Control
             DrawSlayerMark(batcher, itemCellBounds,
                 ItemAppraisal.FamilyColor(appraisal.Slayer), appraisal.SuperSlayer, borderHueVec);
         }
+    }
+
+    /// <summary>Draws the item, its primary highlight border, and any additional rule markers.</summary>
+    /// <param name="batcher">The renderer for this frame.</param>
+    /// <param name="x">The item's horizontal drawing position.</param>
+    /// <param name="y">The item's vertical drawing position.</param>
+    /// <returns>Whether the item was drawn.</returns>
+    public override bool Draw(UltimaBatcher2D batcher, int x, int y)
+    {
+        if (!_shouldDraw || IsDisposed) return false;
+
+        TryShowComparisonTooltip();
+
+        if (_selectHighlight && _hasItem)
+            if (!MultiItemMoveGump.IsSelected(_item.Serial))
+                _selectHighlight = false;
+
+        base.Draw(batcher, x, y);
+
+        Vector3 hueVector = _borderHueVec;
+
+        if (_hasItem)
+        {
+            if (ItemGridLocked)
+                hueVector = ShaderHueTranslator.GetHueVector(0x2, false, (float)_profile.GridBorderAlpha / 100);
+
+            if (Highlight || _selectHighlight)
+                hueVector = _highLightHue;
+        }
+
+        batcher.DrawRectangle
+        (
+            _whiteTexture,
+            x,
+            y,
+            Width,
+            Height,
+            hueVector
+    );
+
+        if (!_hasItem) return true;
+
+        int itemCellWidth = _isListLayout ? GridContainer.LIST_ICON_SIZE : Width;
+        int itemCellHeight = _isListLayout ? GridContainer.LIST_ICON_SIZE : Height;
+        Rectangle itemCellBounds = new(x, y, itemCellWidth, itemCellHeight);
+
+        var borderHueVec = new Vector3(1, 0, 1);
+        ItemAppraisal.Result appraisal = ItemAppraisal.Appraise(_world, _item.Serial);
 
         if (MouseIsOver)
         {
@@ -1422,7 +1435,11 @@ public class GridItem : Control
             );
         }
 
-        if (_texture == null) return true;
+        if (_texture == null)
+        {
+            DrawCellMarks(batcher, itemCellBounds, appraisal, borderHueVec);
+            return true;
+        }
 
         hueVector = ShaderHueTranslator.GetHueVector(_item.Hue, _item.ItemData.IsPartialHue, 1f);
 
@@ -1497,6 +1514,11 @@ public class GridItem : Control
 
             batcher.Draw(_texture, stackedDestination, source, hueVector);
         }
+
+        // Every mark goes on after the art, never under it: tall art (a platemail
+        // tunic, a halberd) filled the cell and painted over the durability pips
+        // and the Exceptional ring, so an exceptional Ruin piece read as a plain one.
+        DrawCellMarks(batcher, itemCellBounds, appraisal, borderHueVec);
 
         if (_item.MatchesHighlightData && !_gridContainer.HighlightsDisabledForContainer)
             DrawAdditionalHighlightMarkers(batcher, itemCellBounds, _item.HighlightColors);
