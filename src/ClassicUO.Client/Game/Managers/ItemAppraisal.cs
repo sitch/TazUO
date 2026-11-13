@@ -482,10 +482,13 @@ namespace ClassicUO.Game.Managers
             // A collectible nobody can pick up is set dressing: the candles and trays
             // nailed to tables around town, or a piece locked down in a house. It is
             // not a find, so no grade, no chime, no x-ray, whatever rule matches it.
+            // A landmark rule is the one exception: a fixed thing worth finding.
             if (r.Fixed)
             {
-                ruleLabel = null;
-                return HighlightGrade.None;
+                return AppraisalPalette.MatchRule(r.Name, r.Graphic, r.OnGround, r.Hue, out HighlightGrade landmark, out ruleLabel,
+                    fixedItem: true)
+                    ? landmark
+                    : HighlightGrade.None;
             }
 
             // A collector rule is a deliberate call ("this hat is common") and wins outright.

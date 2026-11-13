@@ -5,9 +5,11 @@ namespace ClassicUO.UnitTests.Game.Managers
 {
     public class AppraisalRulesTest
     {
-        private static ItemAppraisal.Result Graded(string text, ushort graphic, ushort hue = 0, bool onGround = true)
+        private static ItemAppraisal.Result Graded(string text, ushort graphic, ushort hue = 0, bool onGround = true,
+            bool isFixed = false)
         {
             var r = ItemAppraisal.Parse(text);
+            r.Fixed = isFixed;
             string[] lines = text.Split('\n');
             r.Name = lines.Length > 1 ? lines[0] + "\n" + lines[1] : lines[0];
             r.Graphic = graphic;
@@ -37,6 +39,30 @@ namespace ClassicUO.UnitTests.Game.Managers
         public void Magic_clothing_is_still_prized()
         {
             Assert.Equal(HighlightGrade.Prized, Graded("magic surcoat", 0x1FFD).Grade);
+        }
+
+        // ── Landmarks ───────────────────────────────────────────────────────────────
+
+        [Fact]
+        public void Silver_tree_is_called_out_though_nobody_can_move_it()
+        {
+            var r = Graded("a silver tree", 0x0CD6, isFixed: true);
+
+            Assert.Equal(HighlightGrade.Callout, r.Grade);
+            Assert.Equal("\u2605 Silver Tree", r.Label);
+        }
+
+        [Fact]
+        public void A_fixed_collectible_is_still_set_dressing()
+        {
+            Assert.Equal(HighlightGrade.None, Graded("", 0x0F81, isFixed: true).Grade);
+            Assert.Equal(HighlightGrade.None, Graded("magic surcoat", 0x1FFD, isFixed: true).Grade);
+        }
+
+        [Fact]
+        public void A_fixed_ordinary_tree_is_nothing()
+        {
+            Assert.Equal(HighlightGrade.None, Graded("a cedar tree", 0x0CD6, isFixed: true).Grade);
         }
 
         // ── Fertile dirt and black wool ─────────────────────────────────────────────

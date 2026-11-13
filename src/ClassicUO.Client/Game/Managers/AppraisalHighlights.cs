@@ -56,6 +56,7 @@ namespace ClassicUO.Game.Managers
             if (!ItemAppraisal.Enabled)
                 return false;
             LoosePlace place = Loose(world, item);
+            AskLandmark(world, item);
             if (!item.ItemData.IsContainer && TryAppraisalLook(world, item, out look))
             {
                 if (place == LoosePlace.House)
@@ -63,6 +64,24 @@ namespace ClassicUO.Game.Managers
                 return true;
             }
             return TryLooseLook(place, out look);
+        }
+
+        /// <summary>
+        /// A fixed ground item gets no name until something asks, so a landmark rule
+        /// (matched by name) would wait for a hover. Tree art is asked for: the shard's
+        /// named trees (the silver tree) stand among a handful of tree items, while
+        /// world trees are statics and never come through here. The asks share the
+        /// locked-down labels' budget and stop after a few unanswered.
+        /// </summary>
+        private static void AskLandmark(World world, Item item)
+        {
+            if (!item.OnGround || item.IsMovable || item.IsMulti || item.IsDestroyed)
+                return;
+            string art = item.ItemData.Name;
+            if (string.IsNullOrEmpty(art) || art.IndexOf("tree", StringComparison.OrdinalIgnoreCase) < 0)
+                return;
+            if (AppraisalPalette.HasLandmarks)
+                LockedDownLabels.Ask(world, item.Serial);
         }
 
         /// <summary>The loose outline alone, for a place.</summary>

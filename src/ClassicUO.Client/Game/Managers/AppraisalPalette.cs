@@ -336,6 +336,12 @@ namespace ClassicUO.Game.Managers
         // graded None is a deliberate "not a collectible" and stops every other source.
         private static readonly RareRule[] DefaultRareRules =
         {
+            // A shard-named tree Walter stood beside (journal 2026-11-13, "You see: a
+            // silver tree"), most likely the source of silverwood, the last of the nine
+            // woods and probably a 100 Lumberjacking cut. It is set dressing to the
+            // server (not movable), so only a landmark rule reaches it, and only once
+            // its name has come in: its art and hue are not known yet.
+            new RareRule("silver tree", null, true, HighlightGrade.Callout, "\u2605 Silver Tree", landmark: true),
             new RareRule(null, SpellScrollGraphics, null, HighlightGrade.None, null),
             // Ordinary magic clothing: the shard renamed it only because "magical
             // wizard's hat" was taken by the common vendor hat below.
@@ -645,12 +651,13 @@ namespace ClassicUO.Game.Managers
         }
 
         /// <summary>First collector rule matching the item, or false.</summary>
-        public static bool MatchRule(string name, ushort graphic, bool onGround, ushort hue, out HighlightGrade grade, out string label)
+        public static bool MatchRule(string name, ushort graphic, bool onGround, ushort hue, out HighlightGrade grade, out string label,
+            bool fixedItem = false)
         {
             MaybeReload();
             foreach (RareRule rule in _rareRules)
             {
-                if (rule.Matches(name, graphic, onGround, hue))
+                if ((!fixedItem || rule.Landmark) && rule.Matches(name, graphic, onGround, hue))
                 {
                     grade = rule.Grade;
                     label = rule.Label;
@@ -708,6 +715,18 @@ namespace ClassicUO.Game.Managers
         }
 
         public static bool HasRareContainers { get { MaybeReload(); return _rareContainers.Count > 0; } }
+
+        /// <summary>Whether any rule reaches fixed ground items, so their names are worth asking for.</summary>
+        public static bool HasLandmarks
+        {
+            get
+            {
+                MaybeReload();
+                foreach (RareRule rule in _rareRules)
+                    if (rule.Landmark) return true;
+                return false;
+            }
+        }
 
         private static (string Name, ushort Hue, int Tier)[] ByLength((string Name, ushort Hue, int Tier)[] colors)
         {
@@ -1100,7 +1119,7 @@ namespace ClassicUO.Game.Managers
                 if (string.IsNullOrWhiteSpace(name) && (graphics == null || graphics.Count == 0)) continue;
                 rules.Add(new RareRule(name?.Trim(), graphics, onGround,
                     RuleGrade(e), Str(e, "label"), ReadBool(e, "hued"),
-                    ReadHues(e, "hues"), ReadHues(e, "exceptHues")));
+                    ReadHues(e, "hues"), ReadHues(e, "exceptHues"), ReadBool(e, "landmark") == true));
             }
             return rules.ToArray();
         }
@@ -1194,10 +1213,16 @@ namespace ClassicUO.Game.Managers
         public readonly HueSet Hues;
         /// <summary>When set, the hue must be none of these.</summary>
         public readonly HueSet ExceptHues;
+        /// <summary>
+        /// Matches a ground item nobody can move, which every other rule skips as set
+        /// dressing: a landmark worth finding (the silver tree), not a thing to carry off.
+        /// </summary>
+        public readonly bool Landmark;
 
         public RareRule(string name, HashSet<ushort> graphics, bool? onGround, HighlightGrade grade, string label,
-            bool? hued = null, HueSet hues = null, HueSet exceptHues = null)
+            bool? hued = null, HueSet hues = null, HueSet exceptHues = null, bool landmark = false)
         {
+            Landmark = landmark;
             Name = name;
             Graphics = graphics;
             OnGround = onGround;
