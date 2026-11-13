@@ -21,6 +21,8 @@ internal static class DeleteObject
         if (world.Player == serial)
             return;
 
+        ObjectActionQueue.Instance.OnServerPlaced(serial);
+
         Entity entity = world.Get(serial);
 
         if (entity == null)

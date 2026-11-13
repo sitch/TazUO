@@ -27,6 +27,8 @@ public static class ObjectHelpers
         float? scale = null
     )
     {
+        ObjectActionQueue.Instance.OnServerPlaced(serial);
+
         Mobile mobile = null;
         Item item = null;
         Entity obj;

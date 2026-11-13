@@ -59,6 +59,19 @@ public class ObjectActionQueue : ConcurrentPriorityQueue<ObjectActionQueueItem, 
             _pendingMove = null;
     }
 
+    /// <summary>
+    /// The server has said where <paramref name="serial"/> now is, so a pending move of it has
+    /// landed and must not be put back by a later rejection.
+    /// </summary>
+    /// <remarks>
+    /// <c>DropItemAccepted</c> (0x29) is the usual confirmation, but servers that do not send
+    /// it to older clients (RunUO to 5.0.6.5) only answer with the item's new place (0x25, 0x2E,
+    /// 0x1A/0xF3, 0x3C, or 0x1D for a merged stack). Without this the snapshot outlives the move,
+    /// and the next refused lift of anything restores it: an unequipped weapon reappears in hand on
+    /// the client while the server holds it in the pack.
+    /// </remarks>
+    public void OnServerPlaced(uint serial) => ClearPendingMove(serial);
+
     internal void OnMoveStarted(MoveRequest moveRequest)
     {
         Item item = World.Instance.Items.Get(moveRequest.Serial);

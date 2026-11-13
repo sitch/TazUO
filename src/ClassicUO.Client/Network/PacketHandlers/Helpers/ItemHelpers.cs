@@ -22,6 +22,8 @@ internal static class ItemHelpers
         uint containerSerial
     )
     {
+        ObjectActionQueue.Instance.OnServerPlaced(serial);
+
         if (Client.Game.UO.GameCursor.ItemHold.Serial == serial)
             if (Client.Game.UO.GameCursor.ItemHold.Dropped)
                 Client.Game.UO.GameCursor.ItemHold.Clear();
