@@ -444,7 +444,11 @@ namespace ClassicUO.Game.Managers
         // ceilings, so what a burglar can carry off is plain from the street; a town's
         // stay in plain sight only, or every shop's shelves would flood the screen.
         private static readonly LooseStyle DefaultLooseTown = new LooseStyle(new Color(0x5C, 0xE0, 0xFF), 0.75f, 0f);
-        private static readonly LooseStyle DefaultLooseHouse = new LooseStyle(new Color(0xA6, 0xFF, 0x4D), 0.9f, 0.7f);
+        // A house's loose things are a warning, not a find: anyone who walks in can
+        // carry them off. Red, heavy, breathing, through every wall and floor, labelled,
+        // and announced when each first shows.
+        private static readonly LooseStyle DefaultLooseHouse = new LooseStyle(new Color(0xFF, 0x3B, 0x30), 1f, 1f,
+            weight: 2, pulse: true, label: "Not locked down", labelHue: 33, sound: 0x055);
         private static readonly LooseStyle DefaultLooseWild = new LooseStyle(new Color(0xFF, 0xB8, 0x4D), 0.8f, 0f);
         private const string DefaultLooseZones = "in_mani_ylem_guard_zones.zones.json";
 
@@ -1039,10 +1043,17 @@ namespace ClassicUO.Game.Managers
         {
             if (!obj.TryGetProperty(name, out JsonElement e) || e.ValueKind != JsonValueKind.Object)
                 return d;
+            string label = e.TryGetProperty("label", out JsonElement le) && le.ValueKind == JsonValueKind.String
+                ? le.GetString() : d.Label;
             return new LooseStyle(
                 TryHex(Str(e, "color"), out Color c) ? c : d.Color,
                 ReadFloat(e, "alpha", d.Alpha, 0f, 1f),
-                ReadFloat(e, "xray", d.Xray, 0f, 1f));
+                ReadFloat(e, "xray", d.Xray, 0f, 1f),
+                (int)ReadFloat(e, "weight", d.Weight, 1, 3),
+                ReadBool(e, "pulse") ?? d.Pulse,
+                string.IsNullOrWhiteSpace(label) ? null : label.Trim(),
+                (ushort)ReadFloat(e, "labelHue", d.LabelHue, 0, 0xFFFF),
+                (ushort)ReadFloat(e, "sound", d.Sound, 0, 0xFFFF));
         }
 
         private static bool? ReadBool(JsonElement obj, string name) =>
@@ -1345,12 +1356,31 @@ namespace ClassicUO.Game.Managers
         public readonly float Alpha;
         /// <summary>Opacity through walls, floors and ceilings, 0 for none.</summary>
         public readonly float Xray;
+        /// <summary>Outline thickness in pixels, 1-3.</summary>
+        public readonly int Weight;
+        public readonly bool Pulse;
+        /// <summary>World label over the item, null for none.</summary>
+        public readonly string Label;
+        public readonly ushort LabelHue;
+        /// <summary>
+        /// A label or a sound makes it a warning: a journal line (and this sound, 0 for
+        /// none) when an item first shows loose here.
+        /// </summary>
+        public readonly ushort Sound;
 
-        public LooseStyle(Color color, float alpha, float xray)
+        public LooseStyle(Color color, float alpha, float xray, int weight = 1, bool pulse = false,
+            string label = null, ushort labelHue = 0, ushort sound = 0)
         {
             Color = color;
             Alpha = alpha;
             Xray = xray;
+            Weight = weight;
+            Pulse = pulse;
+            Label = label;
+            LabelHue = labelHue;
+            Sound = sound;
         }
+
+        public bool Warns => Label != null || Sound != 0;
     }
 }

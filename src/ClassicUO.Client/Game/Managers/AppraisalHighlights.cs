@@ -30,6 +30,8 @@ namespace ClassicUO.Game.Managers
         public ushort Sound;
         /// <summary>A first-sight announcement is due (not house decor).</summary>
         public bool Chime;
+        /// <summary>A loose-in-a-house warning: announced in its own words, not as a grade.</summary>
+        public bool Warn;
         public string Name;
     }
 
@@ -47,8 +49,9 @@ namespace ClassicUO.Game.Managers
         /// <summary>
         /// The look a ground item draws: its appraisal (never for a container, whose
         /// state the chest glow says), else the loose outline when it lies movable
-        /// anywhere: a town, a house or the wild. An appraised item in a house takes at least the house x-ray,
-        /// so anything there a hand can carry off shows through floors and ceilings.
+        /// anywhere: a town, a house or the wild. Loose in a house is a warning and wins
+        /// over everything, a container's chest glow included: the outline runs from
+        /// the warning colour into the item's own, and its label follows the warning's.
         /// </summary>
         public static bool TryLook(World world, Item item, out HighlightLook look)
         {
@@ -56,14 +59,23 @@ namespace ClassicUO.Game.Managers
             if (!ItemAppraisal.Enabled)
                 return false;
             LoosePlace place = Loose(world, item);
+            if (place != LoosePlace.House)
+                _warned.Remove(item.Serial);   // locked again or carried off: warn afresh next time
             AskLandmark(world, item);
-            if (!item.ItemData.IsContainer && TryAppraisalLook(world, item, out look))
+            bool appraised = !item.ItemData.IsContainer && TryAppraisalLook(world, item, out look);
+            if (place == LoosePlace.House && TryLooseLook(world, item, place, out HighlightLook warn))
             {
-                if (place == LoosePlace.House)
-                    look.Xray = Math.Max(look.Xray, AppraisalPalette.LooseHouse.Xray);
+                if (appraised)
+                {
+                    warn.Bottom = new Color(look.Top.R, look.Top.G, look.Top.B, warn.Top.A);
+                    warn.Weight = Math.Max(warn.Weight, look.Weight);
+                    if (look.Label != null)
+                        warn.Label = warn.Label == null ? look.Label : warn.Label + " · " + look.Label;
+                }
+                look = warn;
                 return true;
             }
-            return TryLooseLook(place, out look);
+            return appraised || TryLooseLook(world, item, place, out look);
         }
 
         /// <summary>
@@ -81,11 +93,11 @@ namespace ClassicUO.Game.Managers
             if (string.IsNullOrEmpty(art) || art.IndexOf("tree", StringComparison.OrdinalIgnoreCase) < 0)
                 return;
             if (AppraisalPalette.HasLandmarks)
-                LockedDownLabels.Ask(world, item.Serial);
+                LockedDownLabels.Ask(world, item.Serial, recheck: false, movable: false);
         }
 
         /// <summary>The loose outline alone, for a place.</summary>
-        public static bool TryLooseLook(LoosePlace place, out HighlightLook look)
+        public static bool TryLooseLook(World world, Item item, LoosePlace place, out HighlightLook look)
         {
             look = default;
             if (place == LoosePlace.None)
@@ -96,9 +108,21 @@ namespace ClassicUO.Game.Managers
             if (style.Alpha <= 0f && style.Xray <= 0f)
                 return false;
             Color c = style.Color;
-            look.Top = new Color(c.R, c.G, c.B, (byte)(255 * style.Alpha));
-            look.Weight = 1;
+            float alpha = style.Alpha * (style.Pulse ? AppraisalPalette.Pulse(Time.Ticks) : 1f);
+            look.Top = new Color(c.R, c.G, c.B, (byte)(255 * alpha));
+            look.Weight = style.Weight;
             look.Xray = style.Xray;
+            look.Label = style.Label;
+            look.LabelHue = style.LabelHue;
+            look.LabelRule = c;
+            if (style.Warns)
+            {
+                look.Warn = true;
+                look.Sound = style.Sound;
+                look.Chime = true;
+                look.Name = world.OPL.TryGetNameAndData(item.Serial, out string name, out _) && !string.IsNullOrEmpty(name)
+                    ? ItemAppraisal.DisplayName(name) : item.ItemData.Name;
+            }
             return true;
         }
 
@@ -108,18 +132,26 @@ namespace ClassicUO.Game.Managers
         /// not-movable) and not labelled locked down: inside a house's footprint, a
         /// guard zone, or else the wild, so a rock or a dropped thing anywhere a hand
         /// can pick it up is outlined. A house wins, since a house in a town is still a
-        /// house. Boats are multis too,
-        /// and skipped. The flag alone lets locked-down plants and statues through, so
-        /// the label is asked for, and the item stays unlit until it answers.
+        /// house. Boats are multis too, and skipped. The flag alone lets locked-down
+        /// plants and statues through, so the label is asked for, and the item stays
+        /// unlit until it answers; a house item is asked again now and then, since a
+        /// plant released or locked down keeps its flag. An item the server makes
+        /// not-movable (locked down) is forgotten, so the moment it is released and
+        /// reads movable again it is asked afresh.
         /// </summary>
         public static LoosePlace Loose(World world, Item item)
         {
-            if (!item.OnGround || !item.IsMovable || item.IsMulti || item.IsCorpse || item.IsDestroyed)
+            if (!item.OnGround || item.IsMulti || item.IsCorpse || item.IsDestroyed)
                 return LoosePlace.None;
+            if (!item.IsMovable)
+            {
+                LockedDownLabels.NotMovable(item.Serial);
+                return LoosePlace.None;
+            }
             LoosePlace place = InHouse(world, item.X, item.Y) ? LoosePlace.House
                 : TownZones.Contains(world.MapIndex, item.X, item.Y) ? LoosePlace.Town
                 : LoosePlace.Wild;
-            if (LockedDownLabels.Ask(world, item.Serial) != LockedDownLabels.State.Loose)
+            if (LockedDownLabels.Ask(world, item.Serial, recheck: place == LoosePlace.House) != LockedDownLabels.State.Loose)
                 return LoosePlace.None;
             return place;
         }
@@ -232,6 +264,7 @@ namespace ClassicUO.Game.Managers
 
         // ── First-sight chime ───────────────────────────────────────────────────────
         private static readonly HashSet<uint> _announced = new();
+        private static readonly HashSet<uint> _warned = new();
         private static uint _lastChime;
 
         /// <summary>
@@ -243,6 +276,11 @@ namespace ClassicUO.Game.Managers
 
         public static void Announce(World world, uint serial, in HighlightLook look)
         {
+            if (look.Warn)
+            {
+                Warn(world, serial, look);
+                return;
+            }
             if (!look.Chime || look.Grade < HighlightGrade.Prized || !_announced.Add(serial))
                 return;
 
@@ -260,6 +298,31 @@ namespace ClassicUO.Game.Managers
             GameActions.Print(world, text, look.LabelHue != 0 ? look.LabelHue : (ushort)946);
         }
 
-        public static void ResetSession() => _announced.Clear();
+        /// <summary>
+        /// Loose in a house: a red journal line and the warning sound the first time an
+        /// item shows loose, again after it was locked down or left the house and came
+        /// back loose. The sound keeps the chime gap, so a room of loose things gives one.
+        /// </summary>
+        private static void Warn(World world, uint serial, in HighlightLook look)
+        {
+            if (!_warned.Add(serial))
+                return;
+            uint gap = (uint)(AppraisalPalette.ChimeGap * 1000f);
+            if (look.Sound != 0 && Time.Ticks - _lastChime >= gap)
+            {
+                _lastChime = Time.Ticks;
+                Client.Game.Audio?.PlaySound(look.Sound);
+            }
+            string what = look.Label ?? "Not locked down";
+            int cut = what.IndexOf(" · ", StringComparison.Ordinal);
+            if (cut > 0) what = what.Substring(0, cut);
+            GameActions.Print(world, "◆ " + what + " · " + (look.Name ?? "item"), look.LabelHue != 0 ? look.LabelHue : (ushort)33);
+        }
+
+        public static void ResetSession()
+        {
+            _announced.Clear();
+            _warned.Clear();
+        }
     }
 }

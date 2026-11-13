@@ -57,6 +57,10 @@ namespace ClassicUO.Game.Managers
             // journal normally (no swallow) and skips OPL.AddLabel (no tooltip pollution).
             if (LooksLikePlayerDirected(text)) return false;
 
+            // In Mani Ylem mod: every line of the answer, the bare name included, tells
+            // the locked-down check that the shard answered and what it said.
+            LockedDownLabels.OnLabel(parent.Serial, text);
+
             bool hasPrior = world.OPL.TryGetNameAndData(parent.Serial, out string name, out _);
 
             if (hasPrior && !string.IsNullOrEmpty(name))

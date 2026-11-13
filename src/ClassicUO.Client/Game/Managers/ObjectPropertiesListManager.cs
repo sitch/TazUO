@@ -235,6 +235,59 @@ namespace ClassicUO.Game.Managers
                 ItemDatabaseManager.Instance.AddOrUpdateItem(item, _world);
         }
 
+        // In Mani Ylem mod: drop the lines a fresh click answer no longer carries (a
+        // released item's "locked down"). The first label of a click promotes to Name on
+        // an item with no OPL yet, and LabelData survives rebroadcasts, so a stale line
+        // would otherwise stay in the tooltip and the name for the session. A dropped
+        // Name takes the first label line, else the art's name.
+        public void StripLines(uint serial, Predicate<string> drop)
+        {
+            if (!_itemsProperties.TryGetValue(serial, out ItemProperty p))
+                return;
+
+            bool changed = false;
+            string Strip(string s)
+            {
+                if (string.IsNullOrEmpty(s) || !drop(s) && s.IndexOf('\n') < 0)
+                    return s;
+                string[] lines = s.Split('\n');
+                List<string> kept = new List<string>(lines.Length);
+                foreach (string l in lines)
+                    if (!drop(l)) kept.Add(l);
+                if (kept.Count == lines.Length)
+                    return s;
+                changed = true;
+                return string.Join("\n", kept);
+            }
+
+            p.Data = Strip(p.Data);
+            p.LabelData = Strip(p.LabelData);
+            if (!string.IsNullOrEmpty(p.Name) && drop(p.Name))
+            {
+                changed = true;
+                string label = p.LabelData;
+                if (!string.IsNullOrEmpty(label))
+                {
+                    int nl = label.IndexOf('\n');
+                    p.Name = nl < 0 ? label : label.Substring(0, nl);
+                    p.LabelData = nl < 0 ? null : label.Substring(nl + 1);
+                }
+                else
+                {
+                    p.Name = _world.Items.Get(serial)?.ItemData.Name ?? string.Empty;
+                }
+            }
+            if (!changed)
+                return;
+
+            p.Revision = Time.Ticks + 1500;   // as AddLabel: the tooltip re-reads
+            if (_world.Items.Get(serial) is Item item)
+            {
+                item.OPLName = p.Name;
+                item.OPLData = p.Data;
+            }
+        }
+
         private static bool NormalizeContains(string haystack, string needle)
         {
             if (string.IsNullOrEmpty(haystack) || string.IsNullOrEmpty(needle))
