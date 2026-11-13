@@ -34,7 +34,7 @@ namespace ClassicUO.Game.Managers
     }
 
     /// <summary>Where a loose ground item lies, for the loose highlight.</summary>
-    internal enum LoosePlace { None, Town, House }
+    internal enum LoosePlace { None, Town, House, Wild }
 
     internal static class AppraisalHighlights
     {
@@ -46,8 +46,8 @@ namespace ClassicUO.Game.Managers
 
         /// <summary>
         /// The look a ground item draws: its appraisal (never for a container, whose
-        /// state the chest glow says), else the loose outline when it lies movable in a
-        /// town or a house. An appraised item in a house takes at least the house x-ray,
+        /// state the chest glow says), else the loose outline when it lies movable
+        /// anywhere: a town, a house or the wild. An appraised item in a house takes at least the house x-ray,
         /// so anything there a hand can carry off shows through floors and ceilings.
         /// </summary>
         public static bool TryLook(World world, Item item, out HighlightLook look)
@@ -90,7 +90,9 @@ namespace ClassicUO.Game.Managers
             look = default;
             if (place == LoosePlace.None)
                 return false;
-            LooseStyle style = place == LoosePlace.House ? AppraisalPalette.LooseHouse : AppraisalPalette.LooseTown;
+            LooseStyle style = place == LoosePlace.House ? AppraisalPalette.LooseHouse
+                : place == LoosePlace.Town ? AppraisalPalette.LooseTown
+                : AppraisalPalette.LooseWild;
             if (style.Alpha <= 0f && style.Xray <= 0f)
                 return false;
             Color c = style.Color;
@@ -101,10 +103,12 @@ namespace ClassicUO.Game.Managers
         }
 
         /// <summary>
-        /// Town or house when the item sits on the ground, movable (the server's own
-        /// flag: what is nailed to a shop table or part of a house reads not-movable),
-        /// not labelled locked down, and inside a house's footprint or a guard zone. A
-        /// house wins, since a house in a town is still a house. Boats are multis too,
+        /// Where the item lies when it sits on the ground, movable (the server's own
+        /// flag: what is nailed to a shop table, part of a house or set dressing reads
+        /// not-movable) and not labelled locked down: inside a house's footprint, a
+        /// guard zone, or else the wild, so a rock or a dropped thing anywhere a hand
+        /// can pick it up is outlined. A house wins, since a house in a town is still a
+        /// house. Boats are multis too,
         /// and skipped. The flag alone lets locked-down plants and statues through, so
         /// the label is asked for, and the item stays unlit until it answers.
         /// </summary>
@@ -114,8 +118,8 @@ namespace ClassicUO.Game.Managers
                 return LoosePlace.None;
             LoosePlace place = InHouse(world, item.X, item.Y) ? LoosePlace.House
                 : TownZones.Contains(world.MapIndex, item.X, item.Y) ? LoosePlace.Town
-                : LoosePlace.None;
-            if (place == LoosePlace.None || LockedDownLabels.Ask(world, item.Serial) != LockedDownLabels.State.Loose)
+                : LoosePlace.Wild;
+            if (LockedDownLabels.Ask(world, item.Serial) != LockedDownLabels.State.Loose)
                 return LoosePlace.None;
             return place;
         }

@@ -445,6 +445,7 @@ namespace ClassicUO.Game.Managers
         // stay in plain sight only, or every shop's shelves would flood the screen.
         private static readonly LooseStyle DefaultLooseTown = new LooseStyle(new Color(0x5C, 0xE0, 0xFF), 0.75f, 0f);
         private static readonly LooseStyle DefaultLooseHouse = new LooseStyle(new Color(0xA6, 0xFF, 0x4D), 0.9f, 0.7f);
+        private static readonly LooseStyle DefaultLooseWild = new LooseStyle(new Color(0xFF, 0xB8, 0x4D), 0.8f, 0f);
         private const string DefaultLooseZones = "in_mani_ylem_guard_zones.zones.json";
 
         private static HashSet<ushort> Range(ushort first, ushort last)
@@ -495,6 +496,7 @@ namespace ClassicUO.Game.Managers
         private static MobileRule[] _rareMobiles = DefaultRareMobiles;
         private static LooseStyle _looseTown = DefaultLooseTown;
         private static LooseStyle _looseHouse = DefaultLooseHouse;
+        private static LooseStyle _looseWild = DefaultLooseWild;
         private static string _looseZones = DefaultLooseZones;
         private static Dictionary<uint, HighlightGrade> _rareContainers = new(DefaultRareContainers);
 
@@ -712,6 +714,7 @@ namespace ClassicUO.Game.Managers
 
         public static LooseStyle LooseTown { get { MaybeReload(); return _looseTown; } }
         public static LooseStyle LooseHouse { get { MaybeReload(); return _looseHouse; } }
+        public static LooseStyle LooseWild { get { MaybeReload(); return _looseWild; } }
         /// <summary>The guard-zone file in Data/Client that says where the towns are.</summary>
         public static string LooseZones { get { MaybeReload(); return _looseZones; } }
 
@@ -949,11 +952,13 @@ namespace ClassicUO.Game.Managers
 
             _looseTown = DefaultLooseTown;
             _looseHouse = DefaultLooseHouse;
+            _looseWild = DefaultLooseWild;
             _looseZones = DefaultLooseZones;
             if (root.TryGetProperty("loose", out JsonElement lo) && lo.ValueKind == JsonValueKind.Object)
             {
                 _looseTown = ReadLoose(lo, "town", DefaultLooseTown);
                 _looseHouse = ReadLoose(lo, "house", DefaultLooseHouse);
+                _looseWild = ReadLoose(lo, "wild", DefaultLooseWild);
                 string zones = Str(lo, "zones");
                 if (zones != null) _looseZones = zones.Trim();
             }
@@ -1333,7 +1338,7 @@ namespace ClassicUO.Game.Managers
         }
     }
 
-    /// <summary>How a loose ground item in a town or a house is outlined.</summary>
+    /// <summary>How a loose ground item in a town, a house or the wild is outlined.</summary>
     internal sealed class LooseStyle
     {
         public readonly Color Color;
