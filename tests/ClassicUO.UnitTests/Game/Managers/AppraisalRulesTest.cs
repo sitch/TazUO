@@ -41,6 +41,32 @@ namespace ClassicUO.UnitTests.Game.Managers
             Assert.Equal(HighlightGrade.Prized, Graded("magic surcoat", 0x1FFD).Grade);
         }
 
+        // ── Key rings and rope ──────────────────────────────────────────────────────
+
+        [Theory]
+        [InlineData("key ring", 0x1011)]
+        [InlineData("key ring", 0x1769)]
+        [InlineData("key ring", 0x176A)]
+        [InlineData("key ring", 0x176B)]
+        [InlineData("magic key ring", 0x1011)]
+        public void Key_rings_are_not_collectibles(string name, int graphic)
+        {
+            var r = Graded(name, (ushort)graphic);
+
+            Assert.Equal(HighlightGrade.None, r.Grade);
+            Assert.False(r.Rare);
+            Assert.Equal(HighlightGrade.None, Graded(name, (ushort)graphic, onGround: false).Grade);
+        }
+
+        [Theory]
+        [InlineData(0x14F8)]
+        [InlineData(0x14FA)]
+        public void Rope_is_rare_either_way_round(int graphic)
+        {
+            Assert.Equal(HighlightGrade.Rare, Graded("rope", (ushort)graphic, onGround: false).Grade);
+            Assert.Equal(HighlightGrade.Rare, Graded("", (ushort)graphic).Grade);
+        }
+
         // ── Landmarks ───────────────────────────────────────────────────────────────
 
         [Fact]

@@ -209,6 +209,9 @@ namespace ClassicUO.Game.Managers
             // works before the item's tooltip has ever been fetched.
             0x1420, 0x1421,                           // a handrolled joint ("roll of string" art)
             0x0E28,                                   // a water bong ("bottle" art)
+            // Rope, both ways round (RunUO flips 0x14F8 <-> 0x14FA). A collector piece
+            // on Walter Goonsman, 2026-11-13; the coiled and ground ropes are other art.
+            0x14F8, 0x14FA,                           // rope
         };
 
         // Potion kegs, keyed by potion family. UO's own potion colours — the same ones
@@ -343,6 +346,10 @@ namespace ClassicUO.Game.Managers
             // its name has come in: its art and hue are not known yet.
             new RareRule("silver tree", null, true, HighlightGrade.Callout, "\u2605 Silver Tree", landmark: true),
             new RareRule(null, SpellScrollGraphics, null, HighlightGrade.None, null),
+            // A key ring is a tinker's everyday item, empty (0x1011) or holding keys
+            // (0x1769-0x176B), yet one drew Rare pink in town on 2026-11-13. By art,
+            // whatever its label says, so no other source can grade it.
+            new RareRule(null, new HashSet<ushort> { 0x1011, 0x1769, 0x176A, 0x176B }, null, HighlightGrade.None, null),
             // Ordinary magic clothing: the shard renamed it only because "magical
             // wizard's hat" was taken by the common vendor hat below.
             new RareRule("really really magic wizards hat", null, null, HighlightGrade.Prized, null),
