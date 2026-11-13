@@ -16,7 +16,7 @@ namespace ClassicUO.Game.Scenes
         private readonly List<(int map, int bx, int by)> _blockScratch = new();
 
         /// <summary>
-        /// In Mani Ylem mod: the 8x8 bank grid and its countdowns (<see cref="BlockGridManager"/>).
+        /// In Mani Ylem mod: the bank grid and its countdowns (<see cref="BlockGridManager"/>).
         ///
         /// Drawn in the overlay pass, under the camera transform, after the lights: a line darkened
         /// with the night would be lost against rock. A boundary runs along tile corners, and each
@@ -35,6 +35,7 @@ namespace ClassicUO.Game.Scenes
             }
 
             int size = grid.Size;
+            int sizeY = grid.SizeY;
             int px = _world.Player.X;
             int py = _world.Player.Y;
             int x0 = px - grid.Radius;
@@ -62,7 +63,7 @@ namespace ClassicUO.Game.Scenes
                     }
                 }
 
-                for (int y = FirstLine(y0, size); y <= y1 + 1; y += size)
+                for (int y = FirstLine(y0, sizeY); y <= y1 + 1; y += sizeY)
                 {
                     Vector2 a = CornerToScreen(x0, y);
 
@@ -82,6 +83,7 @@ namespace ClassicUO.Game.Scenes
         {
             int map = _world.Map.Index;
             int size = grid.Size;
+            int sizeY = grid.SizeY;
 
             _blockScratch.Clear();
 
@@ -97,7 +99,7 @@ namespace ClassicUO.Game.Scenes
 
                 (int m, int bx, int by) = kv.Key;
                 int cx = bx * size + size / 2;
-                int cy = by * size + size / 2;
+                int cy = by * sizeY + sizeY / 2;
 
                 if (m != map || cx < x0 || cx > x1 || cy < y0 || cy > y1)
                 {

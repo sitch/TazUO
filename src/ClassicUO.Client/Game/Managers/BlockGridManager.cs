@@ -5,7 +5,7 @@ using System.Collections.Generic;
 namespace ClassicUO.Game.Managers
 {
     /// <summary>
-    /// In Mani Ylem mod: a world overlay of the server's 8x8 resource banks (ore, fish, wood),
+    /// In Mani Ylem mod: a world overlay of the server's resource banks (8x8 ore and fish, 4x3 wood),
     /// drawn by <see cref="Scenes.GameScene"/> as fine lines on the block boundaries, plus a
     /// countdown at a block's centre until its bank is back. Scripts drive it
     /// (LegionAPI.ShowBlockGrid / SetBlockTimer); nothing is saved, so a client restart starts
@@ -30,6 +30,8 @@ namespace ClassicUO.Game.Managers
         public bool Show { get; private set; }
         public ushort Hue { get; private set; } = 1153;
         public int Size { get; private set; } = 8;
+        /// <summary>Block height in tiles; <see cref="Size"/> is its width (RunUO's lumber banks are 4x3).</summary>
+        public int SizeY { get; private set; } = 8;
         public int Radius { get; private set; } = 24;
         public int Thickness { get; private set; } = 1;
 
@@ -38,11 +40,12 @@ namespace ClassicUO.Game.Managers
 
         private BlockGridManager() { }
 
-        public void SetGrid(bool show, ushort hue, int size, int radius, int thickness)
+        public void SetGrid(bool show, ushort hue, int size, int radius, int thickness, int sizeY = 0)
         {
             Show = show;
             Hue = hue;
             Size = size < 1 ? 8 : size;
+            SizeY = sizeY < 1 ? Size : sizeY;
             Radius = radius < 1 ? 24 : radius;
             Thickness = thickness < 1 ? 1 : thickness;
         }

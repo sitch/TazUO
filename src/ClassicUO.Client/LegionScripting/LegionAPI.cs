@@ -5301,26 +5301,28 @@ namespace ClassicUO.LegionScripting
 
         /// <summary>
         /// In Mani Ylem mod: draw fine lines on the boundaries of the server's resource banks
-        /// (8x8 blocks of the map), following the land's slope, within `radius` tiles of the player.
+        /// (8x8 blocks of the map for ore and fish, 4x3 for wood), following the land's slope, within `radius` tiles of the player.
         /// Over a cave, where the rock overhead is not drawn, the lines lie at the player's height.
         /// Example:
         /// ```py
         /// API.ShowBlockGrid(True)          # white, 8x8, 24 tiles around you
+        /// API.ShowBlockGrid(True, 1153, 4, 24, 1, 3)   # RunUO's 4x3 lumber banks
         /// API.ShowBlockGrid(False)
         /// ```
         /// </summary>
         /// <param name="show">True to draw the grid, False to hide it (countdowns still draw)</param>
         /// <param name="hue">Line hue</param>
-        /// <param name="size">Block size in tiles</param>
+        /// <param name="size">Block width in tiles (and height, unless sizeY is given)</param>
         /// <param name="radius">How far from the player to draw, in tiles</param>
         /// <param name="thickness">Line width in pixels</param>
-        public void ShowBlockGrid(bool show, ushort hue = 1153, int size = 8, int radius = 24, int thickness = 1) => OnMain(() =>
+        /// <param name="sizeY">Block height in tiles; 0 for the same as size</param>
+        public void ShowBlockGrid(bool show, ushort hue = 1153, int size = 8, int radius = 24, int thickness = 1, int sizeY = 0) => OnMain(() =>
         {
-            BlockGridManager.Instance.SetGrid(show, hue, size, radius, thickness);
+            BlockGridManager.Instance.SetGrid(show, hue, size, radius, thickness, sizeY);
         });
 
         /// <summary>
-        /// In Mani Ylem mod: show a countdown at the centre of block (bx, by) (tiles bx*8.. by*8..)
+        /// In Mani Ylem mod: show a countdown at the centre of block (bx, by) (tiles bx*size.. by*sizeY.., as ShowBlockGrid last set them)
         /// until its bank is back. The client counts down on its own; set it once. Seconds of 0
         /// or less removes it.
         /// Example:
@@ -5329,7 +5331,7 @@ namespace ClassicUO.LegionScripting
         /// ```
         /// </summary>
         /// <param name="bx">Block x (tile x // block size)</param>
-        /// <param name="by">Block y (tile y // block size)</param>
+        /// <param name="by">Block y (tile y // block height)</param>
         /// <param name="seconds">Seconds until the bank is back</param>
         /// <param name="hue">Text hue</param>
         /// <param name="map">Defaults to current map</param>

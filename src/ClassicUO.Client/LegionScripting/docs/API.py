@@ -4087,16 +4087,17 @@ def MarkTile(x: "int", y: "int", hue: "int", map: "int" = -1) -> None:
     """
     pass
 
-def ShowBlockGrid(show: "bool", hue: "int" = 1153, size: "int" = 8, radius: "int" = 24, thickness: "int" = 1) -> None:
+def ShowBlockGrid(show: "bool", hue: "int" = 1153, size: "int" = 8, radius: "int" = 24, thickness: "int" = 1, sizeY: "int" = 0) -> None:
     """
     In Mani Ylem mod: draw fine lines on the boundaries of the server's resource banks
-    (8x8 blocks of the map), following the land's slope, within `radius` tiles of the player.
+    (8x8 blocks of the map for ore and fish, 4x3 for wood), following the land's slope, within `radius` tiles of the player.
     Over a cave, where the rock overhead is not drawn, the lines lie at the player's height.
     
     **Example:**
     
     ```py
     API.ShowBlockGrid(True)          # white, 8x8, 24 tiles around you
+    API.ShowBlockGrid(True, 1153, 4, 24, 1, 3)   # RunUO's 4x3 lumber banks
     API.ShowBlockGrid(False)
     ```
     """
@@ -4104,7 +4105,7 @@ def ShowBlockGrid(show: "bool", hue: "int" = 1153, size: "int" = 8, radius: "int
 
 def SetBlockTimer(bx: "int", by: "int", seconds: "float", hue: "int" = 1153, map: "int" = -1) -> None:
     """
-    In Mani Ylem mod: show a countdown at the centre of block (bx, by) (tiles bx*8.. by*8..)
+    In Mani Ylem mod: show a countdown at the centre of block (bx, by) (tiles bx*size.. by*sizeY.., as ShowBlockGrid last set them)
     until its bank is back. The client counts down on its own; set it once. Seconds of 0
     or less removes it.
     
