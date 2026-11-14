@@ -37,6 +37,7 @@ namespace ClassicUO.Game.Managers
             0x0E76, // generic bag
             0x0E77, // barrel
             0x0E79, // pouch
+            0x0E78, // basin (set dressing, e.g. beside Walter: no lock)
             0x0E7A, // picnic basket
             0x0E80, // box (generic)
             0x0E83, // money bag
@@ -115,6 +116,7 @@ namespace ClassicUO.Game.Managers
             "barrel",
             "keg",
             "trash",
+            "basin",
         };
 
         private static bool MatchesAny(string oplText, string[] keywords)

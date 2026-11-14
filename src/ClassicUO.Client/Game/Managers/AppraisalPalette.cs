@@ -450,6 +450,11 @@ namespace ClassicUO.Game.Managers
         private static readonly LooseStyle DefaultLooseHouse = new LooseStyle(new Color(0xFF, 0x3B, 0x30), 1f, 1f,
             weight: 2, pulse: true, label: "Not locked down", labelHue: 33, sound: 0x055);
         private static readonly LooseStyle DefaultLooseWild = new LooseStyle(new Color(0xFF, 0xB8, 0x4D), 0.8f, 0f);
+        // Not movable, but a thief can take it: RunUO's stealable artifacts, set
+        // dressing at fixed spots that respawns once stolen. A find, not a warning, but
+        // as loud as one: violet, heavy, breathing, through walls, labelled, chimed.
+        private static readonly LooseStyle DefaultLooseStealable = new LooseStyle(new Color(0xA8, 0x6B, 0xFF), 1f, 0.8f,
+            weight: 2, pulse: true, label: "Stealable", labelHue: 1153, sound: 0x1EB);
         private const string DefaultLooseZones = "in_mani_ylem_guard_zones.zones.json";
 
         private static HashSet<ushort> Range(ushort first, ushort last)
@@ -501,6 +506,7 @@ namespace ClassicUO.Game.Managers
         private static LooseStyle _looseTown = DefaultLooseTown;
         private static LooseStyle _looseHouse = DefaultLooseHouse;
         private static LooseStyle _looseWild = DefaultLooseWild;
+        private static LooseStyle _looseStealable = DefaultLooseStealable;
         private static string _looseZones = DefaultLooseZones;
         private static Dictionary<uint, HighlightGrade> _rareContainers = new(DefaultRareContainers);
 
@@ -719,6 +725,7 @@ namespace ClassicUO.Game.Managers
         public static LooseStyle LooseTown { get { MaybeReload(); return _looseTown; } }
         public static LooseStyle LooseHouse { get { MaybeReload(); return _looseHouse; } }
         public static LooseStyle LooseWild { get { MaybeReload(); return _looseWild; } }
+        public static LooseStyle LooseStealable { get { MaybeReload(); return _looseStealable; } }
         /// <summary>The guard-zone file in Data/Client that says where the towns are.</summary>
         public static string LooseZones { get { MaybeReload(); return _looseZones; } }
 
@@ -957,12 +964,14 @@ namespace ClassicUO.Game.Managers
             _looseTown = DefaultLooseTown;
             _looseHouse = DefaultLooseHouse;
             _looseWild = DefaultLooseWild;
+            _looseStealable = DefaultLooseStealable;
             _looseZones = DefaultLooseZones;
             if (root.TryGetProperty("loose", out JsonElement lo) && lo.ValueKind == JsonValueKind.Object)
             {
                 _looseTown = ReadLoose(lo, "town", DefaultLooseTown);
                 _looseHouse = ReadLoose(lo, "house", DefaultLooseHouse);
                 _looseWild = ReadLoose(lo, "wild", DefaultLooseWild);
+                _looseStealable = ReadLoose(lo, "stealable", DefaultLooseStealable);
                 string zones = Str(lo, "zones");
                 if (zones != null) _looseZones = zones.Trim();
             }
@@ -1349,7 +1358,7 @@ namespace ClassicUO.Game.Managers
         }
     }
 
-    /// <summary>How a loose ground item in a town, a house or the wild is outlined.</summary>
+    /// <summary>How a loose ground item in a town, a house or the wild, or a stealable one, is outlined.</summary>
     internal sealed class LooseStyle
     {
         public readonly Color Color;

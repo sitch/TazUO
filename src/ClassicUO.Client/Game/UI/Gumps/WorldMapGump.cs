@@ -2260,9 +2260,11 @@ public class WorldMapGump : ResizableGump
                                 {
                                     string line = reader.ReadLine();
 
+                                    // A blank line is skipped; returning here ended the
+                                    // whole load, every later marker file with it.
                                     if (string.IsNullOrEmpty(line))
                                     {
-                                        return;
+                                        continue;
                                     }
 
                                     string[] splits = line.Split(',');

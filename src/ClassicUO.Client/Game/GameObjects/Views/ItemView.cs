@@ -393,8 +393,9 @@ namespace ClassicUO.Game.GameObjects
                     : AppraisalPalette.XrayCapacity;
 
                 // A container someone could carry out of a house, contents and all,
-                // takes the house's loose warning over its chest glow.
-                if (ItemAppraisal.Enabled && AppraisalHighlights.Loose(World, this) == LoosePlace.House
+                // takes the house's loose warning over its chest glow; a stealable one
+                // its stealable look.
+                if (ItemAppraisal.Enabled && AppraisalHighlights.Wins(AppraisalHighlights.Loose(World, this))
                     && AppraisalHighlights.TryLook(World, this, out look))
                 {
                     hasLook = true;

@@ -30,13 +30,16 @@ namespace ClassicUO.Game.Managers
         public ushort Sound;
         /// <summary>A first-sight announcement is due (not house decor).</summary>
         public bool Chime;
-        /// <summary>A loose-in-a-house warning: announced in its own words, not as a grade.</summary>
+        /// <summary>A loose-in-a-house or stealable warning: announced in its own words, not as a grade.</summary>
         public bool Warn;
         public string Name;
     }
 
-    /// <summary>Where a loose ground item lies, for the loose highlight.</summary>
-    internal enum LoosePlace { None, Town, House, Wild }
+    /// <summary>
+    /// Where a loose ground item lies, for the loose highlight; or Stealable, a fixed
+    /// item a thief can take.
+    /// </summary>
+    internal enum LoosePlace { None, Town, House, Wild, Stealable }
 
     internal static class AppraisalHighlights
     {
@@ -46,12 +49,18 @@ namespace ClassicUO.Game.Managers
         /// </summary>
         private const float LootXray = 0.45f;
 
+        /// <summary>World map markers for landmarks (the silver tree), through <see cref="MapMarks"/>.</summary>
+        public const string LANDMARKS_FILE = "in_mani_ylem_landmarks.csv";
+        /// <summary>Silver, for the silver tree and its kind.</summary>
+        private const string LANDMARK_COLOR = "#D8DCE8";
+
         /// <summary>
         /// The look a ground item draws: its appraisal (never for a container, whose
         /// state the chest glow says), else the loose outline when it lies movable
-        /// anywhere: a town, a house or the wild. Loose in a house is a warning and wins
-        /// over everything, a container's chest glow included: the outline runs from
-        /// the warning colour into the item's own, and its label follows the warning's.
+        /// anywhere: a town, a house or the wild. Loose in a house, and stealable, are
+        /// warnings and win over everything, a container's chest glow included: the
+        /// outline runs from the warning colour into the item's own, and its label
+        /// follows the warning's.
         /// </summary>
         public static bool TryLook(World world, Item item, out HighlightLook look)
         {
@@ -59,11 +68,11 @@ namespace ClassicUO.Game.Managers
             if (!ItemAppraisal.Enabled)
                 return false;
             LoosePlace place = Loose(world, item);
-            if (place != LoosePlace.House)
+            if (!Wins(place))
                 _warned.Remove(item.Serial);   // locked again or carried off: warn afresh next time
             AskLandmark(world, item);
             bool appraised = !item.ItemData.IsContainer && TryAppraisalLook(world, item, out look);
-            if (place == LoosePlace.House && TryLooseLook(world, item, place, out HighlightLook warn))
+            if (Wins(place) && TryLooseLook(world, item, place, out HighlightLook warn))
             {
                 if (appraised)
                 {
@@ -77,6 +86,9 @@ namespace ClassicUO.Game.Managers
             }
             return appraised || TryLooseLook(world, item, place, out look);
         }
+
+        /// <summary>A place whose outline wins over a chest glow and an appraisal.</summary>
+        public static bool Wins(LoosePlace place) => place == LoosePlace.House || place == LoosePlace.Stealable;
 
         /// <summary>
         /// A fixed ground item gets no name until something asks, so a landmark rule
@@ -103,6 +115,7 @@ namespace ClassicUO.Game.Managers
             if (place == LoosePlace.None)
                 return false;
             LooseStyle style = place == LoosePlace.House ? AppraisalPalette.LooseHouse
+                : place == LoosePlace.Stealable ? AppraisalPalette.LooseStealable
                 : place == LoosePlace.Town ? AppraisalPalette.LooseTown
                 : AppraisalPalette.LooseWild;
             if (style.Alpha <= 0f && style.Xray <= 0f)
@@ -133,28 +146,140 @@ namespace ClassicUO.Game.Managers
         /// guard zone, or else the wild, so a rock or a dropped thing anywhere a hand
         /// can pick it up is outlined. A house wins, since a house in a town is still a
         /// house. Boats are multis too, and skipped. The flag alone lets locked-down
-        /// plants and statues through, so the label is asked for, and the item stays
-        /// unlit until it answers; a house item is asked again now and then, since a
-        /// plant released or locked down keeps its flag. An item the server makes
-        /// not-movable (locked down) is forgotten, so the moment it is released and
-        /// reads movable again it is asked afresh.
+        /// plants and statues through, so the label is asked for; a house item stays
+        /// unlit until it answers and is asked again now and then, since a plant
+        /// released or locked down keeps its flag. Nothing outside a house can be
+        /// locked down, so a town's or the wild's item is outlined at once and only an
+        /// answer saying "locked down" (a house's edge the footprint missed) puts it
+        /// out. An item the server makes not-movable (locked down) is forgotten, so the
+        /// moment it is released and reads movable again it is asked afresh.
+        ///
+        /// A not-movable item on one of the stealable spots is Stealable. A house sign
+        /// (<see cref="HouseSigns"/>) is never anything: it reads movable and is never
+        /// locked down, so sign art waits for its answer wherever it hangs.
         /// </summary>
         public static LoosePlace Loose(World world, Item item)
         {
             if (!item.OnGround || item.IsMulti || item.IsCorpse || item.IsDestroyed)
                 return LoosePlace.None;
+            if (HouseSigns.IsKnownSign(item.Serial) || HouseSigns.Check(world, item))
+                return LoosePlace.None;   // a house sign reads movable; it goes on the map instead
             if (!item.IsMovable)
             {
                 LockedDownLabels.NotMovable(item.Serial);
-                return LoosePlace.None;
+                return IsStealableSpot(world.MapIndex, item.X, item.Y) ? LoosePlace.Stealable : LoosePlace.None;
             }
             LoosePlace place = InHouse(world, item.X, item.Y) ? LoosePlace.House
                 : TownZones.Contains(world.MapIndex, item.X, item.Y) ? LoosePlace.Town
                 : LoosePlace.Wild;
-            if (LockedDownLabels.Ask(world, item.Serial, recheck: place == LoosePlace.House) != LockedDownLabels.State.Loose)
+            LockedDownLabels.State state = LockedDownLabels.Ask(world, item.Serial, recheck: place == LoosePlace.House);
+            if (state == LockedDownLabels.State.LockedDown
+                || (state == LockedDownLabels.State.Unknown && (place == LoosePlace.House || HouseSigns.IsSignArt(item))))
                 return LoosePlace.None;
-            return place;
+            return HouseSigns.Check(world, item) ? LoosePlace.None : place;
         }
+
+        // ── Stealable ───────────────────────────────────────────────────────────────
+
+        /// <summary>Malas, the only map RunUO's stealable artifacts spawn on.</summary>
+        private const int StealableMap = 3;
+
+        /// <summary>
+        /// Where RunUO's StealableArtifactsSpawner sets its artifacts (runuo/runuo
+        /// 71b2794, Scripts/Items/Decoration Artifacts): the Doom gauntlet (x 250-500)
+        /// and the Tokuno-styled rooms (x 0-190), all on Malas. Each is made
+        /// not-movable and moved to exactly this tile, respawning 72 min to 154 days
+        /// after it is stolen. The client sees no "stealable" flag on any item, and in
+        /// stock RunUO nothing else on the ground can be stolen (Stealing refuses a
+        /// not-movable item unless the spawner owns it; a faction sigil aside), so the
+        /// spot is the whole test. Two artifacts share 423,28.
+        /// </summary>
+        private static readonly HashSet<(int X, int Y)> StealableSpots = new()
+        {
+            (317, 56), // rock
+            (360, 31), // skull candle
+            (369, 372), // bottle
+            (378, 372), // damaged books
+            (432, 16), // stretched hide
+            (489, 9), // brazier
+            (471, 96), // lamp post
+            (421, 198), // books north
+            (431, 189), // books west
+            (435, 196), // books face down
+            (447, 9), // studded leggings
+            (423, 28), // egg case
+            (347, 44), // skinned goat
+            (497, 57), // gruesome standard
+            (381, 375), // bloody water
+            (489, 369), // tarot cards
+            (497, 369), // backpack
+            (475, 23), // studded tunic
+            (423, 28), // cocoon
+            (354, 36), // skinned deer
+            (433, 11), // saddle
+            (403, 31), // leather tunic
+            (257, 70), // zyronic claw
+            (354, 176), // titans hammer
+            (369, 389), // blade of the righteous
+            (467, 92), // inquisitors resolution
+            (487, 364), // ruined painting
+            (18, 110), // basket 1
+            (66, 114), // basket 2
+            (63, 12), // basket 4
+            (5, 29), // basket 5 north
+            (30, 81), // basket 5 west
+            (115, 7), // urn 1
+            (85, 13), // urn 2
+            (110, 53), // sculpture 1
+            (108, 37), // sculpture 2
+            (121, 14), // teapot north
+            (121, 115), // teapot west
+            (84, 40), // tower lantern
+            (94, 7), // man statuette south
+            (113, 640), // basket 3 north
+            (102, 355), // basket 3 west
+            (99, 370), // basket 6
+            (100, 357), // zen rock 1
+            (73, 473), // fan north
+            (99, 372), // fan west
+            (92, 326), // bowls vertical
+            (97, 470), // zen rock 2
+            (103, 691), // zen rock 3
+            (103, 336), // painting 1 north
+            (59, 381), // painting 1 west
+            (84, 401), // painting 2 north
+            (59, 392), // painting 2 west
+            (107, 483), // triple fan north
+            (50, 475), // triple fan west
+            (107, 460), // bowl
+            (90, 502), // cups
+            (107, 688), // bowls horizontal
+            (112, 676), // sake
+            (135, 614), // sword display 1 north
+            (50, 482), // sword display 1 west
+            (119, 672), // painting 3
+            (90, 326), // painting 4 north
+            (99, 354), // painting 4 west
+            (179, 652), // sword display 2 north
+            (118, 627), // sword display 2 west
+            (90, 483), // flowers
+            (71, 562), // dolphin left
+            (102, 677), // dolphin right
+            (61, 499), // sword display 3 south
+            (182, 669), // sword display 3 east
+            (162, 647), // sword display 4 west
+            (124, 624), // painting 5 north
+            (146, 649), // painting 5 west
+            (100, 488), // sword display 4 north
+            (175, 606), // sword display 5 north
+            (157, 608), // sword display 5 west
+            (187, 643), // painting 6 north
+            (146, 623), // painting 6 west
+            (178, 629), // man statuette east
+        };
+
+        public static bool IsStealableSpot(int map, int x, int y) =>
+            map == StealableMap && StealableSpots.Contains((x, y));
 
         private static bool InHouse(World world, int x, int y)
         {
@@ -225,6 +350,11 @@ namespace ClassicUO.Game.Managers
                 look.Sound = style.Sound;
                 look.LabelRule = style.Color;
                 look.Name = ItemAppraisal.DisplayName(r.Name);
+
+                // A fixed thing with a grade is a landmark (the silver tree): it goes on
+                // the world map where it stands.
+                if (r.Fixed && item.OnGround && r.Grade > HighlightGrade.None && !string.IsNullOrEmpty(look.Name))
+                    MapMarks.Note(LANDMARKS_FILE, item.X, item.Y, world.MapIndex, look.Name, LANDMARK_COLOR, out _);
 
                 // Trace is a whisper: no label, no chime.
                 if (r.Grade > HighlightGrade.Trace)
