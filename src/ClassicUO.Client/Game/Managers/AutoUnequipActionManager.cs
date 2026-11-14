@@ -31,7 +31,10 @@ public sealed partial class AutoUnequipActionManager : IDisposable
     /// <summary>
     ///     An intercepted action. A spell holds the armaments off until its cast is over; a potion does not.
     /// </summary>
-    private readonly record struct Intercept(Action Run, bool IsSpell);
+    private readonly record struct Intercept(Action Run, int SpellIndex)
+    {
+        public bool IsSpell => SpellIndex >= 0;
+    }
 
     private readonly Channel<Intercept> _flushChannel = Channel.CreateUnbounded<Intercept>(
         new UnboundedChannelOptions { SingleReader = true, SingleWriter = false }
@@ -42,16 +45,22 @@ public sealed partial class AutoUnequipActionManager : IDisposable
     // Equipping anything while a spell is being cast disturbs it on RunUO-style servers
     // (Spell.OnCasterEquiping), so the re-arm cannot be queued straight behind the cast: it has to
     // wait until the cast is over. "Over" is the spell's target cursor having opened and closed, a
-    // failure message, or, for a spell with no cursor, the timeout below.
+    // failure message, or, for a spell with no cursor, its cast time plus the margin below.
 
     /// <summary>How often the consumer looks at a cast it is holding the armaments for (ms)</summary>
     private const int REARM_POLL_MS = 50;
 
     /// <summary>
-    ///     How long after the cast packet a spell with no target cursor is taken to be over (ms).
-    ///     Longer than the slowest cast (8th circle) plus a round trip; shorter only re-arms into a cast.
+    ///     How long past a spell's own cast time, with no target cursor seen, it is taken to be over (ms).
+    ///     Covers the round trip and a late server tick; shorter re-arms into a cast still running.
     /// </summary>
-    private const uint NO_CURSOR_TIMEOUT_MS = 4000;
+    private const uint NO_CURSOR_MARGIN_MS = 1500;
+
+    /// <summary>
+    ///     The same wait for a spell whose cast time is unknown (ms). Longer than any known cast: shards
+    ///     delay Recall, Gate Travel and the summons by many seconds (7-8 s on In Mani Ylem).
+    /// </summary>
+    private const uint NO_CURSOR_UNKNOWN_MS = 12000;
 
     /// <summary>How long a queued cast may sit unsent before the hold gives up on it (ms)</summary>
     private const uint UNSENT_CAST_TIMEOUT_MS = 15000;
@@ -77,6 +86,7 @@ public sealed partial class AutoUnequipActionManager : IDisposable
     private int _castsQueued;      // casts handed to the action queue and not yet sent
     private uint _holdStartTick;   // when the last batch was queued
     private uint _castSentTick;    // main thread: when the last held cast went out
+    private uint _noCursorWaitMs;  // main thread: how long that cast may go without a cursor
     private uint _cursorsAtCast;   // main thread: TargetManager.ServerCursorCount at that moment
 
     #endregion
@@ -150,7 +160,7 @@ public sealed partial class AutoUnequipActionManager : IDisposable
     /// <param name="spellIndex">The spell being intercepted</param>
     /// <returns>True if the spell was intercepted, false otherwise</returns>
     public bool TryInterceptSpellCast(int spellIndex) =>
-        ShouldInterceptCast(spellIndex) && _flushChannel.Writer.TryWrite(new Intercept(() => GameActions.CastSpellDirect(spellIndex), true));
+        ShouldInterceptCast(spellIndex) && _flushChannel.Writer.TryWrite(new Intercept(() => GameActions.CastSpellDirect(spellIndex), spellIndex));
 
     /// <summary>
     ///     Attempts to intercept a double click
@@ -159,7 +169,7 @@ public sealed partial class AutoUnequipActionManager : IDisposable
     /// <param name="sendDoubleClickDelegate">The original 'send double click' function</param>
     /// <returns>True if the click was intercepted, false otherwise</returns>
     public bool TryInterceptDoubleClick(uint itemSerial, Action<uint> sendDoubleClickDelegate) =>
-        ShouldInterceptDblClick(itemSerial, sendDoubleClickDelegate) && _flushChannel.Writer.TryWrite(new Intercept(() => sendDoubleClickDelegate(itemSerial), false));
+        ShouldInterceptDblClick(itemSerial, sendDoubleClickDelegate) && _flushChannel.Writer.TryWrite(new Intercept(() => sendDoubleClickDelegate(itemSerial), -1));
 
     /// <summary>
     ///     Disposes the manager instance.
@@ -377,7 +387,7 @@ public sealed partial class AutoUnequipActionManager : IDisposable
                 ObjectActionQueue.Instance.Enqueue(new ObjectActionQueueItem(() =>
                 {
                     task.Run();
-                    OnHeldCastSent();
+                    OnHeldCastSent(task.SpellIndex);
                 }), ActionPriority.EquipItem);
             }
             else
@@ -396,9 +406,15 @@ public sealed partial class AutoUnequipActionManager : IDisposable
     ///     Main thread, right after a held cast's packet went out: the cast is over when a target
     ///     cursor newer than this has closed, or a failure newer than this was reported.
     /// </summary>
-    private void OnHeldCastSent()
+    private void OnHeldCastSent(int spellIndex)
     {
         _castSentTick = Time.Ticks;
+
+        // The spell's own cast time, which the shard timings mod calibrates: a flat wait re-armed
+        // four seconds into this shard's seven-second Recall and disturbed it.
+        _noCursorWaitMs = SpellVisualRangeManager.Instance.SpellRangeCache.TryGetValue(spellIndex, out SpellRangeInfo info) && info.CastTime > 0
+            ? (uint)(info.CastTime * 1000) + NO_CURSOR_MARGIN_MS
+            : NO_CURSOR_UNKNOWN_MS;
         _cursorsAtCast = _world?.TargetManager?.ServerCursorCount ?? 0;
 
         if (Interlocked.Decrement(ref _castsQueued) < 0)
@@ -434,7 +450,7 @@ public sealed partial class AutoUnequipActionManager : IDisposable
         if (targets.ServerCursorCount != _cursorsAtCast)
             return !targets.IsTargeting;
 
-        return Time.Ticks - _castSentTick > NO_CURSOR_TIMEOUT_MS;
+        return Time.Ticks - _castSentTick > _noCursorWaitMs;
     }
 
     /// <summary>
