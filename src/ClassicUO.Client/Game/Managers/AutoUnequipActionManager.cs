@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using ClassicUO.Configuration;
 using ClassicUO.Game.Data;
 using ClassicUO.Game.GameObjects;
+using ClassicUO.Game.Managers.SpellVisualRange;
 using ClassicUO.Game.Managers.Structs;
 using ClassicUO.Utility.Logging;
 using Lock = System.Threading.Lock;
@@ -27,9 +28,58 @@ public sealed partial class AutoUnequipActionManager : IDisposable
     private readonly CancellationTokenSource _cTokenSource = new();
     private readonly Task _interceptConsumerCompletion;
 
-    private readonly Channel<Action> _flushChannel = Channel.CreateUnbounded<Action>(
+    /// <summary>
+    ///     An intercepted action. A spell holds the armaments off until its cast is over; a potion does not.
+    /// </summary>
+    private readonly record struct Intercept(Action Run, bool IsSpell);
+
+    private readonly Channel<Intercept> _flushChannel = Channel.CreateUnbounded<Intercept>(
         new UnboundedChannelOptions { SingleReader = true, SingleWriter = false }
     );
+
+    #region Re-arm hold
+
+    // Equipping anything while a spell is being cast disturbs it on RunUO-style servers
+    // (Spell.OnCasterEquiping), so the re-arm cannot be queued straight behind the cast: it has to
+    // wait until the cast is over. "Over" is the spell's target cursor having opened and closed, a
+    // failure message, or, for a spell with no cursor, the timeout below.
+
+    /// <summary>How often the consumer looks at a cast it is holding the armaments for (ms)</summary>
+    private const int REARM_POLL_MS = 50;
+
+    /// <summary>
+    ///     How long after the cast packet a spell with no target cursor is taken to be over (ms).
+    ///     Longer than the slowest cast (8th circle) plus a round trip; shorter only re-arms into a cast.
+    /// </summary>
+    private const uint NO_CURSOR_TIMEOUT_MS = 4000;
+
+    /// <summary>How long a queued cast may sit unsent before the hold gives up on it (ms)</summary>
+    private const uint UNSENT_CAST_TIMEOUT_MS = 15000;
+
+    /// <summary>Armaments taken off and not yet put back. Consumer task only.</summary>
+    private readonly List<Armament> _held = new();
+
+    /// <summary>The queued re-arm actions, so a new cast can cancel them. Consumer task only.</summary>
+    private readonly List<ObjectActionQueueItem> _rearmItems = new();
+
+    /// <summary>How many of <see cref="_rearmItems"/> have yet to run; a fresh array per re-arm</summary>
+    private int[] _rearmsLeft;
+
+    /// <summary>Whether the held armaments are waiting on a spell (as opposed to a potion)</summary>
+    private bool _awaitingCast;
+
+    /// <summary>
+    ///     True while armaments are off and not yet back. A cast made now is intercepted even with
+    ///     empty hands, so it can cancel a queued re-arm instead of being disturbed by it.
+    /// </summary>
+    private volatile bool _holdingArms;
+
+    private int _castsQueued;      // casts handed to the action queue and not yet sent
+    private uint _holdStartTick;   // when the last batch was queued
+    private uint _castSentTick;    // main thread: when the last held cast went out
+    private uint _cursorsAtCast;   // main thread: TargetManager.ServerCursorCount at that moment
+
+    #endregion
 
     #region Dispose
 
@@ -100,7 +150,7 @@ public sealed partial class AutoUnequipActionManager : IDisposable
     /// <param name="spellIndex">The spell being intercepted</param>
     /// <returns>True if the spell was intercepted, false otherwise</returns>
     public bool TryInterceptSpellCast(int spellIndex) =>
-        ShouldInterceptCast(spellIndex) && _flushChannel.Writer.TryWrite(() => GameActions.CastSpellDirect(spellIndex));
+        ShouldInterceptCast(spellIndex) && _flushChannel.Writer.TryWrite(new Intercept(() => GameActions.CastSpellDirect(spellIndex), true));
 
     /// <summary>
     ///     Attempts to intercept a double click
@@ -109,7 +159,7 @@ public sealed partial class AutoUnequipActionManager : IDisposable
     /// <param name="sendDoubleClickDelegate">The original 'send double click' function</param>
     /// <returns>True if the click was intercepted, false otherwise</returns>
     public bool TryInterceptDoubleClick(uint itemSerial, Action<uint> sendDoubleClickDelegate) =>
-        ShouldInterceptDblClick(itemSerial, sendDoubleClickDelegate) && _flushChannel.Writer.TryWrite(() => sendDoubleClickDelegate(itemSerial));
+        ShouldInterceptDblClick(itemSerial, sendDoubleClickDelegate) && _flushChannel.Writer.TryWrite(new Intercept(() => sendDoubleClickDelegate(itemSerial), false));
 
     /// <summary>
     ///     Disposes the manager instance.
@@ -154,6 +204,11 @@ public sealed partial class AutoUnequipActionManager : IDisposable
 
         if (spellIndex is >= 100 and <= 678 or >= 700)
             return false;
+
+        // Armaments are already off for an earlier cast: this one must go through the consumer too,
+        // or a re-arm queued for the earlier cast lands in the middle of it.
+        if (_holdingArms)
+            return true;
 
         List<Armament> arms = GetArmingState();
         if (arms.Count <= 0)
@@ -237,21 +292,30 @@ public sealed partial class AutoUnequipActionManager : IDisposable
     {
         try
         {
-            // Wait for interception requests/cancellation
-            while (await _flushChannel.Reader.WaitToReadAsync(_cTokenSource.Token))
+            while (true)
             {
-                // A micro-delay to let producers settle, in case of a series of actions
-                await Task.Delay(50, _cTokenSource.Token);
+                if (_held.Count == 0)
+                {
+                    // Wait for interception requests/cancellation
+                    if (!await _flushChannel.Reader.WaitToReadAsync(_cTokenSource.Token))
+                        break;
+
+                    // A micro-delay to let producers settle, in case of a series of actions
+                    await Task.Delay(50, _cTokenSource.Token);
+                }
+                else
+                    // Armaments are off: watch the cast they are off for, and for a new one
+                    await Task.Delay(REARM_POLL_MS, _cTokenSource.Token);
 
                 // Gather-up whatever tasks we've collected until now
-                var tasks = new List<Action>();
-                while (_flushChannel.Reader.TryRead(out Action task))
+                var tasks = new List<Intercept>();
+                while (_flushChannel.Reader.TryRead(out Intercept task))
                     tasks.Add(task);
 
-                ExecuteBatchedTasks(tasks);
-
-                // A short delay to avoid excessive spam
-                await Task.Delay(200, _cTokenSource.Token);
+                if (tasks.Count > 0)
+                    ExecuteBatchedTasks(tasks);
+                else if (_held.Count > 0)
+                    ReEquipWhenCastIsOver();
             }
         }
         catch (OperationCanceledException)
@@ -262,10 +326,10 @@ public sealed partial class AutoUnequipActionManager : IDisposable
 
     /// <summary>
     ///     Executes the given tasks, after ensuring player has been disarmed.
-    ///     Re-arms the player, afterward.
+    ///     Re-arms the player afterward: at once for a potion, once the cast is over for a spell.
     /// </summary>
     /// <param name="tasks">The tasks to execute. These could be "cast a spell" or "drink a potion"</param>
-    private void ExecuteBatchedTasks(List<Action> tasks)
+    private void ExecuteBatchedTasks(List<Intercept> tasks)
     {
         if (_disposed)
             return;
@@ -281,9 +345,22 @@ public sealed partial class AutoUnequipActionManager : IDisposable
         // This is, however, a minor and mostly harmless quirk.
         List<Armament> arms = MainThreadQueue.BubblingInvokeOnMainThread(() => IsPlayerBackpackAvailable ? GetArmingState() : null, _cTokenSource.Token);
         if (arms == null) // null means world/player/backpack are gone and we should stop.
+        {
+            ReleaseHold();
             return;
+        }
 
         _cTokenSource.Token.ThrowIfCancellationRequested();
+
+        // A re-arm still queued for an earlier cast would run before these and disturb them
+        CancelQueuedReEquip();
+
+        foreach (Armament arm in arms)
+            if (!_held.Exists(h => h.Serial == arm.Serial))
+                _held.Add(arm);
+
+        // Potions included: their re-arm is queued behind them, and a cast made before it runs must cancel it
+        _holdingArms = _held.Count > 0;
 
         // Enqueue a disarm if necessary
         if (arms.Count > 0)
@@ -291,13 +368,117 @@ public sealed partial class AutoUnequipActionManager : IDisposable
         _cTokenSource.Token.ThrowIfCancellationRequested();
 
         // Enqueue all batched actions
-        foreach (Action task in tasks)
-            ObjectActionQueue.Instance.Enqueue(new ObjectActionQueueItem(task), ActionPriority.EquipItem);
+        foreach (Intercept task in tasks)
+        {
+            if (task.IsSpell && _held.Count > 0)
+            {
+                _awaitingCast = true;
+                Interlocked.Increment(ref _castsQueued);
+                ObjectActionQueue.Instance.Enqueue(new ObjectActionQueueItem(() =>
+                {
+                    task.Run();
+                    OnHeldCastSent();
+                }), ActionPriority.EquipItem);
+            }
+            else
+                ObjectActionQueue.Instance.Enqueue(new ObjectActionQueueItem(task.Run), ActionPriority.EquipItem);
+        }
+
+        _holdStartTick = Time.Ticks;
         _cTokenSource.Token.ThrowIfCancellationRequested();
 
-        // Enqueue a re-arm if necessary
-        if (arms.Count > 0)
-            EnqueueReEquip(arms);
+        // Nothing to wait for (potions only): re-arm straight behind the actions
+        if (_held.Count > 0 && !_awaitingCast)
+            EnqueueReEquip(_held);
+    }
+
+    /// <summary>
+    ///     Main thread, right after a held cast's packet went out: the cast is over when a target
+    ///     cursor newer than this has closed, or a failure newer than this was reported.
+    /// </summary>
+    private void OnHeldCastSent()
+    {
+        _castSentTick = Time.Ticks;
+        _cursorsAtCast = _world?.TargetManager?.ServerCursorCount ?? 0;
+
+        if (Interlocked.Decrement(ref _castsQueued) < 0)
+            Interlocked.Exchange(ref _castsQueued, 0);
+    }
+
+    /// <summary>
+    ///     Main thread. Whether the cast the armaments are off for is over, so equipping can no longer disturb it.
+    /// </summary>
+    /// <returns>True when over, false while casting or targeting, null when the player is gone</returns>
+    private bool? IsHeldCastOver()
+    {
+        if (!IsPlayerBackpackAvailable)
+            return null;
+
+        if (Volatile.Read(ref _castsQueued) > 0)
+        {
+            // Still waiting its turn in the action queue. If the queue was cleared it never will run.
+            if (Time.Ticks - _holdStartTick < UNSENT_CAST_TIMEOUT_MS)
+                return false;
+
+            Interlocked.Exchange(ref _castsQueued, 0);
+            return true;
+        }
+
+        // No mana, no reagents, disturbed, fizzled...
+        if (SpellVisualRangeManager.Instance.LastCastFailedTick > _castSentTick)
+            return true;
+
+        // The cursor is counted rather than watched, because an auto-target can answer it within the
+        // packet handler and it is never seen open.
+        TargetManager targets = _world.TargetManager;
+        if (targets.ServerCursorCount != _cursorsAtCast)
+            return !targets.IsTargeting;
+
+        return Time.Ticks - _castSentTick > NO_CURSOR_TIMEOUT_MS;
+    }
+
+    /// <summary>
+    ///     Consumer poll while armaments are off: queue the re-arm once the cast is over, and let
+    ///     go of the hold once the re-arm has run.
+    /// </summary>
+    private void ReEquipWhenCastIsOver()
+    {
+        if (_rearmItems.Count > 0)
+        {
+            if (Volatile.Read(ref _rearmsLeft[0]) <= 0)
+                ReleaseHold();
+            return;
+        }
+
+        bool? over = MainThreadQueue.BubblingInvokeOnMainThread(IsHeldCastOver, _cTokenSource.Token);
+        if (over == null)
+            ReleaseHold();
+        else if (over.Value)
+            EnqueueReEquip(_held);
+    }
+
+    /// <summary>
+    ///     Forget the held armaments. They are back in hand, or there is no player to hand them to.
+    /// </summary>
+    private void ReleaseHold()
+    {
+        _held.Clear();
+        _rearmItems.Clear();
+        _rearmsLeft = null;
+        _awaitingCast = false;
+        _holdingArms = false;
+    }
+
+    /// <summary>
+    ///     Cancel a re-arm that is queued but has not run, keeping the armaments held
+    /// </summary>
+    private void CancelQueuedReEquip()
+    {
+        foreach (ObjectActionQueueItem item in _rearmItems)
+            item.SetCanceled();
+
+        _rearmItems.Clear();
+        _rearmsLeft = null;
     }
 
     /// <summary>
@@ -340,15 +521,24 @@ public sealed partial class AutoUnequipActionManager : IDisposable
     /// <param name="arms">The armaments to re-equip</param>
     private void EnqueueReEquip(IList<Armament> arms)
     {
+        int[] left = [arms.Count];
+        _rearmsLeft = left;
+        _awaitingCast = false;
+
         foreach (Armament arm in arms)
-            ObjectActionQueue.Instance.Enqueue(new ObjectActionQueueItem(() =>
+        {
+            var queued = new ObjectActionQueueItem(() =>
             {
                 Item item = _world?.Items?.Get(arm.Serial);
                 Item backpackItem = _world?.Player?.Backpack;
 
                 if (item != null && backpackItem != null && item.Container == backpackItem.Serial)
                     MoveRequest.EquipItem(arm.Serial, arm.Layer)?.Execute();
-            }), ActionPriority.EquipItem);
+            }, _ => Interlocked.Decrement(ref left[0]));
+
+            _rearmItems.Add(queued);
+            ObjectActionQueue.Instance.Enqueue(queued, ActionPriority.EquipItem);
+        }
     }
 
     #endregion

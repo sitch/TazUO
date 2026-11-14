@@ -60,6 +60,8 @@ namespace ClassicUO.Game.Managers.SpellVisualRange
         private static readonly int[] stopAtClilocs = new int[]
         {
             500641,     // Your concentration is disturbed, thus ruining thy spell.
+            502632,     // The spell fizzles.
+            502626,     // Your hands must be free to cast spells or meditate.
             502625,     // Insufficient mana. You must have at least ~1_MANA_REQUIREMENT~ Mana to use this spell.
             502630,     // More reagents are needed for this spell.
             500946,     // You cannot cast this in town!

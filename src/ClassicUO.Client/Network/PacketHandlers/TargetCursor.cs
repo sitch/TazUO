@@ -12,6 +12,9 @@ internal static class TargetCursor
         uint cursorId = p.ReadUInt32BE();
         var targetType = (TargetType)p.ReadUInt8();
 
+        if (targetType < TargetType.Cancel)
+            world.TargetManager.ServerCursorCount++;
+
         world.TargetManager.SetTargeting(cursorTarget, cursorId, targetType);
 
         if (world.Party.PartyHealTimer < Time.Ticks && world.Party.PartyHealTarget != 0)

@@ -231,6 +231,13 @@ namespace ClassicUO.Game.Managers
 
         public bool IsTargeting { get; private set; }
 
+        /// <summary>
+        /// How many target cursors the server has opened (packet 0x6C, not a cancel). A cursor that an
+        /// auto-target answers inside the packet handler is never seen through <see cref="IsTargeting"/>,
+        /// so a caller waiting for "the cursor came and went" compares this instead.
+        /// </summary>
+        public uint ServerCursorCount { get; internal set; }
+
         public TargetType TargetingType { get; private set; }
 
         private void ClearTargetingWithoutTargetCancelPacket()
