@@ -21,6 +21,13 @@ namespace ClassicUO.Game.Managers
     /// <see cref="RECHECK_MS"/>, because a released plant keeps its flag; an item the
     /// server makes not-movable is forgotten (<see cref="NotMovable"/>), so when it is
     /// released and the flag comes back it is asked at once.
+    ///
+    /// The shard says "locked down" only to someone standing in that house: RunUO
+    /// asks the clicker's own region (<c>from.Region.OnSingleClick</c>, and
+    /// HouseRegion adds the label), so from the street every plant answers bare
+    /// (journal 2026-11-14, Walter outside a neighbour's house). An answer with no
+    /// "locked down" decides only when <c>trusted</c> (the asker inside the item's
+    /// house); otherwise the item keeps what it was and isn't asked.
     /// </summary>
     internal static class LockedDownLabels
     {
@@ -59,6 +66,8 @@ namespace ClassicUO.Game.Managers
             public uint Next;
             /// <summary>Asked as a movable item (the loose check), not a fixed landmark.</summary>
             public bool Movable;
+            /// <summary>A bare answer would mean loose: the asker stands where the shard says "locked down".</summary>
+            public bool Trusted = true;
         }
 
         private static readonly Dictionary<uint, Entry> _entries = new();
@@ -82,9 +91,11 @@ namespace ClassicUO.Game.Managers
         /// <summary>
         /// The item's state, clicking it when an answer is due: never answered yet, or
         /// (<paramref name="recheck"/>) its last answer is <see cref="RECHECK_MS"/> old.
-        /// Unknown until the first answer settles.
+        /// Unknown until the first answer settles. Not <paramref name="trusted"/>, a
+        /// bare answer decides nothing and no click goes out (it could only say what
+        /// the dark item already shows).
         /// </summary>
-        public static State Ask(World world, uint serial, bool recheck, bool movable = true)
+        public static State Ask(World world, uint serial, bool recheck, bool movable = true, bool trusted = true)
         {
             if (!_entries.TryGetValue(serial, out Entry e))
             {
@@ -94,6 +105,7 @@ namespace ClassicUO.Game.Managers
                 _entries[serial] = e;
             }
             e.Movable = movable;
+            e.Trusted = trusted;
 
             uint now = Time.Ticks;
             if (e.Sent != 0)
@@ -102,11 +114,12 @@ namespace ClassicUO.Game.Managers
                 {
                     if (now - e.Answered < SETTLE_MS)
                         return e.State;
-                    e.State = e.SawLocked ? State.LockedDown : State.Loose;
+                    if (e.SawLocked || e.Trusted)
+                        e.State = e.SawLocked ? State.LockedDown : State.Loose;
                     e.Sent = 0;
                     e.Tries = 0;
                     e.Next = now + RECHECK_MS;
-                    if (!e.SawLocked)
+                    if (!e.SawLocked && e.Trusted)
                         world.OPL.StripLines(serial, Says);   // a stale "locked down" name or line
                     return e.State;
                 }
@@ -118,15 +131,17 @@ namespace ClassicUO.Game.Managers
                 if (e.State == State.Unknown && e.Tries >= ASK_TRIES)
                 {
                     // The shard never answered: the OPL text, or else the flag, decides.
-                    e.State = world.OPL.TryGetNameAndData(serial, out string name, out string data)
-                              && (Says(name) || Says(data)) ? State.LockedDown : State.Loose;
+                    bool says = world.OPL.TryGetNameAndData(serial, out string name, out string data)
+                                && (Says(name) || Says(data));
+                    if (says || e.Trusted)
+                        e.State = says ? State.LockedDown : State.Loose;
                     e.Tries = 0;
                     e.Next = now + RECHECK_MS;
                 }
                 return e.State;
             }
 
-            bool due = e.State == State.Unknown || recheck;
+            bool due = trusted && (e.State == State.Unknown || recheck);
             if (!due || now < e.Next || !Spend(e.State != State.Unknown))
                 return e.State;
 

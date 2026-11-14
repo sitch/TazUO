@@ -32,31 +32,39 @@ namespace ClassicUO.Game.Managers
         private static readonly HashSet<uint> _signs = new();
         private static uint _lastSound;
 
-        /// <summary>Sign art (the tile's own name says so): its look waits for the shard's answer.</summary>
+        /// <summary>
+        /// Sign art: a tile named a sign, or anything in the range a house sign can be
+        /// changed to (RunUO's shop signs, "Tinker", "Bakery", whose tile names don't
+        /// say sign). Its look waits for the shard's answer.
+        /// </summary>
         public static bool IsSignArt(Item item)
         {
+            if (item.Graphic >= 0x0B95 && item.Graphic <= 0x0C0E)
+                return true;
             string art = item.ItemData.Name;
             return !string.IsNullOrEmpty(art) && art.IndexOf("sign", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         /// <summary>
-        /// True when the item is a house sign, by its answer. Sign art that hasn't
-        /// answered yet is asked (a not-movable sign has nothing else asking for it);
-        /// once the name has come too, the house is noted.
+        /// True when the item is a house sign, by its answer ("This house is ..."),
+        /// whatever its art. Sign art that hasn't answered yet is asked (a not-movable
+        /// sign has nothing else asking for it); once the name has come too, the house
+        /// is noted.
         /// </summary>
         public static bool Check(World world, Item item)
         {
-            if (!item.OnGround || !IsSignArt(item))
+            if (!item.OnGround)
                 return false;
-            if (!TryRead(world, item.Serial, out bool isSign, out string name))
+            if (!world.OPL.TryGetNameAndData(item.Serial, out string first, out string data))
             {
-                if (!item.IsMovable)
+                if (!item.IsMovable && IsSignArt(item))
                     LockedDownLabels.Ask(world, item.Serial, recheck: false, movable: false);
                 return false;
             }
-            if (!isSign)
+            if (!SaysHouse(first) && (string.IsNullOrEmpty(data) || data.IndexOf(HOUSE_LINE, StringComparison.OrdinalIgnoreCase) < 0))
                 return false;
             _signs.Add(item.Serial);
+            string name = NameOf(first, data);
             if (name != null)
                 Note(world, item.X, item.Y, world.MapIndex, name);
             return true;
@@ -65,31 +73,26 @@ namespace ClassicUO.Game.Managers
         /// <summary>Known to be a house sign this session.</summary>
         public static bool IsKnownSign(uint serial) => _signs.Contains(serial);
 
-        private static bool TryRead(World world, uint serial, out bool isSign, out string name)
+        private const string HOUSE_LINE = "This house is";
+
+        private static bool SaysHouse(string line) =>
+            line != null && line.TrimStart().StartsWith(HOUSE_LINE, StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>The house's name: the first line that is neither the condition, "locked down" nor property text.</summary>
+        private static string NameOf(string first, string data)
         {
-            isSign = false;
-            name = null;
-            if (!world.OPL.TryGetNameAndData(serial, out string first, out string data))
-                return false;
             var lines = new List<string> { first };
             if (!string.IsNullOrEmpty(data))
                 lines.AddRange(data.Split('\n'));
             foreach (string raw in lines)
             {
                 string line = raw?.Trim();
-                if (string.IsNullOrEmpty(line))
+                if (string.IsNullOrEmpty(line) || SaysHouse(line))
                     continue;
-                if (line.StartsWith("This house is", StringComparison.OrdinalIgnoreCase))
-                {
-                    isSign = true;
-                    continue;
-                }
-                if (name == null && !LockedDownLabels.Says(line) && !ForcedTooltipManager.LooksLikePropertyText(line))
-                    name = line;
+                if (!LockedDownLabels.Says(line) && !ForcedTooltipManager.LooksLikePropertyText(line))
+                    return line;
             }
-            if (!isSign)
-                name = null;
-            return true;
+            return null;
         }
 
         private static void Note(World world, int x, int y, int map, string name)

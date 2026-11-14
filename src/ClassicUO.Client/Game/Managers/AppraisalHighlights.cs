@@ -152,7 +152,10 @@ namespace ClassicUO.Game.Managers
         /// locked down, so a town's or the wild's item is outlined at once and only an
         /// answer saying "locked down" (a house's edge the footprint missed) puts it
         /// out. An item the server makes not-movable (locked down) is forgotten, so the
-        /// moment it is released and reads movable again it is asked afresh.
+        /// moment it is released and reads movable again it is asked afresh. The shard
+        /// says "locked down" only to someone standing in the house, so a house item is
+        /// asked, and lights, only while the player is inside that house; from the
+        /// street it keeps what it showed last (dark until first seen from inside).
         ///
         /// A not-movable item on one of the stealable spots is Stealable. A house sign
         /// (<see cref="HouseSigns"/>) is never anything: it reads movable and is never
@@ -169,10 +172,14 @@ namespace ClassicUO.Game.Managers
                 LockedDownLabels.NotMovable(item.Serial);
                 return IsStealableSpot(world.MapIndex, item.X, item.Y) ? LoosePlace.Stealable : LoosePlace.None;
             }
-            LoosePlace place = InHouse(world, item.X, item.Y) ? LoosePlace.House
+            uint house = HouseAt(world, item.X, item.Y, 0);
+            LoosePlace place = house != 0 ? LoosePlace.House
                 : TownZones.Contains(world.MapIndex, item.X, item.Y) ? LoosePlace.Town
                 : LoosePlace.Wild;
-            LockedDownLabels.State state = LockedDownLabels.Ask(world, item.Serial, recheck: place == LoosePlace.House);
+            // The shard says "locked down" only to someone inside that house, so a
+            // house item's bare answer counts only from in there.
+            bool trusted = house == 0 || PlayerHouse(world) == house;
+            LockedDownLabels.State state = LockedDownLabels.Ask(world, item.Serial, recheck: place == LoosePlace.House, trusted: trusted);
             if (state == LockedDownLabels.State.LockedDown
                 || (state == LockedDownLabels.State.Unknown && (place == LoosePlace.House || HouseSigns.IsSignArt(item))))
                 return LoosePlace.None;
@@ -281,7 +288,12 @@ namespace ClassicUO.Game.Managers
         public static bool IsStealableSpot(int map, int x, int y) =>
             map == StealableMap && StealableSpots.Contains((x, y));
 
-        private static bool InHouse(World world, int x, int y)
+        /// <summary>
+        /// The house whose footprint holds x,y, 0 for none. <paramref name="inset"/>
+        /// tiles of the edge don't count: RunUO's house region (where the shard says
+        /// "locked down") leaves out the front steps the footprint includes.
+        /// </summary>
+        private static uint HouseAt(World world, int x, int y, int inset)
         {
             foreach (House house in world.HouseManager.Houses)
             {
@@ -291,10 +303,30 @@ namespace ClassicUO.Game.Managers
                 if (found == null || !found.MultiInfo.HasValue)
                     continue;
                 Rectangle m = found.MultiInfo.Value;   // offsets: X/Y the min, Width/Height the max
-                if (x >= found.X + m.X && x <= found.X + m.Width && y >= found.Y + m.Y && y <= found.Y + m.Height)
-                    return true;
+                if (x >= found.X + m.X + inset && x <= found.X + m.Width - inset
+                    && y >= found.Y + m.Y + inset && y <= found.Y + m.Height - inset)
+                    return house.Serial;
             }
-            return false;
+            return 0;
+        }
+
+        private static uint _playerHouse;
+        private static uint _playerHouseTick;
+        private static (int X, int Y) _playerHouseAt = (-1, -1);
+
+        /// <summary>The house the player stands well inside, 0 for none; worked out once a frame.</summary>
+        private static uint PlayerHouse(World world)
+        {
+            PlayerMobile p = world.Player;
+            if (p == null)
+                return 0;
+            if (_playerHouseTick != Time.Ticks || _playerHouseAt != (p.X, p.Y))
+            {
+                _playerHouseTick = Time.Ticks;
+                _playerHouseAt = (p.X, p.Y);
+                _playerHouse = HouseAt(world, p.X, p.Y, 1);
+            }
+            return _playerHouse;
         }
 
         // ── Creatures ───────────────────────────────────────────────────────────────
